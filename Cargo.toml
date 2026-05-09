@@ -26,8 +26,8 @@ numpy = "0.28"
 # licence: MIT OR Apache-2.0  source: https://github.com/rust-ndarray/ndarray
 # N-dimensional array library. Must match the version that the `numpy` crate
 # uses (currently 0.17 as of numpy 0.28) to avoid type incompatibilities at
-# the FFI boundary.
-ndarray = "0.17"
+# the FFI boundary. The `rayon` feature enables Zip::par_for_each.
+ndarray = { version = "0.17", features = ["rayon"] }
 
 # licence: MIT OR Apache-2.0  source: https://github.com/rayon-rs/rayon
 # Data parallelism via work-stealing thread pool; used for tile-based kernels.
