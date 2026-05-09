@@ -14,6 +14,24 @@
 #[path = "shared/mod.rs"]
 mod shared;
 
+use ndarray::Array3;
+use phaios_core::bw::{LuminanceStandard, luminance_bw};
+use std::path::Path;
+
 fn main() {
-    todo!("implemented in Step 1 — run after kernels are in place")
+    std::fs::create_dir_all("examples/output").unwrap();
+
+    let raw = shared::synthetic_macbeth();
+    let rgb = Array3::from_shape_vec((shared::HEIGHT, shared::WIDTH, 3), raw).unwrap();
+
+    let bw = luminance_bw(rgb.view(), LuminanceStandard::Bt709).unwrap();
+
+    shared::write_ppm_grey(
+        Path::new("examples/output/01_luminance_bt709.ppm"),
+        bw.as_slice().unwrap(),
+        shared::WIDTH,
+        shared::HEIGHT,
+    );
+
+    println!("wrote examples/output/01_luminance_bt709.ppm");
 }

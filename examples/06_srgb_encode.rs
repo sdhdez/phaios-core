@@ -20,6 +20,35 @@
 #[path = "shared/mod.rs"]
 mod shared;
 
+use std::path::Path;
+
+use ndarray::Array3;
+use phaios_core::bw::{LuminanceStandard, luminance_bw};
+use phaios_core::encode::encode_srgb;
+
 fn main() {
-    todo!("implemented in Step 1 — run after kernels are in place")
+    std::fs::create_dir_all("examples/output").unwrap();
+
+    let raw = shared::synthetic_macbeth();
+    let rgb = Array3::from_shape_vec((shared::HEIGHT, shared::WIDTH, 3), raw).unwrap();
+    let bw = luminance_bw(rgb.view(), LuminanceStandard::Bt709).unwrap();
+
+    // 1 — Linear luminance (no transfer encoding — will look too dark)
+    shared::write_ppm_grey(
+        Path::new("examples/output/06_encode_linear.ppm"),
+        bw.as_slice().unwrap(),
+        shared::WIDTH,
+        shared::HEIGHT,
+    );
+
+    // 2 — sRGB-encoded (correct display brightness)
+    let encoded = encode_srgb(bw.view()).unwrap();
+    shared::write_ppm_grey(
+        Path::new("examples/output/06_encode_srgb.ppm"),
+        encoded.as_slice().unwrap(),
+        shared::WIDTH,
+        shared::HEIGHT,
+    );
+
+    println!("wrote examples/output/06_encode_{{linear,srgb}}.ppm");
 }

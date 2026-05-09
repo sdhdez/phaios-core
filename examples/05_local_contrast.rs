@@ -18,6 +18,46 @@
 #[path = "shared/mod.rs"]
 mod shared;
 
+use std::path::Path;
+
+use ndarray::Array3;
+use phaios_core::bw::{LuminanceStandard, luminance_bw};
+use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
+
 fn main() {
-    todo!("implemented in Step 1 — run after kernels are in place")
+    std::fs::create_dir_all("examples/output").unwrap();
+
+    let raw = shared::synthetic_macbeth();
+    let rgb = Array3::from_shape_vec((shared::HEIGHT, shared::WIDTH, 3), raw).unwrap();
+    let bw = luminance_bw(rgb.view(), LuminanceStandard::Bt709).unwrap();
+
+    // 1 — Unprocessed reference
+    shared::write_ppm_grey(
+        Path::new("examples/output/05_contrast_reference.ppm"),
+        bw.as_slice().unwrap(),
+        shared::WIDTH,
+        shared::HEIGHT,
+    );
+
+    // 2 — Moderate local contrast
+    let params_moderate = GuidedFilterParams::new(8, 0.01);
+    let out_moderate = local_contrast(bw.view(), &params_moderate, 0.5).unwrap();
+    shared::write_ppm_grey(
+        Path::new("examples/output/05_contrast_moderate.ppm"),
+        out_moderate.as_slice().unwrap(),
+        shared::WIDTH,
+        shared::HEIGHT,
+    );
+
+    // 3 — Aggressive local contrast
+    let params_aggressive = GuidedFilterParams::new(16, 0.01);
+    let out_aggressive = local_contrast(bw.view(), &params_aggressive, 1.0).unwrap();
+    shared::write_ppm_grey(
+        Path::new("examples/output/05_contrast_aggressive.ppm"),
+        out_aggressive.as_slice().unwrap(),
+        shared::WIDTH,
+        shared::HEIGHT,
+    );
+
+    println!("wrote examples/output/05_contrast_{{reference,moderate,aggressive}}.ppm");
 }

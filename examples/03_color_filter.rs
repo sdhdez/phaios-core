@@ -15,6 +15,34 @@
 #[path = "shared/mod.rs"]
 mod shared;
 
+use ndarray::Array3;
+use phaios_core::bw::{ColorFilter, LuminanceStandard, color_filter_bw};
+use std::path::Path;
+
 fn main() {
-    todo!("implemented in Step 1 — run after kernels are in place")
+    std::fs::create_dir_all("examples/output").unwrap();
+
+    let raw = shared::synthetic_macbeth();
+    let rgb = Array3::from_shape_vec((shared::HEIGHT, shared::WIDTH, 3), raw).unwrap();
+
+    let presets: &[(&str, ColorFilter)] = &[
+        ("none", ColorFilter::NoFilter),
+        ("yellow", ColorFilter::Yellow8K2),
+        ("orange", ColorFilter::Orange21),
+        ("red", ColorFilter::Red25A),
+        ("green", ColorFilter::Green11X1),
+        ("blue", ColorFilter::Blue47C5),
+    ];
+
+    for (name, filter) in presets {
+        let bw = color_filter_bw(rgb.view(), *filter, LuminanceStandard::Bt709).unwrap();
+        let out = format!("examples/output/03_filter_{name}.ppm");
+        shared::write_ppm_grey(
+            Path::new(&out),
+            bw.as_slice().unwrap(),
+            shared::WIDTH,
+            shared::HEIGHT,
+        );
+        println!("wrote {out}");
+    }
 }
