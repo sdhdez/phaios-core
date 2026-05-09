@@ -193,6 +193,35 @@ pub fn local_contrast_py(
     Ok(result.into_pyarray(py).unbind())
 }
 
+// ── sRGB encode binding ───────────────────────────────────────────────────────
+
+/// Apply the IEC 61966-2-1 sRGB transfer encoding.
+///
+/// This is always the last kernel in the pipeline. Converts scene-referred
+/// linear f32 values to display-referred sRGB. Values are not clamped —
+/// caller should clamp to [0, 1] beforehand if required.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, C)``, dtype ``float32``, display-referred sRGB.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``img`` does not have exactly 3 dimensions.
+#[pyfunction]
+pub fn encode_srgb(py: Python<'_>, img: PyReadonlyArray3<f32>) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let result = py.detach(move || encode::encode_srgb(view))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── Module entry point ────────────────────────────────────────────────────────
 
 /// The `phaios_core` Python extension module.
@@ -219,6 +248,9 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Local contrast
     m.add_function(wrap_pyfunction!(local_contrast_py, m)?)?;
+
+    // sRGB encode
+    m.add_function(wrap_pyfunction!(encode_srgb, m)?)?;
 
     Ok(())
 }

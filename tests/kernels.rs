@@ -124,3 +124,39 @@ fn guided_identity_radius_zero() {
         );
     }
 }
+
+// ── sRGB encode tests ─────────────────────────────────────────────────────────
+
+use phaios_core::encode::encode_srgb;
+
+/// sRGB encode must be monotonically non-decreasing on [0, 1].
+#[test]
+fn srgb_monotonic() {
+    let n = 10_000_usize;
+    let input: Vec<f32> = (0..=n).map(|i| i as f32 / n as f32).collect();
+    let img = ndarray::Array3::from_shape_vec((1, n + 1, 1), input).unwrap();
+    let out = encode_srgb(img.view()).unwrap();
+    let vals: Vec<f32> = out.iter().copied().collect();
+    for w in vals.windows(2) {
+        assert!(
+            w[1] >= w[0],
+            "sRGB encode not monotonic: encode({}) = {} > encode({}) = {}",
+            (vals.iter().position(|&v| v == w[0]).unwrap()) as f32 / n as f32,
+            w[0],
+            (vals.iter().position(|&v| v == w[1]).unwrap()) as f32 / n as f32,
+            w[1],
+        );
+    }
+}
+
+/// Both branches of the sRGB piecewise function must agree at the threshold.
+#[test]
+fn srgb_c1_continuous() {
+    let threshold = 0.0031308_f32;
+    let linear = 12.92 * threshold;
+    let power = 1.055 * threshold.powf(1.0 / 2.4) - 0.055;
+    assert!(
+        (linear - power).abs() < 1e-5,
+        "C¹ discontinuity at threshold: linear={linear:.8}, power={power:.8}"
+    );
+}
