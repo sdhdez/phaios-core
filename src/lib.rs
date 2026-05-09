@@ -153,6 +153,46 @@ pub fn zone_system(
     Ok(result.into_pyarray(py).unbind())
 }
 
+// ── Local contrast binding ────────────────────────────────────────────────────
+
+/// Enhance local contrast using the He–Sun–Tang guided filter.
+///
+/// Computes ``output = L + strength · (L - guided_filter(L))``.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, 1)``, dtype ``float32``, C-contiguous.
+/// params : GuidedFilterParams
+///     Filter radius and epsilon regularisation term.
+/// strength : float
+///     Detail amplification factor (0 = no change, 1 = standard unsharp
+///     mask, > 1 = over-sharpening).
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, 1)``, dtype ``float32``.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``img`` is not shape ``(H, W, 1)``.
+#[pyfunction]
+#[pyo3(name = "local_contrast")]
+pub fn local_contrast_py(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: pyo3::PyRef<'_, local_contrast::GuidedFilterParams>,
+    strength: f32,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let params_owned = params.clone();
+    let result =
+        py.detach(move || local_contrast::local_contrast(view, &params_owned, strength))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── Module entry point ────────────────────────────────────────────────────────
 
 /// The `phaios_core` Python extension module.
@@ -167,6 +207,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Param structs
     m.add_class::<tone::ZoneParams>()?;
+    m.add_class::<local_contrast::GuidedFilterParams>()?;
 
     // B&W kernels
     m.add_function(wrap_pyfunction!(luminance_bw, m)?)?;
@@ -175,6 +216,9 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Zone System
     m.add_function(wrap_pyfunction!(zone_system, m)?)?;
+
+    // Local contrast
+    m.add_function(wrap_pyfunction!(local_contrast_py, m)?)?;
 
     Ok(())
 }

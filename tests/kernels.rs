@@ -92,3 +92,35 @@ fn zone_v_plus_one_stop() {
         "Zone V +1 stop should give ~2× middle-grey, got ratio {ratio:.4}"
     );
 }
+
+// ── Guided filter tests ───────────────────────────────────────────────────────
+
+use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
+
+/// On a constant image, the guided filter returns the same constant (1e-4).
+#[test]
+fn guided_constant_image() {
+    let img = ndarray::Array3::from_elem((32, 32, 1), 0.4_f32);
+    let params = GuidedFilterParams::new(4, 0.01);
+    let out = local_contrast(img.view(), &params, 1.0).unwrap();
+    for &v in out.iter() {
+        assert!(
+            (v - 0.4).abs() < 1e-3,
+            "constant image local_contrast: expected ~0.4, got {v}"
+        );
+    }
+}
+
+/// With radius=0, the guided filter is the identity, so local_contrast is the identity.
+#[test]
+fn guided_identity_radius_zero() {
+    let img = ndarray::Array3::from_shape_fn((8, 8, 1), |(y, x, _)| (y * 8 + x) as f32 / 64.0);
+    let params = GuidedFilterParams::new(0, 0.0);
+    let out = local_contrast(img.view(), &params, 1.0).unwrap();
+    for (&l, &o) in img.iter().zip(out.iter()) {
+        assert!(
+            (o - l).abs() < 1e-4,
+            "radius=0 local_contrast should be identity; l={l}, o={o}"
+        );
+    }
+}
