@@ -4,10 +4,13 @@
 //! Each test verifies a specific property stated in the specification.
 //! Tests are added per kernel as Step 1 progresses.
 
+use std::collections::HashMap;
+
 use ndarray::array;
 use phaios_core::bw::{
     ColorFilter, LuminanceStandard, channel_mixer_bw, color_filter_bw, luminance_bw,
 };
+use phaios_core::tone::{ZoneParams, zone_system};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -67,5 +70,25 @@ fn red_filter_blue_input() {
     assert!(
         y < 0.05,
         "red filter + pure blue should be nearly black, got {y}"
+    );
+}
+
+// ── Zone System tests ─────────────────────────────────────────────────────────
+
+/// A +1-stop offset on Zone V must approximately double middle-grey (0.18).
+///
+/// At zone_pos = 5.0 (exactly Zone V), the Gaussian peaks at 1.0, so the
+/// total offset is exactly 1.0 and the output is 0.18 × 2^1 = 0.36.
+#[test]
+fn zone_v_plus_one_stop() {
+    let img = array![[[0.18_f32]]];
+    let mut offsets = HashMap::new();
+    offsets.insert(5_i32, 1.0_f32);
+    let params = ZoneParams::new(offsets);
+    let out = zone_system(img.view(), &params).unwrap();
+    let ratio = out[[0, 0, 0]] / 0.18_f32;
+    assert!(
+        (ratio - 2.0).abs() < 0.05,
+        "Zone V +1 stop should give ~2× middle-grey, got ratio {ratio:.4}"
     );
 }

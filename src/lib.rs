@@ -120,6 +120,39 @@ pub fn color_filter_bw(
     Ok(result.into_pyarray(py).unbind())
 }
 
+// ── Zone System binding ───────────────────────────────────────────────────────
+
+/// Apply the Adams/Archer Zone System tone curve.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, 1)``, dtype ``float32``, C-contiguous,
+///     linear luminance (output of a B&W conversion kernel).
+/// params : ZoneParams
+///     Zone offsets mapping zone index 0..10 → stop offset.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, 1)``, dtype ``float32``, tone-adjusted luminance.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``img`` is not shape ``(H, W, 1)``.
+#[pyfunction]
+pub fn zone_system(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: pyo3::PyRef<'_, tone::ZoneParams>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let params_owned = params.clone();
+    let result = py.detach(move || tone::zone_system(view, &params_owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── Module entry point ────────────────────────────────────────────────────────
 
 /// The `phaios_core` Python extension module.
@@ -132,10 +165,16 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<bw::LuminanceStandard>()?;
     m.add_class::<bw::ColorFilter>()?;
 
+    // Param structs
+    m.add_class::<tone::ZoneParams>()?;
+
     // B&W kernels
     m.add_function(wrap_pyfunction!(luminance_bw, m)?)?;
     m.add_function(wrap_pyfunction!(channel_mixer_bw, m)?)?;
     m.add_function(wrap_pyfunction!(color_filter_bw, m)?)?;
+
+    // Zone System
+    m.add_function(wrap_pyfunction!(zone_system, m)?)?;
 
     Ok(())
 }
