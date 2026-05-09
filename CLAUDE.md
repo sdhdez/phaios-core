@@ -233,7 +233,7 @@ example as part of the test suite.
    - PyPI OIDC trusted publisher configured (`release.yml` / env `pypi`)
 3. `git tag vX.Y.Z && git push origin vX.Y.Z` — triggers
    `.github/workflows/release.yml`, which builds wheels for
-   manylinux_2_17, Windows x86_64, macOS arm64/x86_64 via
+   manylinux_2_17, Windows x86_64, macOS arm64 via
    `PyO3/maturin-action@v1`, then publishes to PyPI (OIDC, no stored
    token) and crates.io (`CARGO_REGISTRY_TOKEN` secret).
 

@@ -108,7 +108,7 @@ Corresponding source is available at the repository URL above
 ## Publishing v0.1.0
 
 The release workflow (`.github/workflows/release.yml`) builds wheels for
-manylinux_2_17, Windows x86_64, and macOS arm64/x86_64, then publishes
+manylinux_2_17, Windows x86_64, and macOS arm64, then publishes
 to PyPI and crates.io. Before tagging, you need:
 
 **crates.io**
