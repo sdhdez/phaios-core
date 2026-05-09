@@ -189,8 +189,12 @@ cargo bench
 
 # Build wheels for distribution
 maturin build --release               # local
-# CI uses cibuildwheel for manylinux + Windows + macOS
+# Release workflow uses maturin-action for manylinux_2_17 + Windows + macOS
 ```
+
+CI (`.github/workflows/ci.yml`) runs the same checks — `cargo fmt --check`,
+`cargo clippy -- -D warnings`, `cargo test`, `cargo audit`, all 6 examples,
+and `pytest`. Green locally ≈ green in CI.
 
 ## 8. Examples (`examples/`)
 
@@ -218,7 +222,20 @@ example as part of the test suite.
 - One logical change per commit.
 - `main` is always green; feature work in `feat/<slug>`.
 - Tag releases as `v0.1.0`, `v0.2.0`. Both crate and Python wheel
-  carry the same version.
+  carry the same version. CI enforces this with a version-consistency
+  check (`Cargo.toml` version == `pyproject.toml` version).
+
+**Cutting a release:**
+1. Bump the version in *both* `Cargo.toml` and `pyproject.toml` to the
+   same value in a single commit (`chore: bump version to vX.Y.Z`).
+2. Ensure prerequisites are in place (one-time setup — see README):
+   - `CARGO_REGISTRY_TOKEN` GitHub Actions secret (crates.io)
+   - PyPI OIDC trusted publisher configured (`release.yml` / env `pypi`)
+3. `git tag vX.Y.Z && git push origin vX.Y.Z` — triggers
+   `.github/workflows/release.yml`, which builds wheels for
+   manylinux_2_17, Windows x86_64, macOS arm64/x86_64 via
+   `PyO3/maturin-action@v1`, then publishes to PyPI (OIDC, no stored
+   token) and crates.io (`CARGO_REGISTRY_TOKEN` secret).
 
 ## 10. Working agreement with Claude Code
 
