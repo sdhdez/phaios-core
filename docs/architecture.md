@@ -445,17 +445,22 @@ let encoded = if x <= 0.0031308_f32 {
 
 ## 7. Performance targets (v0.1)
 
-The following are informational targets measured on a synthetic 24 MP
-(5765 × 4323) `f32` image on a Zen 3 desktop (8 cores). They are not
-CI gates.
+Measured with `cargo bench` (criterion, bench profile) on a synthetic
+4323 × 5765 (≈ 24 MP) `f32` image. Not CI gates — informational only.
 
-| Kernel | Target | Notes |
-|--------|--------|-------|
-| `luminance_bw` | < 20 ms | Memory-bandwidth bound |
-| `channel_mixer_bw` | < 20 ms | Same as luminance |
-| `color_filter_bw` | < 25 ms | Two dot products |
-| `zone_system` | < 150 ms | Exp and log per pixel |
-| `local_contrast` | < 500 ms | Four integral images |
-| `encode_srgb` | < 80 ms | powf per pixel |
+| Kernel | Measured mean | Benchmark id | Notes |
+|--------|--------------|--------------|-------|
+| `luminance_bw` | **10.1 ms** | `luminance_bw/24MP/BT709` | Memory-bandwidth bound |
+| `channel_mixer_bw` | **10.1 ms** | `channel_mixer_bw/24MP` | Same bandwidth pattern |
+| `color_filter_bw` | **10.1 ms** | `color_filter_bw/24MP/Red25A` | Combined dot product |
+| `zone_system` | **14.3 ms** | `zone_system/24MP/1-zone-offset` | exp + ln per pixel |
+| `local_contrast` | **452 ms** | `local_contrast/24MP/r=8` | 4 sequential SAT builds |
+| `encode_srgb` | **8.1 ms** | `encode_srgb/24MP` | powf per pixel (grey input) |
 
-*To be measured and updated after Step 4 benchmarks.*
+Machine: AMD Ryzen 9 9950X 16-Core (32 threads), Linux, `cargo bench`
+(optimised profile, rayon parallelism enabled).
+
+`local_contrast` is SAT-dominated — the four sequential prefix-sum passes
+each touch every pixel once, setting a ~95 MB/pass memory-bandwidth floor.
+The parallel coefficient computation adds little overhead by comparison.
+Future work: parallelise SAT rows independently to reduce sequential cost.
