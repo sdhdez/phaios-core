@@ -113,6 +113,10 @@ Some differ from older tutorials:
   `mod local_contrast`), rename the Rust function (e.g. `local_contrast_fn`)
   and add `#[pyo3(name = "local_contrast")]` to expose it with the right
   Python name.
+- **Dtype-mismatch exception type**: when a Python caller passes the
+  wrong numpy dtype, PyO3 raises `TypeError` or `ValueError` depending
+  on the PyO3/numpy version. In `tests/ffi.py`, use
+  `pytest.raises(Exception)` rather than a specific subclass.
 
 ## 5. Code conventions
 
@@ -159,6 +163,9 @@ Current core deps (do not exceed without justification): `pyo3`,
 `ndarray` version must match the version pulled in by `numpy` (check
 with `cargo tree | grep ndarray` after adding or updating `numpy`).
 Enable the `rayon` feature: `ndarray = { version = "...", features = ["rayon"] }`.
+
+`criterion` ≥ 0.5: `criterion::black_box` is deprecated — use
+`std::hint::black_box` instead in all benchmark files.
 
 ## 7. Build & dev workflow
 
@@ -236,7 +243,7 @@ cargo test                            # Rust unit + integration tests
 cargo clippy -- -D warnings           # lint
 cargo fmt --check                     # format check
 cargo audit                           # supply-chain audit
-cargo bench                           # criterion benchmarks
+cargo bench                           # criterion benchmarks (bench profile = optimised; no --release flag)
 cargo run --example zone_system       # run a single example
 pytest                                # Python-side smoke tests
 maturin build --release               # local wheel build
