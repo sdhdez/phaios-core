@@ -46,7 +46,8 @@ belongs in a consumer.
   as `Py<PyArray3<f32>>` allocated once and returned. No
   `.to_owned()` on input arrays.
 - **GIL release.** Long-running kernels release the GIL via
-  `py.allow_threads(...)`. Document any kernel that doesn't and why.
+  `py.detach(...)` (PyO3 ≥ 0.22; `allow_threads` was removed).
+  Document any kernel that doesn't and why.
 - **Public API stability.** Once a function ships in a tagged
   release, its signature is stable until the next major version.
   Breaking changes go through a deprecation cycle.
@@ -90,6 +91,29 @@ See `docs/ffi.md` for the full contract. Summary:
 - The Python module is named `phaios_core`. The crate is `phaios-core`.
   The version of both must match exactly — CI enforces this.
 
+### PyO3 0.28 implementation notes (verified in v0.1)
+
+The following patterns are current as of PyO3 0.28 / numpy 0.28.
+Some differ from older tutorials:
+
+- **GIL release**: `py.detach(move || { ... })` — `allow_threads` was
+  removed in 0.22. The closure must be `Send`; `ArrayView3<f32>` is
+  `Copy + Send` so it can be captured by `move`.
+- **Array output**: `use numpy::IntoPyArray;` must be imported explicitly.
+  `array.into_pyarray(py)` returns `Bound<'py, PyArray3<f32>>`; call
+  `.unbind()` to get the `Py<PyArray3<f32>>` that `#[pyfunction]` returns.
+- **`#[pyclass]` with `Clone`**: add `from_py_object` to opt in to the
+  `FromPyObject` derive: `#[pyclass(from_py_object)]`. Without it, PyO3
+  0.28 emits a deprecation warning and will break in a future release.
+- **Enums**: `#[pyclass(eq, eq_int)]` enables Python integer comparison.
+  Use `#[derive(Default)]` with `#[default]` on the default variant —
+  clippy `-D warnings` rejects a manual `impl Default` when derive works.
+- **Module/function name clash**: when a `#[pyfunction]` has the same
+  name as its containing Rust module (e.g. `fn local_contrast` inside
+  `mod local_contrast`), rename the Rust function (e.g. `local_contrast_fn`)
+  and add `#[pyo3(name = "local_contrast")]` to expose it with the right
+  Python name.
+
 ## 5. Code conventions
 
 - **Rust 2024 edition**, stable toolchain.
@@ -131,6 +155,10 @@ See `docs/ffi.md` for the full contract. Summary:
 
 Current core deps (do not exceed without justification): `pyo3`,
 `numpy`, `ndarray`, `rayon`, `rand`, `rand_distr`, `thiserror`, `log`.
+
+`ndarray` version must match the version pulled in by `numpy` (check
+with `cargo tree | grep ndarray` after adding or updating `numpy`).
+Enable the `rayon` feature: `ndarray = { version = "...", features = ["rayon"] }`.
 
 ## 7. Build & dev workflow
 
