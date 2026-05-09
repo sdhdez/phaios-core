@@ -1,0 +1,25 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "phaios-core"
+version = "0.1.0"
+description = "Numerical kernels for black-and-white RAW image processing"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-or-later" }
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Topic :: Multimedia :: Graphics",
+    "Intended Audience :: Developers",
+]
+dependencies = []
+
+[project.urls]
+Source = "https://github.com/sdhdez/phaios-core"
+"Bug Tracker" = "https://github.com/sdhdez/phaios-core/issues"
+
+[tool.maturin]
+module-name = "phaios_core"

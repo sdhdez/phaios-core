@@ -137,8 +137,8 @@ Current core deps (do not exceed without justification): `pyo3`,
 ```
 # First time
 rustup default stable
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt   # installs maturin, pytest
+uv venv .phaios-venv && source .phaios-venv/bin/activate
+uv pip install -r requirements-dev.txt   # installs maturin, pytest
 
 # After Rust changes
 maturin develop --release             # rebuilds and installs into venv

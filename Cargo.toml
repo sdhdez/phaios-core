@@ -1,0 +1,77 @@
+[package]
+name = "phaios-core"
+version = "0.1.0"
+edition = "2024"
+description = "Numerical kernels for black-and-white RAW image processing"
+license = "GPL-3.0-or-later"
+readme = "README.md"
+repository = "https://github.com/sdhdez/phaios-core"
+keywords = ["image-processing", "black-and-white", "photography", "pyo3"]
+categories = ["multimedia::images", "science"]
+
+[lib]
+name = "phaios_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# licence: MIT OR Apache-2.0  source: https://github.com/PyO3/pyo3
+# PyO3 bindings to the Python interpreter. abi3-py39 builds a stable-ABI
+# wheel compatible with CPython 3.9+.
+pyo3 = { version = "0.28", features = ["extension-module", "abi3-py39"] }
+
+# licence: MIT OR Apache-2.0  source: https://github.com/PyO3/rust-numpy
+# PyO3-based bindings for the NumPy C-API; provides PyReadonlyArray3 / PyArray3.
+numpy = "0.28"
+
+# licence: MIT OR Apache-2.0  source: https://github.com/rust-ndarray/ndarray
+# N-dimensional array library. Must match the version that the `numpy` crate
+# uses (currently 0.17 as of numpy 0.28) to avoid type incompatibilities at
+# the FFI boundary.
+ndarray = "0.17"
+
+# licence: MIT OR Apache-2.0  source: https://github.com/rayon-rs/rayon
+# Data parallelism via work-stealing thread pool; used for tile-based kernels.
+rayon = "1"
+
+# licence: MIT OR Apache-2.0  source: https://github.com/dtolnay/thiserror
+# Derive macro for std::error::Error; used to define PhaiosError.
+thiserror = "2"
+
+# licence: MIT OR Apache-2.0  source: https://github.com/rust-lang/log
+# Logging facade; no concrete logger is chosen here (consumer's concern).
+log = "0.4"
+
+[dev-dependencies]
+# licence: MIT OR Apache-2.0  source: https://github.com/bheisler/criterion.rs
+# Statistics-driven micro-benchmarking library.
+criterion = { version = "0.8", features = ["html_reports"] }
+
+[[bench]]
+name = "kernels"
+harness = false
+
+# Explicit example declarations prevent examples/shared/mod.rs from being
+# misidentified as an example binary by cargo's auto-discovery.
+[[example]]
+name = "01_luminance"
+path = "examples/01_luminance.rs"
+
+[[example]]
+name = "02_channel_mixer"
+path = "examples/02_channel_mixer.rs"
+
+[[example]]
+name = "03_color_filter"
+path = "examples/03_color_filter.rs"
+
+[[example]]
+name = "04_zone_system"
+path = "examples/04_zone_system.rs"
+
+[[example]]
+name = "05_local_contrast"
+path = "examples/05_local_contrast.rs"
+
+[[example]]
+name = "06_srgb_encode"
+path = "examples/06_srgb_encode.rs"

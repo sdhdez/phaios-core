@@ -1,0 +1,33 @@
+# Rust build artefacts
+/target/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.phaios-venv/
+dist/
+*.egg-info/
+.eggs/
+
+# maturin / extension module outputs
+*.so
+*.pyd
+
+# Generated example outputs (PPM files are regenerated on each run)
+examples/output/*.ppm
+
+# Development tooling — not part of the crate
+claude-md-templates/
+phaios-core.code-workspace
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Criterion benchmark artefacts
+criterion/
