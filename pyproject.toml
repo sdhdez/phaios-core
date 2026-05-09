@@ -14,12 +14,19 @@ classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Topic :: Multimedia :: Graphics",
     "Intended Audience :: Developers",
+    "Development Status :: 3 - Alpha",
 ]
 dependencies = []
 
 [project.urls]
 Source = "https://github.com/sdhdez/phaios-core"
 "Bug Tracker" = "https://github.com/sdhdez/phaios-core/issues"
+Changelog = "https://github.com/sdhdez/phaios-core/releases"
 
 [tool.maturin]
 module-name = "phaios_core"
+
+# pytest configuration
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["ffi.py"]

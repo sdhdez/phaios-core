@@ -5,6 +5,7 @@ Numerical kernels for black-and-white RAW image processing.
 The name is from φαιός (Greek, "dusky grey"), the term Aristotle uses
 in *De Sensu* for the intermediate colours between white and black.
 
+[![CI](https://github.com/sdhdez/phaios-core/actions/workflows/ci.yml/badge.svg)](https://github.com/sdhdez/phaios-core/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 ---
@@ -101,3 +102,30 @@ Corresponding source is available at the repository URL above
   full mathematical derivations, algorithm citations.
 - [docs/ffi.md](docs/ffi.md) — Python↔Rust boundary contract,
   array layout, zero-copy rules, error handling.
+
+---
+
+## Publishing v0.1.0
+
+The release workflow (`.github/workflows/release.yml`) builds wheels for
+manylinux_2_17, Windows x86_64, and macOS arm64/x86_64, then publishes
+to PyPI and crates.io. Before tagging, you need:
+
+**crates.io**
+1. `cargo login` locally, or add `CARGO_REGISTRY_TOKEN` to the GitHub
+   repo's *Settings → Secrets → Actions*.
+
+**PyPI (OIDC trusted publishing — no token stored)**
+1. Create the `phaios-core` project on PyPI (first upload can use
+   `maturin publish` locally with an API token).
+2. In the PyPI project: *Manage → Publishing → Add a new publisher*:
+   - Repository owner: `sdhdez`
+   - Repository name: `phaios-core`
+   - Workflow filename: `release.yml`
+   - Environment name: `pypi`
+
+**Tagging**
+```sh
+git tag v0.1.0
+git push origin v0.1.0   # triggers release.yml
+```
