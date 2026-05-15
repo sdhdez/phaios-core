@@ -19,6 +19,7 @@ examples/output/*.ppm
 
 # Development tooling — not part of the crate
 claude-md-templates/
+design-briefs/
 phaios-core.code-workspace
 
 # Editor

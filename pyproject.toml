@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "phaios-core"
 version = "0.1.0"
 description = "Numerical kernels for black-and-white RAW image processing"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 license = { text = "GPL-3.0-or-later" }
 classifiers = [
     "Programming Language :: Rust",

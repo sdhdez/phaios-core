@@ -15,9 +15,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # licence: MIT OR Apache-2.0  source: https://github.com/PyO3/pyo3
-# PyO3 bindings to the Python interpreter. abi3-py39 builds a stable-ABI
-# wheel compatible with CPython 3.9+.
-pyo3 = { version = "0.28", features = ["extension-module", "abi3-py39"] }
+# PyO3 bindings to the Python interpreter. abi3-py312 builds a stable-ABI
+# wheel compatible with CPython 3.12+.
+pyo3 = { version = "0.28", features = ["extension-module", "abi3-py312"] }
 
 # licence: MIT OR Apache-2.0  source: https://github.com/PyO3/rust-numpy
 # PyO3-based bindings for the NumPy C-API; provides PyReadonlyArray3 / PyArray3.

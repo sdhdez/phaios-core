@@ -11,12 +11,17 @@ Licence: GPLv3. Maintainer: Simon ([github.com/sdhdez](https://github.com/sdhdez
 
 ## 1. What this crate does — and what it doesn't
 
-**Does:** the four B&W conversion methods, Adams/Archer Zone System
-tone curve, He–Sun–Tang guided filter for local contrast, sRGB
-transfer encoding, procedural film grain, split-toning, vignette.
-All as pure functions on `f32` C-contiguous `(H, W, C)` arrays.
+**v0.1 (implemented):** three B&W conversion kernels (standard
+luminance, channel mixer, coloured-filter simulation), Adams/Archer
+Zone System tone curve, He–Sun–Tang guided filter for local contrast,
+sRGB transfer encoding. All as pure functions on `f32` C-contiguous
+`(H, W, C)` arrays.
 
-**Doesn't:** open RAW files, write TIFFs, manage settings, draw
+**v0.2 (planned):** exposure compensation, HSL-weighted B&W
+(8 hue bands), procedural film grain (explicit seed), split-toning,
+radial vignette, parametric tone curve.
+
+**Never does:** open RAW files, write TIFFs, manage settings, draw
 pixels on a screen, talk to the network. Those belong to consumers
 (`phaios` desktop, `phaios-web`, your scripts).
 
@@ -56,14 +61,14 @@ belongs in a consumer.
 
 ```
 RAW (consumer's problem)
-  → linear scene-referred f32 RGB        ← input to kernels
-  → exposure                             ← kernel
-  → B&W conversion (one of four)         ← kernel
-  → tone (zone system, parametric)       ← kernel
-  → local contrast (guided filter)       ← kernel
-  → finishing (grain, toning, vignette)  ← kernels
-  → sRGB encode                          ← kernel (terminal)
-  → display-referred f32 RGB             ← output, consumer writes file
+  → linear scene-referred f32 RGB                  ← input to kernels
+  → exposure                                        ← kernel (v0.2 planned)
+  → B&W conversion (three kernels; +HSL in v0.2)   ← kernel
+  → tone (zone system v0.1; parametric curve v0.2)  ← kernel
+  → local contrast (guided filter)                  ← kernel (v0.1)
+  → finishing (grain, toning, vignette)             ← kernels (v0.2 planned)
+  → sRGB encode                                     ← kernel (terminal, v0.1)
+  → display-referred f32 RGB                        ← output, consumer writes file
 ```
 
 The pipeline order matters. Document any kernel that has order
@@ -158,7 +163,8 @@ Some differ from older tutorials:
   decision.
 
 Current core deps (do not exceed without justification): `pyo3`,
-`numpy`, `ndarray`, `rayon`, `rand`, `rand_distr`, `thiserror`, `log`.
+`numpy`, `ndarray`, `rayon`, `thiserror`, `log`. v0.2 will add
+`rand`, `rand_distr` for the film grain kernel.
 
 `ndarray` version must match the version pulled in by `numpy` (check
 with `cargo tree | grep ndarray` after adding or updating `numpy`).
@@ -170,7 +176,7 @@ Enable the `rayon` feature: `ndarray = { version = "...", features = ["rayon"] }
 ## 7. Build & dev workflow
 
 ```
-# First time
+# First time (requires Python 3.12+; 3.13 recommended for performance)
 rustup default stable
 uv venv .phaios-venv && source .phaios-venv/bin/activate
 uv pip install -r requirements-dev.txt   # installs maturin, pytest
@@ -248,9 +254,10 @@ example as part of the test suite.
 - **Every question is standalone.** Don't assume context from other
   repos, past sessions, or unrelated files.
 - **No telemetry, no network at runtime, ever.**
-- If the user requests a feature that violates section 1 ("does
-  what / doesn't do what"), surface the conflict before
-  implementing. The split with `phaios` desktop is intentional.
+- If the user requests a feature that violates section 1 ("v0.1
+  implemented / v0.2 planned / never does"), surface the conflict
+  before implementing. The split with `phaios` desktop is
+  intentional.
 
 ## 11. Quick command reference
 

@@ -134,7 +134,10 @@ panics in kernel code indicate bugs, not user errors.
 
 ## 5. GIL release
 
-Any kernel that is O(N) or worse on image pixels must release the GIL:
+Any kernel that is O(N) or worse on image pixels must release the GIL
+via `py.detach(move || { ... })`. PyO3 0.22 removed `allow_threads`;
+the closure must be `Send`. `ArrayView3<f32>` is `Copy + Send` so it
+can be captured by `move`.
 
 ```rust
 #[pyfunction]
@@ -144,20 +147,19 @@ pub fn zone_system(
     params: ZoneParams,
 ) -> PyResult<Py<PyArray3<f32>>> {
     let view = img.as_array();
-    py.allow_threads(|| {
-        // computationally expensive work here; no Python API calls
-        let out = compute(view, &params)?;
-        Ok(out)
-    })
-    .map(|arr| arr.into_pyarray(py).unbind())
+    let out = py.detach(move || {
+        // computationally expensive work; no Python API calls
+        compute(view, &params)
+    })?;
+    Ok(out.into_pyarray(py).unbind())
 }
 ```
 
 Kernels that do NOT release the GIL must have a doc comment explaining
 why (e.g., very small fixed-size output, trivial per-pixel map).
 
-`rayon::par_iter` within `allow_threads` is safe and recommended for
-tile-based kernels. Do not spawn rayon work outside `allow_threads`.
+`rayon::par_iter` within `detach` is safe and recommended for
+tile-based kernels. Do not spawn rayon work outside `detach`.
 
 ---
 

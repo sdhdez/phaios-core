@@ -27,12 +27,23 @@ no GUI, no hidden state. Any front-end can build on it.
 | `local_contrast` | He–Sun–Tang guided filter for local contrast enhancement |
 | `encode_srgb` | IEC 61966-2-1 sRGB transfer encoding (terminal stage) |
 
+### Roadmap — v0.2
+
+| Kernel | Description |
+|--------|-------------|
+| `exposure` | Exposure compensation (EV stops) |
+| `hsl_bw` | HSL-weighted B&W conversion (8 hue bands) |
+| `film_grain` | Procedural film grain with explicit seed for determinism |
+| `split_toning` | Parametric highlights/shadows toning |
+| `vignette` | Radial vignette |
+| Parametric tone curve | Arbitrary per-zone curve, independent of Zone System |
+
 ---
 
 ## Build prerequisites
 
 - **Rust** stable toolchain (`rustup default stable`)
-- **Python** 3.9 or later
+- **Python** 3.12 or later (3.13 recommended for performance)
 - **maturin** (installed via requirements-dev.txt)
 
 ## Quick start
