@@ -62,13 +62,11 @@ jobs:
             cargo run --example $ex
           done
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - name: Set up uv + Python 3.12
+        uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-
-      - name: Install uv
-        run: pip install uv
+          enable-cache: true
 
       - name: Install dev dependencies
         run: |

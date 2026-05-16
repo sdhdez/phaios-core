@@ -232,8 +232,10 @@ example as part of the test suite.
   check (`Cargo.toml` version == `pyproject.toml` version).
 
 **Cutting a release:**
-1. Bump the version in *both* `Cargo.toml` and `pyproject.toml` to the
-   same value in a single commit (`chore: bump version to vX.Y.Z`).
+1. Bump the version in `Cargo.toml`, `pyproject.toml`, **and**
+   `Cargo.lock` in a single commit (`chore: bump version to vX.Y.Z`).
+   (`Cargo.lock` updates automatically after any `cargo` command;
+   stage it explicitly or `cargo publish` will see a dirty tree.)
 2. Ensure prerequisites are in place (one-time setup — see README):
    - `CARGO_REGISTRY_TOKEN` GitHub Actions secret (crates.io)
    - PyPI OIDC trusted publisher configured (`release.yml` / env `pypi`)
