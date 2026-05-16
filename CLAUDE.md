@@ -237,7 +237,11 @@ example as part of the test suite.
    (`Cargo.lock` updates automatically after any `cargo` command;
    stage it explicitly or `cargo publish` will see a dirty tree.)
 2. Ensure prerequisites are in place (one-time setup — see README):
-   - `CARGO_REGISTRY_TOKEN` GitHub Actions secret (crates.io)
+   - `CARGO_REGISTRY_TOKEN` GitHub Actions secret (crates.io). The
+     token must have both `publish-new` (first upload) **and**
+     `publish-update` (subsequent versions) scopes, scoped to the
+     crate. Set no expiry or a long one — short-lived tokens cause
+     403s on re-runs.
    - PyPI OIDC trusted publisher configured (`release.yml` / env `pypi`)
 3. `git tag vX.Y.Z && git push origin vX.Y.Z` — triggers
    `.github/workflows/release.yml`, which builds wheels for
