@@ -102,11 +102,17 @@ pub fn zone_system(img: ArrayView3<f32>, params: &ZoneParams) -> Result<Array3<f
         )));
     }
 
-    let offsets: Vec<(f32, f32)> = params
+    // Sort by zone index. `HashMap` iteration order depends on the
+    // per-instance `RandomState` seed, and f32 addition is not
+    // associative, so an unsorted Gaussian sum would make the output
+    // depend on that seed — different bytes for the same input on every
+    // process. CLAUDE.md §2: determinism.
+    let mut offsets: Vec<(f32, f32)> = params
         .offsets
         .iter()
         .map(|(&z, &off)| (z as f32, off))
         .collect();
+    offsets.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
 
     let (h, w, _) = img.dim();
     let mut out = Array3::<f32>::zeros((h, w, 1));
@@ -174,6 +180,57 @@ mod tests {
     fn shape_error_on_rgb_input() {
         let img = Array3::<f32>::zeros((4, 4, 3));
         assert!(zone_system(img.view(), &ZoneParams::default()).is_err());
+    }
+
+    #[test]
+    fn output_is_independent_of_hashmap_iteration_order() {
+        // `RandomState` seeds every HashMap instance separately, so two maps
+        // holding the same keys iterate in different orders — within one
+        // process as well as across processes. f32 addition is not
+        // associative, so summing the Gaussian terms in hash order makes the
+        // output depend on that seed. Measured before the fix: eight
+        // processes produced eight different images (12.8% of pixels off by
+        // 1 ULP; 23 in 65536 differed by one code at 16-bit).
+        let img = Array3::<f32>::from_shape_fn((64, 64, 1), |(y, x, _)| {
+            0.001 + (y * 64 + x) as f32 / 2048.0
+        });
+        let pairs: [(i32, f32); 11] = [
+            (0, -0.7),
+            (1, 0.3),
+            (2, -0.2),
+            (3, 0.9),
+            (4, -0.4),
+            (5, 0.6),
+            (6, -0.15),
+            (7, 0.45),
+            (8, -0.8),
+            (9, 0.25),
+            (10, 0.55),
+        ];
+
+        let reference = zone_system(
+            img.view(),
+            &ZoneParams::new(pairs.iter().copied().collect()),
+        )
+        .unwrap();
+
+        for round in 0..32 {
+            let mut map = HashMap::new();
+            if round % 2 == 0 {
+                for &(z, o) in pairs.iter() {
+                    map.insert(z, o);
+                }
+            } else {
+                for &(z, o) in pairs.iter().rev() {
+                    map.insert(z, o);
+                }
+            }
+            let out = zone_system(img.view(), &ZoneParams::new(map)).unwrap();
+            assert_eq!(
+                out, reference,
+                "round {round}: output depends on HashMap iteration order"
+            );
+        }
     }
 
     #[test]
