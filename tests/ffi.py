@@ -148,6 +148,48 @@ def test_zone_params_constructible():
     assert params is not None
 
 
+def test_zone_params_round_trip():
+    """Settings serialisation needs to read the offsets back out."""
+    offsets = {3: -0.5, 5: 1.0, 8: 0.25}
+    params = ph.ZoneParams(offsets)
+    assert params.offsets == offsets
+    assert params == ph.ZoneParams(offsets)
+    assert params != ph.ZoneParams({})
+    # The getter hands back a copy, not a live view.
+    params.offsets[5] = 99.0
+    assert params.offsets[5] == 1.0
+
+
+def test_guided_filter_params_equality():
+    assert ph.GuidedFilterParams(8, 0.01) == ph.GuidedFilterParams(8, 0.01)
+    assert ph.GuidedFilterParams(8, 0.01) != ph.GuidedFilterParams(4, 0.01)
+
+
+@pytest.mark.parametrize("bad_zone", [-1, 11, 99])
+def test_zone_system_rejects_out_of_range_zone(grey_f32, bad_zone):
+    """An out-of-range zone index used to be a silent no-op."""
+    with pytest.raises(ValueError):
+        ph.zone_system(grey_f32, ph.ZoneParams({bad_zone: 1.0}))
+
+
+def test_zone_system_rejects_non_finite_offset(grey_f32):
+    with pytest.raises(ValueError):
+        ph.zone_system(grey_f32, ph.ZoneParams({5: float("nan")}))
+
+
+def test_local_contrast_rejects_negative_eps(grey_f32):
+    with pytest.raises(ValueError):
+        ph.local_contrast(grey_f32, ph.GuidedFilterParams(4, -0.01), 0.5)
+
+
+def test_zone_system_is_deterministic(grey_f32):
+    """Same input, same params, same bytes — every time, every process."""
+    params = ph.ZoneParams({z: (z - 5) * 0.1 for z in range(11)})
+    first = ph.zone_system(grey_f32, params)
+    for _ in range(4):
+        np.testing.assert_array_equal(ph.zone_system(grey_f32, params), first)
+
+
 def test_zone_system_shape_dtype(grey_f32):
     params = ph.ZoneParams({5: 0.5})
     out = ph.zone_system(grey_f32, params)

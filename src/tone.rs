@@ -47,9 +47,29 @@ pub struct ZoneParams {
 #[pymethods]
 impl ZoneParams {
     /// Create a new ``ZoneParams`` from a dict mapping zone index to stop offset.
+    ///
+    /// The map is not validated here — [`zone_system`] rejects zone
+    /// indices outside 0..=10 and non-finite offsets when it runs. The
+    /// constructor stays infallible because its signature shipped in
+    /// v0.1 and the public API is stable (CLAUDE.md §2).
     #[new]
     pub fn new(offsets: HashMap<i32, f32>) -> Self {
         Self { offsets }
+    }
+
+    /// The zone-index → stop-offset map, as a dict.
+    ///
+    /// Returns a copy: mutating it does not change the ``ZoneParams``.
+    /// Consumers need this to serialise settings — the desktop app's
+    /// sidecar and preset files round-trip through it.
+    #[getter]
+    pub fn offsets(&self) -> HashMap<i32, f32> {
+        self.offsets.clone()
+    }
+
+    /// Two ``ZoneParams`` are equal when they hold the same offsets.
+    pub fn __eq__(&self, other: &Self) -> bool {
+        self.offsets == other.offsets
     }
 
     /// Return a debug representation.
@@ -91,8 +111,16 @@ const L_EPSILON: f32 = 1e-10;
 /// Reference: Ansel Adams, *The Negative*, Little, Brown (1948), ch. 5;
 /// modernised in Davis, *Beyond the Zone System*, Focal Press (1999).
 ///
+/// Offsets are **not** clamped: an offset of +50 stops really does
+/// multiply by 2^50. Only values with no meaningful interpretation are
+/// rejected — see Errors.
+///
 /// # Errors
-/// Returns [`PhaiosError::Shape`] if the input is not `(H, W, 1)`.
+/// - [`PhaiosError::Shape`] if the input is not `(H, W, 1)`.
+/// - [`PhaiosError::Parameter`] if a zone index is outside 0..=10, or an
+///   offset is not finite. A zone index of, say, 99 used to be accepted
+///   and then contribute nothing (its Gaussian is zero everywhere in
+///   range), silently swallowing what is almost always a caller bug.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn zone_system(img: ArrayView3<f32>, params: &ZoneParams) -> Result<Array3<f32>, PhaiosError> {
     if img.shape()[2] != 1 {
@@ -100,6 +128,19 @@ pub fn zone_system(img: ArrayView3<f32>, params: &ZoneParams) -> Result<Array3<f
             "zone_system expects (H, W, 1) luminance input, got shape {:?}",
             img.shape()
         )));
+    }
+
+    for (&zone, &offset) in &params.offsets {
+        if !(0..=10).contains(&zone) {
+            return Err(PhaiosError::Parameter(format!(
+                "zone index {zone} is outside the eleven zones 0..=10"
+            )));
+        }
+        if !offset.is_finite() {
+            return Err(PhaiosError::Parameter(format!(
+                "offset for zone {zone} is {offset}, expected a finite number of stops"
+            )));
+        }
     }
 
     // Sort by zone index. `HashMap` iteration order depends on the
@@ -180,6 +221,66 @@ mod tests {
     fn shape_error_on_rgb_input() {
         let img = Array3::<f32>::zeros((4, 4, 3));
         assert!(zone_system(img.view(), &ZoneParams::default()).is_err());
+    }
+
+    #[test]
+    fn rejects_zone_index_outside_the_eleven_zones() {
+        let img = array![[[0.18_f32]]];
+        for bad in [-1_i32, 11, 99] {
+            let mut offsets = HashMap::new();
+            offsets.insert(bad, 1.0_f32);
+            let err = zone_system(img.view(), &ZoneParams::new(offsets)).unwrap_err();
+            assert!(
+                matches!(err, PhaiosError::Parameter(_)),
+                "zone {bad} should be a parameter error, got {err:?}"
+            );
+        }
+        // The valid range is accepted.
+        for good in 0..=10 {
+            let mut offsets = HashMap::new();
+            offsets.insert(good, 0.5_f32);
+            assert!(zone_system(img.view(), &ZoneParams::new(offsets)).is_ok());
+        }
+    }
+
+    #[test]
+    fn rejects_non_finite_offset() {
+        let img = array![[[0.18_f32]]];
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut offsets = HashMap::new();
+            offsets.insert(5_i32, bad);
+            assert!(matches!(
+                zone_system(img.view(), &ZoneParams::new(offsets)).unwrap_err(),
+                PhaiosError::Parameter(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn extreme_offsets_are_applied_not_clamped() {
+        // Documented behaviour: offsets are a number of stops, and the
+        // kernel does not clamp them. ±3 is a recommendation, not a limit.
+        let img = array![[[MIDDLE_GREY]]];
+        let mut offsets = HashMap::new();
+        offsets.insert(5_i32, 10.0_f32);
+        let out = zone_system(img.view(), &ZoneParams::new(offsets)).unwrap();
+        let expected = MIDDLE_GREY * 2.0_f32.powi(10);
+        assert!(
+            (out[[0, 0, 0]] - expected).abs() < expected * 1e-5,
+            "expected {expected}, got {}",
+            out[[0, 0, 0]]
+        );
+    }
+
+    #[test]
+    fn offsets_round_trip_through_the_getter() {
+        let mut map = HashMap::new();
+        map.insert(3_i32, -0.4_f32);
+        map.insert(7_i32, 1.25_f32);
+        let params = ZoneParams::new(map.clone());
+        assert_eq!(params.offsets(), map);
+        assert!(params.__eq__(&ZoneParams::new(map)));
+        assert!(!params.__eq__(&ZoneParams::default()));
     }
 
     #[test]

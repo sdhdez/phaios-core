@@ -70,6 +70,14 @@ impl GuidedFilterParams {
         Self { radius, eps }
     }
 
+    /// Two ``GuidedFilterParams`` are equal when both fields match.
+    ///
+    /// Consumers compare parameter objects to decide whether a cached
+    /// render is still valid.
+    pub fn __eq__(&self, other: &Self) -> bool {
+        self.radius == other.radius && self.eps.to_bits() == other.eps.to_bits()
+    }
+
     /// Return a debug representation.
     pub fn __repr__(&self) -> String {
         format!(
@@ -246,12 +254,20 @@ fn guided_filter(img: ArrayView2<f32>, radius: u32, eps: f32) -> Array2<f32> {
 /// - 1.0 → standard unsharp mask
 /// - > 1.0 → over-sharpening
 ///
-/// Input shape: `(H, W, 1)`. Output shape: `(H, W, 1)`.
+/// Input shape: `(H, W, 1)` — any memory layout. Output shape:
+/// `(H, W, 1)`, freshly allocated and C-contiguous.
+///
+/// A `radius` larger than the image is harmless: windows are clamped to
+/// the image extent, so every window becomes the whole image.
 ///
 /// Reference: He, Sun, Tang, "Guided Image Filtering," ECCV 2010.
 ///
 /// # Errors
-/// Returns [`PhaiosError::Shape`] if the input is not `(H, W, 1)`.
+/// - [`PhaiosError::Shape`] if the input is not `(H, W, 1)`.
+/// - [`PhaiosError::Parameter`] if `eps` is negative or non-finite, or
+///   `strength` is non-finite. A negative `eps` makes `a = var/(var+ε)`
+///   singular wherever the local variance approaches `−ε`, producing
+///   infinities in the output.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn local_contrast(
     img: ArrayView3<f32>,
@@ -262,6 +278,17 @@ pub fn local_contrast(
         return Err(PhaiosError::Shape(format!(
             "local_contrast expects (H, W, 1) luminance input, got shape {:?}",
             img.shape()
+        )));
+    }
+    if !params.eps.is_finite() || params.eps < 0.0 {
+        return Err(PhaiosError::Parameter(format!(
+            "eps is {}, expected a finite value >= 0",
+            params.eps
+        )));
+    }
+    if !strength.is_finite() {
+        return Err(PhaiosError::Parameter(format!(
+            "strength is {strength}, expected a finite value"
         )));
     }
     let (h, w, _) = img.dim();
@@ -336,6 +363,37 @@ mod tests {
         let img = Array3::<f32>::zeros((4, 4, 3));
         let params = GuidedFilterParams::new(2, 0.01);
         assert!(local_contrast(img.view(), &params, 1.0).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_parameters() {
+        let img = const_img(0.5, 8, 8);
+        // Negative eps makes a = var/(var+eps) singular near var = −eps.
+        assert!(matches!(
+            local_contrast(img.view(), &GuidedFilterParams::new(4, -0.01), 1.0).unwrap_err(),
+            PhaiosError::Parameter(_)
+        ));
+        assert!(matches!(
+            local_contrast(img.view(), &GuidedFilterParams::new(4, f32::NAN), 1.0).unwrap_err(),
+            PhaiosError::Parameter(_)
+        ));
+        assert!(matches!(
+            local_contrast(img.view(), &GuidedFilterParams::new(4, 0.01), f32::INFINITY)
+                .unwrap_err(),
+            PhaiosError::Parameter(_)
+        ));
+        // eps = 0 stays legal: it is the "no regularisation" limit and the
+        // radius-0 identity test relies on it.
+        assert!(local_contrast(img.view(), &GuidedFilterParams::new(4, 0.0), 1.0).is_ok());
+        // A radius larger than the image is legal — windows clamp.
+        assert!(local_contrast(img.view(), &GuidedFilterParams::new(9999, 0.01), 1.0).is_ok());
+    }
+
+    #[test]
+    fn params_compare_by_value() {
+        assert!(GuidedFilterParams::new(8, 0.01).__eq__(&GuidedFilterParams::new(8, 0.01)));
+        assert!(!GuidedFilterParams::new(8, 0.01).__eq__(&GuidedFilterParams::new(9, 0.01)));
+        assert!(!GuidedFilterParams::new(8, 0.01).__eq__(&GuidedFilterParams::new(8, 0.02)));
     }
 
     #[test]
