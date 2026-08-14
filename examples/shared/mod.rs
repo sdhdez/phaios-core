@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#![allow(dead_code)]
 //! Shared utilities for phaios-core examples.
+//!
+//! Every example pulls this file in with `#[path]`, so each one compiles
+//! its own copy and uses only the helpers it needs — hence the
+//! module-wide `dead_code` allow. Example 06 in particular writes
+//! deliberately unencoded output and never calls
+//! [`write_ppm_grey_display`].
 //!
 //! Provides a synthetic Macbeth-style colour checker and a minimal
 //! binary PPM writer. Neither function performs I/O except via the
