@@ -78,3 +78,7 @@ path = "examples/06_srgb_encode.rs"
 [[example]]
 name = "07_exposure"
 path = "examples/07_exposure.rs"
+
+[[example]]
+name = "08_hsl_weighted"
+path = "examples/08_hsl_weighted.rs"

@@ -104,6 +104,71 @@ fn red_filter_blue_input() {
     );
 }
 
+// ── HSL-weighted tests ────────────────────────────────────────────────────────
+
+use phaios_core::bw::{HslWeightedParams, hsl_bw};
+
+/// A negative blue weight must darken sky-blue without moving foliage-green.
+///
+/// This is the property the method exists for: unlike a coloured filter,
+/// which attenuates whole channels, a band weight reaches only hues near
+/// its centre.
+#[test]
+fn hsl_blue_weight_is_selective() {
+    let sky = rgb(0.183, 0.267, 0.467); // Macbeth patch 03, blue sky
+    let foliage = rgb(0.149, 0.200, 0.086); // patch 04, foliage
+
+    let neutral = HslWeightedParams::default();
+    let blue_down = HslWeightedParams::new(
+        [0.0, 0.0, 0.0, 0.0, 0.0, -0.8, 0.0, 0.0],
+        LuminanceStandard::Bt709,
+        30.0,
+    );
+
+    let sky_before = hsl_bw(sky.view(), &neutral).unwrap()[[0, 0, 0]];
+    let sky_after = hsl_bw(sky.view(), &blue_down).unwrap()[[0, 0, 0]];
+    let foliage_before = hsl_bw(foliage.view(), &neutral).unwrap()[[0, 0, 0]];
+    let foliage_after = hsl_bw(foliage.view(), &blue_down).unwrap()[[0, 0, 0]];
+
+    assert!(
+        sky_after < sky_before * 0.8,
+        "sky should darken markedly: {sky_before} → {sky_after}"
+    );
+    assert!(
+        (foliage_after - foliage_before).abs() < foliage_before * 0.1,
+        "foliage should barely move: {foliage_before} → {foliage_after}"
+    );
+}
+
+/// The eight band weights must be applied in the documented order.
+///
+/// Guards against a transposed or reversed weight array, which would be
+/// invisible in a symmetric test.
+#[test]
+fn hsl_band_order_is_red_first_magenta_last() {
+    let cases = [
+        (0, rgb(1.0, 0.0, 0.0)), // red, 0°
+        (2, rgb(1.0, 1.0, 0.0)), // yellow, 60°
+        (3, rgb(0.0, 1.0, 0.0)), // green, 120°
+        (4, rgb(0.0, 1.0, 1.0)), // aqua, 180°
+        (5, rgb(0.0, 0.0, 1.0)), // blue, 240°
+        (7, rgb(1.0, 0.0, 1.0)), // magenta, 300°
+    ];
+    for (band, img) in cases {
+        let mut weights = [0.0_f32; 8];
+        weights[band] = 1.0;
+        let params = HslWeightedParams::new(weights, LuminanceStandard::Bt709, 30.0);
+
+        let base = hsl_bw(img.view(), &HslWeightedParams::default()).unwrap()[[0, 0, 0]];
+        let boosted = hsl_bw(img.view(), &params).unwrap()[[0, 0, 0]];
+
+        assert!(
+            (boosted / base - 2.0).abs() < 1e-4,
+            "band {band} should double its own hue: {base} → {boosted}"
+        );
+    }
+}
+
 // ── Zone System tests ─────────────────────────────────────────────────────────
 
 /// A +1-stop offset on Zone V must approximately double middle-grey (0.18).

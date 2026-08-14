@@ -161,6 +161,46 @@ pub fn color_filter_bw(
     Ok(result.into_pyarray(py).unbind())
 }
 
+/// Convert a linear RGB image to greyscale with per-hue-band weighting.
+///
+/// Computes a base luminance, then scales it by
+/// ``1 + Σ w_i · gaussian_i(hue) · chroma`` over eight hue bands
+/// (red 0°, orange 30°, yellow 60°, green 120°, aqua 180°, blue 240°,
+/// purple 270°, magenta 300°). The result is clamped at zero.
+///
+/// The saturation measure is the chroma ratio ``(max − min) / max``,
+/// which is invariant under exposure changes — see the Rust docs for
+/// why HSL saturation is not used.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, 3)``, dtype ``float32``, any layout.
+/// params : HslWeightedParams
+///     Eight band weights, luminance standard, and Gaussian width.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, 1)``, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``img`` is not shape ``(H, W, 3)``, if ``sigma_deg`` is not
+///     finite and positive, or if any weight is not finite.
+#[pyfunction]
+pub fn hsl_bw(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: pyo3::PyRef<'_, bw::HslWeightedParams>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let params_owned = params.clone();
+    let result = py.detach(move || bw::hsl_bw(view, &params_owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── Zone System binding ───────────────────────────────────────────────────────
 
 /// Apply the Adams/Archer Zone System tone curve.
@@ -274,6 +314,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<bw::ColorFilter>()?;
 
     // Param structs
+    m.add_class::<bw::HslWeightedParams>()?;
     m.add_class::<tone::ZoneParams>()?;
     m.add_class::<local_contrast::GuidedFilterParams>()?;
 
@@ -284,6 +325,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(luminance_bw, m)?)?;
     m.add_function(wrap_pyfunction!(channel_mixer_bw, m)?)?;
     m.add_function(wrap_pyfunction!(color_filter_bw, m)?)?;
+    m.add_function(wrap_pyfunction!(hsl_bw, m)?)?;
 
     // Zone System
     m.add_function(wrap_pyfunction!(zone_system, m)?)?;

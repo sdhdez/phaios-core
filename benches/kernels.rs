@@ -13,7 +13,8 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use ndarray::Array3;
 use phaios_core::bw::{
-    ColorFilter, LuminanceStandard, channel_mixer_bw, color_filter_bw, luminance_bw,
+    ColorFilter, HslWeightedParams, LuminanceStandard, channel_mixer_bw, color_filter_bw, hsl_bw,
+    luminance_bw,
 };
 use phaios_core::encode::encode_srgb;
 use phaios_core::exposure::exposure;
@@ -82,6 +83,18 @@ fn bench_color_filter_bw(c: &mut Criterion) {
     });
 }
 
+fn bench_hsl_bw(c: &mut Criterion) {
+    let img = pseudo_random_image(H, W, 3);
+    let params = HslWeightedParams::new(
+        [0.3, -0.2, 0.5, 0.1, 0.0, -0.6, 0.2, -0.1],
+        LuminanceStandard::Bt709,
+        30.0,
+    );
+    c.bench_function("hsl_bw/24MP/8-bands", |b| {
+        b.iter(|| hsl_bw(black_box(img.view()), black_box(&params)).unwrap())
+    });
+}
+
 fn bench_zone_system(c: &mut Criterion) {
     let grey = pseudo_random_image(H, W, 1);
     let mut offsets = HashMap::new();
@@ -120,6 +133,7 @@ criterion_group!(
     bench_luminance_bw,
     bench_channel_mixer_bw,
     bench_color_filter_bw,
+    bench_hsl_bw,
     bench_zone_system,
     bench_local_contrast,
     bench_encode_srgb,

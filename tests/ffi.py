@@ -143,6 +143,55 @@ def test_color_filter_bw_all_presets(rgb_f32):
         assert_valid_output(out, (H, W, 1))
 
 
+# ── HSL-weighted B&W ──────────────────────────────────────────────────────────
+
+
+def test_hsl_bw_shape_dtype(rgb_f32):
+    params = ph.HslWeightedParams([0.0, 0.0, 0.5, 0.0, 0.0, -0.5, 0.0, 0.0])
+    assert_valid_output(ph.hsl_bw(rgb_f32, params), (H, W, 1))
+
+
+def test_hsl_bw_zero_weights_match_luminance(rgb_f32):
+    """All-zero weights must reduce exactly to the plain luminance kernel."""
+    out = ph.hsl_bw(rgb_f32, ph.HslWeightedParams([0.0] * 8))
+    np.testing.assert_allclose(out, ph.luminance_bw(rgb_f32), atol=1e-6)
+
+
+def test_hsl_bw_leaves_neutrals_alone():
+    """Zero chroma means zero modulation, whatever the weights are."""
+    grey = np.full((8, 8, 3), 0.5, dtype=np.float32)
+    out = ph.hsl_bw(grey, ph.HslWeightedParams([1.0] * 8))
+    np.testing.assert_allclose(out, 0.5, atol=1e-6)
+
+
+def test_hsl_bw_is_clamped_at_zero():
+    red = np.zeros((4, 4, 3), dtype=np.float32)
+    red[..., 0] = 1.0
+    out = ph.hsl_bw(red, ph.HslWeightedParams([-3.0, 0, 0, 0, 0, 0, 0, 0]))
+    assert float(out.min()) >= 0.0
+
+
+def test_hsl_params_round_trip():
+    weights = [0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8]
+    params = ph.HslWeightedParams(weights, ph.LuminanceStandard.Bt601, 25.0)
+    assert list(params.hue_weights) == pytest.approx(weights)
+    assert params.standard == ph.LuminanceStandard.Bt601
+    assert params.sigma_deg == pytest.approx(25.0)
+    assert params == ph.HslWeightedParams(weights, ph.LuminanceStandard.Bt601, 25.0)
+    assert params != ph.HslWeightedParams([0.0] * 8)
+
+
+def test_hsl_bw_rejects_invalid_sigma(rgb_f32):
+    for bad in (0.0, -5.0, float("inf")):
+        with pytest.raises(ValueError):
+            ph.hsl_bw(rgb_f32, ph.HslWeightedParams([0.0] * 8, ph.LuminanceStandard.Bt709, bad))
+
+
+def test_hsl_bw_rejects_wrong_channels(grey_f32):
+    with pytest.raises(ValueError):
+        ph.hsl_bw(grey_f32, ph.HslWeightedParams([0.0] * 8))
+
+
 # ── Type-error rejection (no Rust panic) ──────────────────────────────────────
 
 

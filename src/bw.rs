@@ -23,7 +23,7 @@
 //!   ed.): spectral transmission curves for Wratten 2 series filters.
 
 use ndarray::{Array3, ArrayView3, s};
-use pyo3::pyclass;
+use pyo3::{pyclass, pymethods};
 
 use crate::error::PhaiosError;
 
@@ -228,6 +228,222 @@ pub fn color_filter_bw(
     Ok(out)
 }
 
+// ── HSL-weighted conversion ──────────────────────────────────────────────────
+
+/// Centre of each hue band, in degrees.
+///
+/// The eight bands a photographer expects from a B&W mixer. They are not
+/// evenly spaced: the warm end (red/orange/yellow) is subdivided more
+/// finely than the cool end, because that is where skin, foliage and sky
+/// separations matter most.
+pub const HUE_BAND_CENTRES_DEG: [f32; 8] = [0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 300.0];
+
+/// Names of the eight hue bands, in the order of [`HUE_BAND_CENTRES_DEG`].
+pub const HUE_BAND_NAMES: [&str; 8] = [
+    "red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta",
+];
+
+/// Parameters for [`hsl_bw`].
+///
+/// ```python
+/// # Darken blues (sky), lift yellows (foliage in autumn light)
+/// params = phaios_core.HslWeightedParams([0, 0, 0.6, 0, 0, -0.7, 0, 0])
+/// ```
+#[pyclass(from_py_object)]
+#[derive(Clone, Debug)]
+pub struct HslWeightedParams {
+    /// Per-band luminance multiplier, in the order of
+    /// [`HUE_BAND_CENTRES_DEG`]: red, orange, yellow, green, aqua, blue,
+    /// purple, magenta. −1..+1 is the useful range; not clamped.
+    #[pyo3(get, set)]
+    pub hue_weights: [f32; 8],
+    /// Luminance standard used for the base greyscale value.
+    #[pyo3(get, set)]
+    pub standard: LuminanceStandard,
+    /// Gaussian width in hue space, in degrees. Larger values blend
+    /// neighbouring bands together; 30° makes adjacent bands overlap at
+    /// roughly half weight.
+    #[pyo3(get, set)]
+    pub sigma_deg: f32,
+}
+
+#[pymethods]
+impl HslWeightedParams {
+    /// Create new ``HslWeightedParams``.
+    #[new]
+    #[pyo3(signature = (hue_weights, standard = LuminanceStandard::Bt709, sigma_deg = 30.0))]
+    pub fn new(hue_weights: [f32; 8], standard: LuminanceStandard, sigma_deg: f32) -> Self {
+        Self {
+            hue_weights,
+            standard,
+            sigma_deg,
+        }
+    }
+
+    /// Two ``HslWeightedParams`` are equal when all fields match.
+    pub fn __eq__(&self, other: &Self) -> bool {
+        self.standard == other.standard
+            && self.sigma_deg.to_bits() == other.sigma_deg.to_bits()
+            && self
+                .hue_weights
+                .iter()
+                .zip(other.hue_weights.iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+    }
+
+    /// Return a debug representation.
+    pub fn __repr__(&self) -> String {
+        format!(
+            "HslWeightedParams(hue_weights={:?}, standard={:?}, sigma_deg={})",
+            self.hue_weights, self.standard, self.sigma_deg
+        )
+    }
+}
+
+impl Default for HslWeightedParams {
+    fn default() -> Self {
+        Self {
+            hue_weights: [0.0; 8],
+            standard: LuminanceStandard::Bt709,
+            sigma_deg: 30.0,
+        }
+    }
+}
+
+/// Hue in degrees `[0, 360)` and chroma ratio `[0, 1]` of a linear RGB triple.
+///
+/// The hue is the usual hexagonal-projection hue shared by HSL and HSV.
+///
+/// The second value is `(max − min) / max` — HSV-style saturation, also
+/// called the chroma ratio. HSL saturation, `(max − min) / (1 − |2L − 1|)`,
+/// is deliberately *not* used here; see [`hsl_bw`] for why.
+///
+/// Negative components are clamped to zero first. White balance can push
+/// a channel slightly below zero, and a negative `min` would otherwise
+/// inflate the chroma above 1.
+#[inline]
+fn hue_and_chroma_ratio(r: f32, g: f32, b: f32) -> (f32, f32) {
+    let r = r.max(0.0);
+    let g = g.max(0.0);
+    let b = b.max(0.0);
+
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let delta = max - min;
+
+    if delta <= 0.0 || max <= 0.0 {
+        // Neutral (or black): hue is undefined, and a zero chroma ratio
+        // means the caller's weights have no effect anyway.
+        return (0.0, 0.0);
+    }
+
+    let hue = if max == r {
+        60.0 * (((g - b) / delta) % 6.0)
+    } else if max == g {
+        60.0 * ((b - r) / delta + 2.0)
+    } else {
+        60.0 * ((r - g) / delta + 4.0)
+    };
+
+    let hue = if hue < 0.0 { hue + 360.0 } else { hue };
+    (hue, delta / max)
+}
+
+/// Shortest angular distance between two hues, in degrees `[0, 180]`.
+///
+/// Hue is circular: 350° is 10° from red, not 350° from it.
+#[inline]
+fn hue_distance_deg(a: f32, b: f32) -> f32 {
+    let d = (a - b).abs() % 360.0;
+    if d > 180.0 { 360.0 - d } else { d }
+}
+
+/// Convert a linear RGB image to greyscale with per-hue-band weighting.
+///
+/// Computes a base luminance with the chosen standard, then scales it by
+/// `1 + Σ_i w_i · G_i(hue) · chroma`, where `G_i` is a Gaussian centred
+/// on band `i` in hue space. The result is clamped at zero: a band
+/// weight of −1 takes a fully saturated pixel of that hue to black, and
+/// nothing goes negative.
+///
+/// The band contributions are summed in a fixed array order, so the
+/// result is bit-reproducible (see `docs/ffi.md` §6).
+///
+/// # Saturation measure
+///
+/// The modulation uses the **chroma ratio** `(max − min) / max`, not HSL
+/// saturation `(max − min) / (1 − |2L − 1|)`, for two reasons:
+///
+/// 1. **Scale invariance.** The chroma ratio is unchanged by a change of
+///    exposure, so adjusting exposure upstream does not silently alter
+///    the B&W conversion. HSL saturation depends on lightness, so it
+///    would.
+/// 2. **Scene-referred data.** HSL saturation is degenerate above
+///    L = 1: the denominator passes through zero and goes negative, and
+///    scene-referred highlights routinely exceed 1.0.
+///
+/// A practical consequence: a bright saturated yellow gets a strong
+/// response here, where HSL saturation would have judged it barely
+/// saturated at all because of its high lightness.
+///
+/// Input shape: `(H, W, 3)`, any memory layout.
+/// Output shape: `(H, W, 1)`, C-contiguous.
+///
+/// Reference: the hue/chroma geometry is the standard hexagonal
+/// projection given in Joblove & Greenberg, "Color spaces for computer
+/// graphics", *SIGGRAPH '78*, pp. 20–25.
+///
+/// # Errors
+/// - [`PhaiosError::Shape`] if the input is not `(H, W, 3)`.
+/// - [`PhaiosError::Parameter`] if `sigma_deg` is not finite and
+///   positive, or any weight is not finite.
+#[must_use = "kernel returns a new array; ignoring it wastes work"]
+pub fn hsl_bw(
+    img: ArrayView3<f32>,
+    params: &HslWeightedParams,
+) -> Result<Array3<f32>, PhaiosError> {
+    validate_rgb(img)?;
+
+    if !params.sigma_deg.is_finite() || params.sigma_deg <= 0.0 {
+        return Err(PhaiosError::Parameter(format!(
+            "sigma_deg is {}, expected a finite value > 0",
+            params.sigma_deg
+        )));
+    }
+    for (name, w) in HUE_BAND_NAMES.iter().zip(params.hue_weights.iter()) {
+        if !w.is_finite() {
+            return Err(PhaiosError::Parameter(format!(
+                "hue weight for {name} is {w}, expected a finite value"
+            )));
+        }
+    }
+
+    let (h, w, _) = img.dim();
+    let lw = params.standard.weights();
+    let weights = params.hue_weights;
+    let two_sigma_sq = 2.0 * params.sigma_deg * params.sigma_deg;
+
+    let mut out = Array3::<f32>::zeros((h, w, 1));
+    ndarray::Zip::from(out.slice_mut(s![.., .., 0]))
+        .and(img.slice(s![.., .., 0]))
+        .and(img.slice(s![.., .., 1]))
+        .and(img.slice(s![.., .., 2]))
+        .par_for_each(|y, &r, &g, &b| {
+            let base = lw[0] * r + lw[1] * g + lw[2] * b;
+            let (hue, chroma) = hue_and_chroma_ratio(r, g, b);
+
+            let mut multiplier = 0.0_f32;
+            for (band, &weight) in HUE_BAND_CENTRES_DEG.iter().zip(weights.iter()) {
+                let d = hue_distance_deg(hue, *band);
+                multiplier += weight * (-d * d / two_sigma_sq).exp();
+            }
+
+            *y = (base * (1.0 + multiplier * chroma)).max(0.0);
+        });
+
+    Ok(out)
+}
+
 // ── Unit tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -290,5 +506,183 @@ mod tests {
     fn shape_error_on_single_channel() {
         let img = Array3::<f32>::zeros((4, 4, 1));
         assert!(luminance_bw(img.view(), LuminanceStandard::Bt709).is_err());
+    }
+
+    // ── HSL-weighted ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn hue_of_primaries_and_secondaries() {
+        let cases = [
+            ((1.0, 0.0, 0.0), 0.0),
+            ((1.0, 1.0, 0.0), 60.0),
+            ((0.0, 1.0, 0.0), 120.0),
+            ((0.0, 1.0, 1.0), 180.0),
+            ((0.0, 0.0, 1.0), 240.0),
+            ((1.0, 0.0, 1.0), 300.0),
+        ];
+        for ((r, g, b), expected) in cases {
+            let (hue, chroma) = hue_and_chroma_ratio(r, g, b);
+            assert!(
+                (hue - expected).abs() < 1e-3,
+                "rgb({r}, {g}, {b}): expected hue {expected}, got {hue}"
+            );
+            assert!((chroma - 1.0).abs() < 1e-6, "expected full chroma");
+        }
+    }
+
+    #[test]
+    fn neutral_has_zero_chroma() {
+        for v in [0.0_f32, 0.18, 1.0, 4.0] {
+            let (_, chroma) = hue_and_chroma_ratio(v, v, v);
+            assert_eq!(chroma, 0.0, "neutral {v} should have zero chroma");
+        }
+    }
+
+    #[test]
+    fn chroma_ratio_is_exposure_invariant() {
+        // The reason for preferring the chroma ratio over HSL saturation:
+        // brightening the scene must not change which pixels the hue
+        // weights act on.
+        let (h1, c1) = hue_and_chroma_ratio(0.4, 0.2, 0.1);
+        let (h2, c2) = hue_and_chroma_ratio(1.6, 0.8, 0.4); // +2 EV
+        assert!((h1 - h2).abs() < 1e-4, "hue moved: {h1} vs {h2}");
+        assert!((c1 - c2).abs() < 1e-6, "chroma moved: {c1} vs {c2}");
+    }
+
+    #[test]
+    fn hue_distance_wraps_around_the_circle() {
+        assert!((hue_distance_deg(350.0, 0.0) - 10.0).abs() < 1e-4);
+        assert!((hue_distance_deg(10.0, 350.0) - 20.0).abs() < 1e-4);
+        assert!((hue_distance_deg(0.0, 180.0) - 180.0).abs() < 1e-4);
+        assert!((hue_distance_deg(270.0, 30.0) - 120.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn zero_weights_match_plain_luminance() {
+        let img = Array3::<f32>::from_shape_fn((8, 8, 3), |(y, x, c)| {
+            (y * 24 + x * 3 + c) as f32 / 192.0
+        });
+        let hsl = hsl_bw(img.view(), &HslWeightedParams::default()).unwrap();
+        let plain = luminance_bw(img.view(), LuminanceStandard::Bt709).unwrap();
+        for (&a, &b) in hsl.iter().zip(plain.iter()) {
+            assert!((a - b).abs() < 1e-6, "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn neutral_pixels_ignore_hue_weights() {
+        // Zero chroma means zero modulation, whatever the weights are.
+        let img = rgb_pixel(0.5, 0.5, 0.5);
+        let params = HslWeightedParams::new([1.0; 8], LuminanceStandard::Bt709, 30.0);
+        let out = hsl_bw(img.view(), &params).unwrap();
+        assert!(
+            (out[[0, 0, 0]] - 0.5).abs() < 1e-6,
+            "got {}",
+            out[[0, 0, 0]]
+        );
+    }
+
+    #[test]
+    fn red_weight_doubles_a_saturated_red() {
+        // Pure red: hue 0°, chroma 1, Gaussian peak 1 on the red band.
+        // multiplier = +1 → output = base · (1 + 1·1) = 2·base.
+        let img = rgb_pixel(1.0, 0.0, 0.0);
+        let mut weights = [0.0_f32; 8];
+        weights[0] = 1.0;
+        let params = HslWeightedParams::new(weights, LuminanceStandard::Bt709, 30.0);
+        let out = hsl_bw(img.view(), &params).unwrap();
+        let expected = 2.0 * 0.2126;
+        assert!(
+            (out[[0, 0, 0]] - expected).abs() < 1e-5,
+            "expected {expected}, got {}",
+            out[[0, 0, 0]]
+        );
+    }
+
+    #[test]
+    fn output_is_clamped_at_zero() {
+        // A weight below −1 would drive the multiplier negative enough to
+        // flip the sign; luminance must not go negative.
+        let img = rgb_pixel(1.0, 0.0, 0.0);
+        let mut weights = [0.0_f32; 8];
+        weights[0] = -3.0;
+        let params = HslWeightedParams::new(weights, LuminanceStandard::Bt709, 30.0);
+        let out = hsl_bw(img.view(), &params).unwrap();
+        assert_eq!(out[[0, 0, 0]], 0.0);
+    }
+
+    #[test]
+    fn band_influence_wraps_across_zero() {
+        // Hue 350° is 10° from the red band centre, so a red weight must
+        // reach it almost as strongly as it reaches hue 10°.
+        let mut weights = [0.0_f32; 8];
+        weights[0] = 1.0;
+        let params = HslWeightedParams::new(weights, LuminanceStandard::Bt709, 30.0);
+
+        // rgb(1, 0, 1/6) ≈ hue 350°; rgb(1, 1/6, 0) ≈ hue 10°.
+        let below = hsl_bw(rgb_pixel(1.0, 0.0, 1.0 / 6.0).view(), &params).unwrap();
+        let above = hsl_bw(rgb_pixel(1.0, 1.0 / 6.0, 0.0).view(), &params).unwrap();
+
+        let ratio_below = below[[0, 0, 0]] / (0.2126 + 0.0722 / 6.0);
+        let ratio_above = above[[0, 0, 0]] / (0.2126 + 0.7152 / 6.0);
+        assert!(
+            (ratio_below - ratio_above).abs() < 0.02,
+            "wrap-around asymmetry: {ratio_below} vs {ratio_above}"
+        );
+        assert!(ratio_below > 1.8, "10° from centre should stay strong");
+    }
+
+    #[test]
+    fn sigma_controls_band_overlap() {
+        // A green pixel under a yellow-only weight: a wide sigma lets the
+        // yellow band reach 120°, a narrow one does not.
+        let mut weights = [0.0_f32; 8];
+        weights[2] = 1.0; // yellow, centred 60°
+        let green = rgb_pixel(0.0, 1.0, 0.0);
+
+        let narrow = hsl_bw(
+            green.view(),
+            &HslWeightedParams::new(weights, LuminanceStandard::Bt709, 10.0),
+        )
+        .unwrap();
+        let wide = hsl_bw(
+            green.view(),
+            &HslWeightedParams::new(weights, LuminanceStandard::Bt709, 60.0),
+        )
+        .unwrap();
+
+        assert!((narrow[[0, 0, 0]] - 0.7152).abs() < 1e-4, "narrow leaked");
+        assert!(wide[[0, 0, 0]] > 0.85, "wide sigma should reach green");
+    }
+
+    #[test]
+    fn rejects_invalid_parameters() {
+        let img = rgb_pixel(0.5, 0.2, 0.1);
+        for bad_sigma in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let params = HslWeightedParams::new([0.0; 8], LuminanceStandard::Bt709, bad_sigma);
+            assert!(matches!(
+                hsl_bw(img.view(), &params).unwrap_err(),
+                PhaiosError::Parameter(_)
+            ));
+        }
+        let mut weights = [0.0_f32; 8];
+        weights[3] = f32::NAN;
+        let params = HslWeightedParams::new(weights, LuminanceStandard::Bt709, 30.0);
+        assert!(matches!(
+            hsl_bw(img.view(), &params).unwrap_err(),
+            PhaiosError::Parameter(_)
+        ));
+    }
+
+    #[test]
+    fn accepts_non_contiguous_input() {
+        let img = Array3::<f32>::from_shape_fn((6, 4, 3), |(y, x, c)| {
+            ((y * 12 + x * 3 + c) % 7) as f32 / 7.0
+        });
+        let strided = img.slice(s![..;2, .., ..]);
+        let params = HslWeightedParams::new([0.3; 8], LuminanceStandard::Bt709, 30.0);
+        let out = hsl_bw(strided, &params).unwrap();
+        assert_eq!(out.dim(), (3, 4, 1));
+        assert_eq!(out, hsl_bw(strided.to_owned().view(), &params).unwrap());
     }
 }
