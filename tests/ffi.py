@@ -350,6 +350,66 @@ def test_local_contrast_wrong_channels(rgb_f32):
         ph.local_contrast(rgb_f32, params, 0.5)
 
 
+# ── Vignette ──────────────────────────────────────────────────────────────────
+
+
+def test_vignette_shape_dtype(grey_f32):
+    assert_valid_output(ph.vignette(grey_f32, ph.VignetteParams(0.5, 0.7, 0.0)), (H, W, 1))
+
+
+def test_vignette_zero_amount_is_identity(grey_f32):
+    np.testing.assert_array_equal(ph.vignette(grey_f32, ph.VignetteParams()), grey_f32)
+
+
+def test_vignette_darkens_corners_not_centre():
+    flat = np.ones((64, 64, 1), dtype=np.float32)
+    out = ph.vignette(flat, ph.VignetteParams(0.5, 1.0, 0.0))
+    assert out[32, 32, 0] == pytest.approx(1.0, abs=1e-3)
+    assert out[0, 0, 0] < 0.6
+
+
+def test_vignette_negative_amount_lightens():
+    flat = np.ones((64, 64, 1), dtype=np.float32)
+    out = ph.vignette(flat, ph.VignetteParams(-0.5, 1.0, 0.0))
+    assert out[0, 0, 0] > 1.4
+
+
+def test_vignette_does_not_tint_rgb():
+    """Every channel of a pixel must get the same factor."""
+    img = np.empty((32, 32, 3), dtype=np.float32)
+    img[..., 0], img[..., 1], img[..., 2] = 0.2, 0.5, 0.8
+    out = ph.vignette(img, ph.VignetteParams(0.6, 1.0, 0.0))
+    ratios = out / img
+    np.testing.assert_allclose(ratios[..., 0], ratios[..., 1], atol=1e-5)
+    np.testing.assert_allclose(ratios[..., 1], ratios[..., 2], atol=1e-5)
+
+
+def test_vignette_is_resolution_independent():
+    """A preview and the full frame must agree, so previews are faithful."""
+    params = ph.VignetteParams(0.6, 0.8, 0.2)
+    small = ph.vignette(np.ones((64, 64, 1), np.float32), params)
+    large = ph.vignette(np.ones((512, 512, 1), np.float32), params)
+    for sy, sx in [(0, 0), (16, 16), (32, 32), (63, 63)]:
+        assert large[sy * 8 + 4, sx * 8 + 4, 0] == pytest.approx(small[sy, sx, 0], abs=0.02)
+
+
+@pytest.mark.parametrize("bad", [-0.1, 1.1, float("nan")])
+def test_vignette_rejects_out_of_range_shape_params(grey_f32, bad):
+    with pytest.raises(ValueError):
+        ph.vignette(grey_f32, ph.VignetteParams(0.5, bad, 0.0))
+    with pytest.raises(ValueError):
+        ph.vignette(grey_f32, ph.VignetteParams(0.5, 0.5, bad))
+
+
+def test_vignette_params_round_trip():
+    p = ph.VignetteParams(0.35, 0.6, 0.25)
+    assert p.amount == pytest.approx(0.35)
+    assert p.feather == pytest.approx(0.6)
+    assert p.roundness == pytest.approx(0.25)
+    assert p == ph.VignetteParams(0.35, 0.6, 0.25)
+    assert p != ph.VignetteParams()
+
+
 # ── sRGB encode ───────────────────────────────────────────────────────────────
 
 

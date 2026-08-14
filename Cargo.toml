@@ -86,3 +86,7 @@ path = "examples/08_hsl_weighted.rs"
 [[example]]
 name = "09_tone_curve"
 path = "examples/09_tone_curve.rs"
+
+[[example]]
+name = "10_vignette"
+path = "examples/10_vignette.rs"

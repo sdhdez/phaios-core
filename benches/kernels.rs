@@ -20,6 +20,7 @@ use phaios_core::encode::encode_srgb;
 use phaios_core::exposure::exposure;
 use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
 use phaios_core::tone::{ToneCurveParams, ZoneParams, tone_curve, zone_system};
+use phaios_core::vignette::{VignetteParams, vignette};
 use std::collections::HashMap;
 use std::hint::black_box;
 
@@ -128,6 +129,14 @@ fn bench_local_contrast(c: &mut Criterion) {
     });
 }
 
+fn bench_vignette(c: &mut Criterion) {
+    let grey = pseudo_random_image(H, W, 1);
+    let params = VignetteParams::new(0.5, 0.7, 0.2);
+    c.bench_function("vignette/24MP", |b| {
+        b.iter(|| vignette(black_box(grey.view()), black_box(&params)).unwrap())
+    });
+}
+
 fn bench_encode_srgb(c: &mut Criterion) {
     let grey = pseudo_random_image(H, W, 1);
     c.bench_function("encode_srgb/24MP", |b| {
@@ -145,6 +154,7 @@ criterion_group!(
     bench_zone_system,
     bench_tone_curve,
     bench_local_contrast,
+    bench_vignette,
     bench_encode_srgb,
 );
 criterion_main!(benches);

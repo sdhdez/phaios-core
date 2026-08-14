@@ -18,6 +18,7 @@ pub mod error;
 pub mod exposure;
 pub mod local_contrast;
 pub mod tone;
+pub mod vignette;
 
 // ── Exposure binding ─────────────────────────────────────────────────────────
 
@@ -314,6 +315,51 @@ pub fn local_contrast_py(
     Ok(result.into_pyarray(py).unbind())
 }
 
+// ── Vignette binding ──────────────────────────────────────────────────────────
+
+/// Apply a radial vignette.
+///
+/// Scales each pixel by ``1 - amount * falloff(distance)``, where the
+/// distance is measured in normalised frame coordinates: the centre is
+/// 0 and the corners are 1. Positive ``amount`` darkens the corners,
+/// negative lightens them; the result is clamped at zero.
+///
+/// Because the coordinates are normalised, the result is
+/// resolution-independent — a preview and the full-size frame get the
+/// same picture from the same parameters.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)`` for any channel count, dtype
+///     ``float32``, any memory layout. Every channel of a pixel gets the
+///     same factor, so the vignette darkens without tinting.
+/// params : VignetteParams
+///     Amount, feather and roundness.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If any parameter is not finite, or if ``feather`` or
+///     ``roundness`` is outside 0..=1.
+#[pyfunction]
+#[pyo3(name = "vignette")]
+pub fn vignette_py(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: pyo3::PyRef<'_, vignette::VignetteParams>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let params_owned = params.clone();
+    let result = py.detach(move || vignette::vignette(view, &params_owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── sRGB encode binding ───────────────────────────────────────────────────────
 
 /// Apply the IEC 61966-2-1 sRGB transfer encoding.
@@ -357,6 +403,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<tone::ZoneParams>()?;
     m.add_class::<tone::ToneCurveParams>()?;
     m.add_class::<local_contrast::GuidedFilterParams>()?;
+    m.add_class::<vignette::VignetteParams>()?;
 
     // Exposure
     m.add_function(wrap_pyfunction!(exposure_py, m)?)?;
@@ -373,6 +420,9 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Local contrast
     m.add_function(wrap_pyfunction!(local_contrast_py, m)?)?;
+
+    // Finishing
+    m.add_function(wrap_pyfunction!(vignette_py, m)?)?;
 
     // sRGB encode
     m.add_function(wrap_pyfunction!(encode_srgb, m)?)?;
