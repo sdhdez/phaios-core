@@ -65,6 +65,41 @@ def test_import():
     assert ph is not None
 
 
+# ── Exposure ──────────────────────────────────────────────────────────────────
+
+
+def test_exposure_shape_dtype(rgb_f32):
+    out = ph.exposure(rgb_f32, 1.0)
+    assert_valid_output(out, (H, W, 3))
+
+
+def test_exposure_one_stop_doubles(rgb_f32):
+    np.testing.assert_allclose(ph.exposure(rgb_f32, 1.0), rgb_f32 * 2.0, rtol=1e-6)
+
+
+def test_exposure_zero_is_identity(rgb_f32):
+    np.testing.assert_array_equal(ph.exposure(rgb_f32, 0.0), rgb_f32)
+
+
+def test_exposure_round_trips(rgb_f32):
+    """2**n is exact for integer n, so this is bit-exact."""
+    np.testing.assert_array_equal(ph.exposure(ph.exposure(rgb_f32, 2.0), -2.0), rgb_f32)
+
+
+def test_exposure_does_not_clip(rgb_f32):
+    """Highlights above 1.0 must survive for later stages to recover."""
+    assert float(ph.exposure(rgb_f32, 4.0).max()) > 1.0
+
+
+def test_exposure_accepts_luminance(grey_f32):
+    assert_valid_output(ph.exposure(grey_f32, -1.0), (H, W, 1))
+
+
+def test_exposure_rejects_non_finite(rgb_f32):
+    with pytest.raises(ValueError):
+        ph.exposure(rgb_f32, float("nan"))
+
+
 # ── B&W kernels ───────────────────────────────────────────────────────────────
 
 

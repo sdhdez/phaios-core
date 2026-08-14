@@ -19,6 +19,47 @@ pub mod exposure;
 pub mod local_contrast;
 pub mod tone;
 
+// ── Exposure binding ─────────────────────────────────────────────────────────
+
+/// Apply exposure compensation in EV stops.
+///
+/// Computes ``out = img * 2**stops``. This is the first pipeline stage:
+/// it operates on linear scene-referred data, where a stop is by
+/// definition a factor of two.
+///
+/// Values are not clamped — highlights pushed above 1.0 stay there so
+/// later tone stages can recover them.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)`` for any channel count, dtype
+///     ``float32``, any memory layout.
+/// stops : float
+///     Exposure adjustment in EV. Positive brightens, negative darkens,
+///     ``0.0`` is the identity.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``stops`` is not finite.
+#[pyfunction]
+#[pyo3(name = "exposure")]
+pub fn exposure_py(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    stops: f32,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let result = py.detach(move || exposure::exposure(view, stops))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── B&W bindings ─────────────────────────────────────────────────────────────
 
 /// Convert a linear RGB image to greyscale using standard luminance weights.
@@ -235,6 +276,9 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Param structs
     m.add_class::<tone::ZoneParams>()?;
     m.add_class::<local_contrast::GuidedFilterParams>()?;
+
+    // Exposure
+    m.add_function(wrap_pyfunction!(exposure_py, m)?)?;
 
     // B&W kernels
     m.add_function(wrap_pyfunction!(luminance_bw, m)?)?;

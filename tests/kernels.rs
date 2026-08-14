@@ -18,6 +18,37 @@ fn rgb(r: f32, g: f32, b: f32) -> ndarray::Array3<f32> {
     array![[[r, g, b]]]
 }
 
+// ── Exposure tests ────────────────────────────────────────────────────────────
+
+use phaios_core::exposure::exposure;
+
+/// One stop is exactly a factor of two in linear scene-referred data.
+///
+/// Source: standard photographic definition; Adams, *The Negative* (1948), ch. 4.
+#[test]
+fn exposure_one_stop_doubles_middle_grey() {
+    let img = rgb(0.18, 0.18, 0.18);
+    let out = exposure(img.view(), 1.0).unwrap();
+    assert!(
+        (out[[0, 0, 0]] - 0.36).abs() < 1e-6,
+        "+1 EV on middle grey: expected 0.36, got {}",
+        out[[0, 0, 0]]
+    );
+}
+
+/// Exposure must be invertible: +n EV followed by −n EV returns the input.
+///
+/// 2^n is exact for integer n, so this is bit-exact, not approximate.
+#[test]
+fn exposure_round_trips() {
+    let img = ndarray::Array3::from_shape_fn((16, 16, 3), |(y, x, c)| {
+        (y * 48 + x * 3 + c) as f32 / 768.0
+    });
+    let there = exposure(img.view(), 3.0).unwrap();
+    let back = exposure(there.view(), -3.0).unwrap();
+    assert_eq!(back, img, "+3 EV then -3 EV must be the identity");
+}
+
 // ── B&W luminance tests ───────────────────────────────────────────────────────
 
 /// BT.709 luminance of pure red must equal 0.2126 ± 1e-6.

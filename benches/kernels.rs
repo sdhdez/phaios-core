@@ -16,6 +16,7 @@ use phaios_core::bw::{
     ColorFilter, LuminanceStandard, channel_mixer_bw, color_filter_bw, luminance_bw,
 };
 use phaios_core::encode::encode_srgb;
+use phaios_core::exposure::exposure;
 use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
 use phaios_core::tone::{ZoneParams, zone_system};
 use std::collections::HashMap;
@@ -44,6 +45,13 @@ fn pseudo_random_image(h: usize, w: usize, c: usize) -> Array3<f32> {
         // Top 24 bits → [0, 1) with exact f32 spacing.
         (state >> 40) as f32 / 16_777_216.0
     })
+}
+
+fn bench_exposure(c: &mut Criterion) {
+    let img = pseudo_random_image(H, W, 3);
+    c.bench_function("exposure/24MP/+1EV", |b| {
+        b.iter(|| exposure(black_box(img.view()), black_box(1.0_f32)).unwrap())
+    });
 }
 
 fn bench_luminance_bw(c: &mut Criterion) {
@@ -108,6 +116,7 @@ fn bench_encode_srgb(c: &mut Criterion) {
 
 criterion_group!(
     benches,
+    bench_exposure,
     bench_luminance_bw,
     bench_channel_mixer_bw,
     bench_color_filter_bw,

@@ -120,6 +120,20 @@ pub fn write_ppm_grey(path: &Path, pixels: &[f32], width: usize, height: usize) 
     write_ppm(path, &rgb, width, height);
 }
 
+/// Apply the terminal sRGB encode, then write an 8-bit RGB PPM.
+///
+/// The three-channel counterpart of [`write_ppm_grey_display`], for
+/// examples whose output is still RGB (exposure, split-toning).
+///
+/// Panics if the input is not `(H, W, 3)`.
+pub fn write_ppm_display(path: &Path, img: ArrayView3<f32>, width: usize, height: usize) {
+    let encoded = encode_srgb(img).expect("encode_srgb: expected (H, W, 3) RGB");
+    let slice = encoded
+        .as_slice()
+        .expect("encode_srgb output is always contiguous");
+    write_ppm(path, slice, width, height);
+}
+
 /// Apply the terminal sRGB encode, then write an 8-bit greyscale PPM.
 ///
 /// The kernels work in linear scene-referred f32; an 8-bit PPM is
