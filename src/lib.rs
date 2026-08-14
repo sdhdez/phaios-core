@@ -235,6 +235,45 @@ pub fn zone_system(
     Ok(result.into_pyarray(py).unbind())
 }
 
+/// Apply a parametric slope/offset/power tone curve.
+///
+/// Computes ``out = max(img * slope + offset, 0) ** power``,
+/// element-wise. This is the ASC Color Decision List primary
+/// correction — "gain, lift, gamma" in photographic terms.
+///
+/// Monotonic for any positive ``slope`` and ``power``, so it cannot
+/// invert tonal order. The clamp before the exponent means a negative
+/// ``offset`` crushes to black rather than producing NaN.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)`` for any channel count, dtype
+///     ``float32``, any memory layout.
+/// params : ToneCurveParams
+///     Slope, offset and power. The identity is ``(1.0, 0.0, 1.0)``.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If any parameter is not finite, or ``power`` is not positive.
+#[pyfunction]
+pub fn tone_curve(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: pyo3::PyRef<'_, tone::ToneCurveParams>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let params_owned = params.clone();
+    let result = py.detach(move || tone::tone_curve(view, &params_owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── Local contrast binding ────────────────────────────────────────────────────
 
 /// Enhance local contrast using the He–Sun–Tang guided filter.
@@ -316,6 +355,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Param structs
     m.add_class::<bw::HslWeightedParams>()?;
     m.add_class::<tone::ZoneParams>()?;
+    m.add_class::<tone::ToneCurveParams>()?;
     m.add_class::<local_contrast::GuidedFilterParams>()?;
 
     // Exposure
@@ -327,8 +367,9 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(color_filter_bw, m)?)?;
     m.add_function(wrap_pyfunction!(hsl_bw, m)?)?;
 
-    // Zone System
+    // Tone
     m.add_function(wrap_pyfunction!(zone_system, m)?)?;
+    m.add_function(wrap_pyfunction!(tone_curve, m)?)?;
 
     // Local contrast
     m.add_function(wrap_pyfunction!(local_contrast_py, m)?)?;

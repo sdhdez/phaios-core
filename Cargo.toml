@@ -82,3 +82,7 @@ path = "examples/07_exposure.rs"
 [[example]]
 name = "08_hsl_weighted"
 path = "examples/08_hsl_weighted.rs"
+
+[[example]]
+name = "09_tone_curve"
+path = "examples/09_tone_curve.rs"

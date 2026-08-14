@@ -19,7 +19,7 @@ use phaios_core::bw::{
 use phaios_core::encode::encode_srgb;
 use phaios_core::exposure::exposure;
 use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
-use phaios_core::tone::{ZoneParams, zone_system};
+use phaios_core::tone::{ToneCurveParams, ZoneParams, tone_curve, zone_system};
 use std::collections::HashMap;
 use std::hint::black_box;
 
@@ -105,6 +105,14 @@ fn bench_zone_system(c: &mut Criterion) {
     });
 }
 
+fn bench_tone_curve(c: &mut Criterion) {
+    let grey = pseudo_random_image(H, W, 1);
+    let params = ToneCurveParams::new(1.1, 0.02, 0.85);
+    c.bench_function("tone_curve/24MP/slope-offset-power", |b| {
+        b.iter(|| tone_curve(black_box(grey.view()), black_box(&params)).unwrap())
+    });
+}
+
 fn bench_local_contrast(c: &mut Criterion) {
     let grey = pseudo_random_image(H, W, 1);
     let params = GuidedFilterParams::new(8, 0.01);
@@ -135,6 +143,7 @@ criterion_group!(
     bench_color_filter_bw,
     bench_hsl_bw,
     bench_zone_system,
+    bench_tone_curve,
     bench_local_contrast,
     bench_encode_srgb,
 );

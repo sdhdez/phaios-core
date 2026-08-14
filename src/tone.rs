@@ -180,6 +180,157 @@ pub fn zone_system(img: ArrayView3<f32>, params: &ZoneParams) -> Result<Array3<f
     Ok(out)
 }
 
+// ── Parametric tone curve (ASC CDL) ───────────────────────────────────────────
+
+/// Parameters for [`tone_curve`], in ASC CDL terms.
+///
+/// The three knobs a colourist expects, under their photographic names:
+///
+/// | Field | Also called | Effect |
+/// |-------|-------------|--------|
+/// | `slope` | gain | scales the whole range about black |
+/// | `offset` | lift | shifts the whole range, black included |
+/// | `power` | gamma | bends the midtones, leaving 0 and 1 fixed |
+///
+/// The identity is `(1.0, 0.0, 1.0)`.
+///
+/// ```python
+/// # Lift the blacks slightly and open up the midtones
+/// params = phaios_core.ToneCurveParams(slope=1.0, offset=0.02, power=0.85)
+/// ```
+#[pyclass(from_py_object)]
+#[derive(Clone, Debug)]
+pub struct ToneCurveParams {
+    /// Multiplier applied before the offset. 1.0 is neutral.
+    #[pyo3(get, set)]
+    pub slope: f32,
+    /// Added after the slope. 0.0 is neutral. Positive values lift black.
+    #[pyo3(get, set)]
+    pub offset: f32,
+    /// Exponent applied last. 1.0 is neutral; below 1 brightens the
+    /// midtones, above 1 darkens them. Must be positive.
+    #[pyo3(get, set)]
+    pub power: f32,
+}
+
+#[pymethods]
+impl ToneCurveParams {
+    /// Create new ``ToneCurveParams``. Defaults are the identity.
+    #[new]
+    #[pyo3(signature = (slope = 1.0, offset = 0.0, power = 1.0))]
+    pub fn new(slope: f32, offset: f32, power: f32) -> Self {
+        Self {
+            slope,
+            offset,
+            power,
+        }
+    }
+
+    /// Two ``ToneCurveParams`` are equal when all three fields match.
+    pub fn __eq__(&self, other: &Self) -> bool {
+        self.slope.to_bits() == other.slope.to_bits()
+            && self.offset.to_bits() == other.offset.to_bits()
+            && self.power.to_bits() == other.power.to_bits()
+    }
+
+    /// Return a debug representation.
+    pub fn __repr__(&self) -> String {
+        format!(
+            "ToneCurveParams(slope={}, offset={}, power={})",
+            self.slope, self.offset, self.power
+        )
+    }
+}
+
+impl Default for ToneCurveParams {
+    fn default() -> Self {
+        Self {
+            slope: 1.0,
+            offset: 0.0,
+            power: 1.0,
+        }
+    }
+}
+
+/// Apply a parametric slope/offset/power tone curve.
+///
+/// Computes `out = max(in · slope + offset, 0)^power`, element-wise.
+///
+/// This is the ASC Color Decision List primary correction, chosen over a
+/// spline for three reasons: it is a published interchange standard, so
+/// a grade means the same thing in other tools; three numbers are enough
+/// for the "lift/gamma/gain" adjustment photographers already know; and
+/// it is monotonic for any positive `slope` and `power`, so it cannot
+/// invert tonal order the way a mis-shaped spline can.
+///
+/// The clamp before the exponent is required, not cosmetic: a negative
+/// base raised to a fractional power has no real value. Clamping there
+/// means a negative `offset` crushes to black rather than producing
+/// NaN. It also means the curve is *not* invertible below the clamp
+/// point — information pushed below zero is gone.
+///
+/// Unlike [`zone_system`], this kernel places no constraint on the
+/// channel count: it is a scalar function applied element-wise, and it
+/// sits after split-toning in the pipeline, where the data has become
+/// three-channel again.
+///
+/// Input shape: `(H, W, C)`, any layout. Output: `(H, W, C)`,
+/// C-contiguous.
+///
+/// Reference: American Society of Cinematographers Technology Committee,
+/// "ASC Color Decision List (ASC CDL) Transfer Functions and Interchange
+/// Syntax", version 1.2 (2009), §2.1.
+///
+/// # Errors
+/// Returns [`PhaiosError::Parameter`] if any field is not finite, or if
+/// `power` is not strictly positive.
+#[must_use = "kernel returns a new array; ignoring it wastes work"]
+pub fn tone_curve(
+    img: ArrayView3<f32>,
+    params: &ToneCurveParams,
+) -> Result<Array3<f32>, PhaiosError> {
+    if !params.slope.is_finite() {
+        return Err(PhaiosError::Parameter(format!(
+            "slope is {}, expected a finite value",
+            params.slope
+        )));
+    }
+    if !params.offset.is_finite() {
+        return Err(PhaiosError::Parameter(format!(
+            "offset is {}, expected a finite value",
+            params.offset
+        )));
+    }
+    if !params.power.is_finite() || params.power <= 0.0 {
+        return Err(PhaiosError::Parameter(format!(
+            "power is {}, expected a finite value > 0",
+            params.power
+        )));
+    }
+
+    let ToneCurveParams {
+        slope,
+        offset,
+        power,
+    } = *params;
+    let is_identity = slope == 1.0 && offset == 0.0 && power == 1.0;
+
+    let mut out = Array3::<f32>::zeros(img.dim());
+    if is_identity {
+        out.assign(&img);
+        return Ok(out);
+    }
+
+    // powf is the dominant cost; skip it entirely when the exponent is 1.
+    let unit_power = power == 1.0;
+    ndarray::Zip::from(&mut out).and(img).par_for_each(|o, &v| {
+        let t = (v * slope + offset).max(0.0);
+        *o = if unit_power { t } else { t.powf(power) };
+    });
+
+    Ok(out)
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -221,6 +372,118 @@ mod tests {
     fn shape_error_on_rgb_input() {
         let img = Array3::<f32>::zeros((4, 4, 3));
         assert!(zone_system(img.view(), &ZoneParams::default()).is_err());
+    }
+
+    // ── Parametric tone curve ────────────────────────────────────────────────
+
+    #[test]
+    fn tone_curve_default_is_identity() {
+        let img = Array3::<f32>::from_shape_fn((8, 8, 3), |(y, x, c)| (y * 24 + x * 3 + c) as f32);
+        let out = tone_curve(img.view(), &ToneCurveParams::default()).unwrap();
+        assert_eq!(out, img);
+    }
+
+    #[test]
+    fn tone_curve_slope_is_gain() {
+        let img = array![[[0.2_f32, 0.5, 0.8]]];
+        let out = tone_curve(img.view(), &ToneCurveParams::new(2.0, 0.0, 1.0)).unwrap();
+        for (i, expected) in [0.4_f32, 1.0, 1.6].iter().enumerate() {
+            assert!((out[[0, 0, i]] - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn tone_curve_offset_is_lift() {
+        // Offset moves black, which is exactly what distinguishes it from
+        // slope: a pure gain leaves 0 at 0.
+        let img = array![[[0.0_f32, 0.5]]];
+        let out = tone_curve(img.view(), &ToneCurveParams::new(1.0, 0.1, 1.0)).unwrap();
+        assert!((out[[0, 0, 0]] - 0.1).abs() < 1e-6);
+        assert!((out[[0, 0, 1]] - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn tone_curve_power_fixes_zero_and_one() {
+        // Gamma bends the middle while pinning both ends.
+        let img = array![[[0.0_f32, 0.25, 1.0]]];
+        let out = tone_curve(img.view(), &ToneCurveParams::new(1.0, 0.0, 0.5)).unwrap();
+        assert!((out[[0, 0, 0]] - 0.0).abs() < 1e-6, "0 must stay 0");
+        assert!((out[[0, 0, 2]] - 1.0).abs() < 1e-6, "1 must stay 1");
+        assert!(
+            (out[[0, 0, 1]] - 0.5).abs() < 1e-6,
+            "0.25^0.5 = 0.5, got {}",
+            out[[0, 0, 1]]
+        );
+    }
+
+    #[test]
+    fn tone_curve_is_monotonic() {
+        let n = 4096;
+        let img = Array3::from_shape_fn((1, n, 1), |(_, x, _)| x as f32 / n as f32 * 2.0);
+        let out = tone_curve(img.view(), &ToneCurveParams::new(1.3, -0.05, 1.7)).unwrap();
+        let mut prev = f32::NEG_INFINITY;
+        for &v in out.iter() {
+            assert!(v >= prev, "tone curve not monotonic: {prev} then {v}");
+            prev = v;
+        }
+    }
+
+    #[test]
+    fn tone_curve_clamps_before_the_exponent() {
+        // A negative base under a fractional exponent has no real value;
+        // the clamp must turn it into black, not NaN.
+        let img = array![[[0.0_f32, 0.01, 0.5]]];
+        let out = tone_curve(img.view(), &ToneCurveParams::new(1.0, -0.2, 0.5)).unwrap();
+        for &v in out.iter() {
+            assert!(v.is_finite(), "produced {v}");
+            assert!(v >= 0.0);
+        }
+        assert_eq!(out[[0, 0, 0]], 0.0);
+        assert_eq!(out[[0, 0, 1]], 0.0);
+    }
+
+    #[test]
+    fn tone_curve_rejects_invalid_parameters() {
+        let img = array![[[0.5_f32]]];
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(
+                matches!(
+                    tone_curve(img.view(), &ToneCurveParams::new(1.0, 0.0, bad)).unwrap_err(),
+                    PhaiosError::Parameter(_)
+                ),
+                "power {bad} should be rejected"
+            );
+        }
+        assert!(matches!(
+            tone_curve(img.view(), &ToneCurveParams::new(f32::NAN, 0.0, 1.0)).unwrap_err(),
+            PhaiosError::Parameter(_)
+        ));
+        assert!(matches!(
+            tone_curve(img.view(), &ToneCurveParams::new(1.0, f32::INFINITY, 1.0)).unwrap_err(),
+            PhaiosError::Parameter(_)
+        ));
+    }
+
+    #[test]
+    fn tone_curve_accepts_any_layout_and_channel_count() {
+        let img = Array3::<f32>::from_shape_fn((6, 4, 3), |(y, x, c)| {
+            ((y * 12 + x * 3 + c) % 11) as f32 / 11.0
+        });
+        let strided = img.slice(ndarray::s![..;2, .., ..]);
+        let params = ToneCurveParams::new(1.2, 0.01, 0.9);
+        let out = tone_curve(strided, &params).unwrap();
+        assert_eq!(out.dim(), (3, 4, 3));
+        assert!(out.is_standard_layout());
+        assert_eq!(out, tone_curve(strided.to_owned().view(), &params).unwrap());
+
+        assert!(tone_curve(Array3::<f32>::zeros((2, 2, 1)).view(), &params).is_ok());
+    }
+
+    #[test]
+    fn tone_curve_params_round_trip() {
+        let p = ToneCurveParams::new(1.1, 0.02, 0.8);
+        assert!(p.__eq__(&ToneCurveParams::new(1.1, 0.02, 0.8)));
+        assert!(!p.__eq__(&ToneCurveParams::default()));
     }
 
     #[test]

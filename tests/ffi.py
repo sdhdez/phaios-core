@@ -286,6 +286,49 @@ def test_zone_system_empty_params_is_identity(grey_f32):
     np.testing.assert_allclose(out, grey_f32, atol=1e-5)
 
 
+# ── Parametric tone curve ─────────────────────────────────────────────────────
+
+
+def test_tone_curve_shape_dtype(grey_f32):
+    assert_valid_output(ph.tone_curve(grey_f32, ph.ToneCurveParams(1.1, 0.02, 0.9)), (H, W, 1))
+
+
+def test_tone_curve_default_is_identity(grey_f32):
+    np.testing.assert_array_equal(ph.tone_curve(grey_f32, ph.ToneCurveParams()), grey_f32)
+
+
+def test_tone_curve_matches_the_formula(grey_f32):
+    params = ph.ToneCurveParams(1.3, -0.05, 1.7)
+    expected = np.maximum(grey_f32 * 1.3 - 0.05, 0.0) ** 1.7
+    np.testing.assert_allclose(ph.tone_curve(grey_f32, params), expected, atol=1e-6)
+
+
+def test_tone_curve_accepts_rgb(rgb_f32):
+    """It runs after split-toning, where the data is three-channel again."""
+    assert_valid_output(ph.tone_curve(rgb_f32, ph.ToneCurveParams(1.0, 0.0, 0.8)), (H, W, 3))
+
+
+def test_tone_curve_no_nan_from_negative_offset(grey_f32):
+    out = ph.tone_curve(grey_f32, ph.ToneCurveParams(1.0, -0.5, 0.5))
+    assert not np.isnan(out).any()
+    assert float(out.min()) >= 0.0
+
+
+def test_tone_curve_rejects_non_positive_power(grey_f32):
+    for bad in (0.0, -1.0, float("nan")):
+        with pytest.raises(ValueError):
+            ph.tone_curve(grey_f32, ph.ToneCurveParams(1.0, 0.0, bad))
+
+
+def test_tone_curve_params_round_trip():
+    p = ph.ToneCurveParams(1.2, 0.03, 0.75)
+    assert p.slope == pytest.approx(1.2)
+    assert p.offset == pytest.approx(0.03)
+    assert p.power == pytest.approx(0.75)
+    assert p == ph.ToneCurveParams(1.2, 0.03, 0.75)
+    assert p != ph.ToneCurveParams()
+
+
 # ── Local contrast ────────────────────────────────────────────────────────────
 
 
