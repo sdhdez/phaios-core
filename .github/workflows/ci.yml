@@ -32,8 +32,10 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --check
 
+      # --all-targets so examples, benches and tests are linted too. Without
+      # it, dead code in examples/shared/mod.rs slipped through CI.
       - name: cargo clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: cargo test
         run: cargo test
@@ -54,12 +56,16 @@ jobs:
           fi
           echo "Version: $CRATE ✓"
 
+      # Discovered from cargo metadata rather than hardcoded: a new example
+      # added in v0.2 would otherwise silently never run here.
       - name: Run all examples
         run: |
-          for ex in 01_luminance 02_channel_mixer 03_color_filter \
-                    04_zone_system 05_local_contrast 06_srgb_encode; do
+          EXAMPLES=$(cargo metadata --no-deps --format-version=1 \
+            | python3 -c "import sys, json; print('\n'.join(sorted(t['name'] for p in json.load(sys.stdin)['packages'] for t in p['targets'] if 'example' in t['kind'])))")
+          if [ -z "$EXAMPLES" ]; then echo "no examples discovered"; exit 1; fi
+          echo "$EXAMPLES" | while read -r ex; do
             echo "--- $ex ---"
-            cargo run --example $ex
+            cargo run --example "$ex"
           done
 
       - name: Set up uv + Python 3.12

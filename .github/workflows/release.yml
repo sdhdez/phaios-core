@@ -6,10 +6,48 @@ on:
       - "v[0-9]+.*"
 
 jobs:
+  # ── Gate ──────────────────────────────────────────────────────────────────
+  #
+  # Publishing is irreversible: neither PyPI nor crates.io lets a version be
+  # re-uploaded. Nothing is built until the tag has been checked against the
+  # versions in the tree and the test suite has passed on the tagged commit.
+
+  verify:
+    name: Verify tag and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Tag matches Cargo.toml and pyproject.toml
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CRATE=$(cargo metadata --no-deps --format-version=1 \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['packages'][0]['version'])")
+          WHEEL=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "tag=$TAG crate=$CRATE wheel=$WHEEL"
+          if [ "$TAG" != "$CRATE" ] || [ "$TAG" != "$WHEEL" ]; then
+            echo "::error::version mismatch — tag $TAG, Cargo.toml $CRATE, pyproject.toml $WHEEL"
+            exit 1
+          fi
+
+      - name: cargo fmt
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test
+
   # ── Build wheels ─────────────────────────────────────────────────────────
 
   linux:
     name: Linux wheels
+    needs: verify
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -28,6 +66,7 @@ jobs:
 
   windows:
     name: Windows wheels
+    needs: verify
     runs-on: windows-latest
     strategy:
       matrix:
@@ -45,6 +84,7 @@ jobs:
 
   macos:
     name: macOS wheels (ARM)
+    needs: verify
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,6 +99,7 @@ jobs:
 
   sdist:
     name: Source distribution
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
