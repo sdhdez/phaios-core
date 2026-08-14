@@ -43,12 +43,23 @@ Output files appear in `examples/output/`. PPM files are listed in
 
 `examples/shared/mod.rs` generates a 24-patch Macbeth ColorChecker
 in scene-linear sRGB. The patches are arranged in a 6×4 grid, each
-patch 64×64 pixels, giving a 384×256 image. Patch values are the
-standard CIE colorimetric values (D50 illuminant) converted to
-linear sRGB and clamped to [0, 1].
+patch 64×64 pixels, giving a 384×256 image. Patch values come from the
+BabelColor average measurements (D65) with the sRGB transfer removed,
+giving linear values in [0, 1].
 
 This is intentionally not a real photograph: the crate has no I/O
 and should never depend on external image files.
+
+## Output is display-referred
+
+Kernels operate on linear scene-referred data, but an 8-bit PPM is
+display-referred. Examples 01–05 therefore apply `encode_srgb` — the
+terminal pipeline stage — before writing, via
+`shared::write_ppm_grey_display`. Without it the midtones come out far
+too dark: 18% grey would land on code 48 instead of 120.
+
+Example 06 writes one file each way, on purpose, to show the
+difference.
 
 ---
 

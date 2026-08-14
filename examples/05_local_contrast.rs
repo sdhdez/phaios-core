@@ -14,6 +14,10 @@
 //!   output equals the input. This verifies correctness.
 //! - The neutral ramp (row 4) should show no cross-patch bleeding
 //!   of luminance, only edge enhancement at boundaries.
+//!
+//! The output is passed through `encode_srgb` before it is written
+//! (the terminal pipeline stage), so the PPM is display-referred.
+//! Example 06 shows what skipping that stage looks like.
 
 #[path = "shared/mod.rs"]
 mod shared;
@@ -32,9 +36,9 @@ fn main() {
     let bw = luminance_bw(rgb.view(), LuminanceStandard::Bt709).unwrap();
 
     // 1 — Unprocessed reference
-    shared::write_ppm_grey(
+    shared::write_ppm_grey_display(
         Path::new("examples/output/05_contrast_reference.ppm"),
-        bw.as_slice().unwrap(),
+        bw.view(),
         shared::WIDTH,
         shared::HEIGHT,
     );
@@ -42,9 +46,9 @@ fn main() {
     // 2 — Moderate local contrast
     let params_moderate = GuidedFilterParams::new(8, 0.01);
     let out_moderate = local_contrast(bw.view(), &params_moderate, 0.5).unwrap();
-    shared::write_ppm_grey(
+    shared::write_ppm_grey_display(
         Path::new("examples/output/05_contrast_moderate.ppm"),
-        out_moderate.as_slice().unwrap(),
+        out_moderate.view(),
         shared::WIDTH,
         shared::HEIGHT,
     );
@@ -52,9 +56,9 @@ fn main() {
     // 3 — Aggressive local contrast
     let params_aggressive = GuidedFilterParams::new(16, 0.01);
     let out_aggressive = local_contrast(bw.view(), &params_aggressive, 1.0).unwrap();
-    shared::write_ppm_grey(
+    shared::write_ppm_grey_display(
         Path::new("examples/output/05_contrast_aggressive.ppm"),
-        out_aggressive.as_slice().unwrap(),
+        out_aggressive.view(),
         shared::WIDTH,
         shared::HEIGHT,
     );

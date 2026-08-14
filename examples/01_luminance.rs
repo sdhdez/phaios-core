@@ -10,6 +10,10 @@
 //!   dominance of the BT.709 luminance weights (0.71 vs 0.21).
 //! - Compare with examples 02 and 03 to see how different conversion
 //!   methods change relative tonal values.
+//!
+//! The output is passed through `encode_srgb` before it is written
+//! (the terminal pipeline stage), so the PPM is display-referred.
+//! Example 06 shows what skipping that stage looks like.
 
 #[path = "shared/mod.rs"]
 mod shared;
@@ -26,9 +30,9 @@ fn main() {
 
     let bw = luminance_bw(rgb.view(), LuminanceStandard::Bt709).unwrap();
 
-    shared::write_ppm_grey(
+    shared::write_ppm_grey_display(
         Path::new("examples/output/01_luminance_bt709.ppm"),
-        bw.as_slice().unwrap(),
+        bw.view(),
         shared::WIDTH,
         shared::HEIGHT,
     );
