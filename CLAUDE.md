@@ -14,8 +14,8 @@ Licence: GPLv3. Maintainer: Simon ([github.com/sdhdez](https://github.com/sdhdez
 **v0.1 (implemented):** three B&W conversion kernels (standard
 luminance, channel mixer, coloured-filter simulation), Adams/Archer
 Zone System tone curve, He–Sun–Tang guided filter for local contrast,
-sRGB transfer encoding. All as pure functions on `f32` C-contiguous
-`(H, W, C)` arrays.
+sRGB transfer encoding. All as pure functions on `f32` `(H, W, C)`
+arrays: any input layout, always a C-contiguous result.
 
 **v0.2 (planned):** exposure compensation, HSL-weighted B&W
 (8 hue bands), procedural film grain (explicit seed), split-toning,
@@ -41,15 +41,33 @@ belongs in a consumer.
 - **Determinism.** Any kernel using randomness takes an explicit
   `seed: u64`. No global RNG.
 - **No I/O.** No `std::fs`, no `std::net`, no `println!` outside of
-  examples and tests. Logging via the `log` crate facade, never
-  direct prints.
+  examples and tests. The crate currently emits no diagnostics at
+  all; if a kernel ever needs them, add the `log` facade back with a
+  justification — never direct prints.
 - **No panics across the FFI boundary.** Convert errors via
   `thiserror` + `From` impls into `PyErr`. Internal panics on
   invariant violations (e.g. shape mismatch) are acceptable but
-  must be documented.
+  must be documented. `PanicException` is *not* a safety net: it
+  inherits from `BaseException`, so it slips through a consumer's
+  `except Exception:` and kills the calling thread. Never `expect`
+  on anything the caller controls — including array layout.
+- **Layout-agnostic inputs.** `PyReadonlyArray3` accepts strided,
+  Fortran-order and negative-stride arrays, and a consumer passing
+  `img[::2, ::2]` is normal. Use `ndarray::Zip`, which walks any
+  layout; never `as_slice().expect(...)`.
+- **Deterministic reductions.** f32 addition is not associative, so
+  a seed alone does not give reproducibility. Sort before reducing
+  over a `HashMap`/`HashSet`, and fix the order of any parallel sum
+  (or accumulate in f64). `zone_system` shipped in v0.1 summing in
+  hash order and produced different bytes on every process.
 - **Zero-copy at FFI.** Inputs as `PyReadonlyArray3<f32>`. Outputs
   as `Py<PyArray3<f32>>` allocated once and returned. No
   `.to_owned()` on input arrays.
+- **Watch the scratch footprint.** A 24 MP frame is 100 MB as f32
+  and 200 MB as f64; a kernel holding a handful of full-resolution
+  intermediates reaches gigabytes. Drop each as soon as it is
+  consumed, and prefer mapping during accumulation to materialising
+  a transformed copy.
 - **GIL release.** Long-running kernels release the GIL via
   `py.detach(...)` (PyO3 ≥ 0.22; `allow_threads` was removed).
   Document any kernel that doesn't and why.
@@ -86,9 +104,10 @@ Full derivations and citations live in `docs/architecture.md`.
 
 See `docs/ffi.md` for the full contract. Summary:
 
-- Inputs: `PyReadonlyArray3<f32>`, C-contiguous, shape `(H, W, C)`
-  with C ∈ {1, 3}.
-- Outputs: `Py<PyArray3<f32>>`, same layout.
+- Inputs: `PyReadonlyArray3<f32>`, shape `(H, W, C)` with C ∈ {1, 3},
+  in any memory layout.
+- Outputs: `Py<PyArray3<f32>>`, always freshly allocated and
+  C-contiguous.
 - Param types are `#[pyclass]` Rust structs constructible by name in
   Python. The orchestrator (in `phaios` desktop) builds them once
   per pipeline run.
@@ -122,12 +141,27 @@ Some differ from older tutorials:
   wrong numpy dtype, PyO3 raises `TypeError` or `ValueError` depending
   on the PyO3/numpy version. In `tests/ffi.py`, use
   `pytest.raises(Exception)` rather than a specific subclass.
+- **`__eq__` removes `__hash__`**: defining `__eq__` in `#[pymethods]`
+  makes the class unhashable, matching Python's own rule for
+  value-compared objects. Correct, but it means param objects cannot be
+  used as dict keys.
+- **Validate in the kernel, not the constructor**: a `#[new]` that
+  returns `PyResult` changes the Rust signature, and v0.1 signatures are
+  frozen. Kernels already return `Result`, so parameter checks go there.
+- **Interpreter-dependent tests don't link**: with the
+  `extension-module` feature the test binary has no libpython, so
+  `Python::attach` in a `#[cfg(test)]` block fails. Test error *values*
+  in Rust and the exception *types* from `tests/ffi.py`.
+- **maturin normalises the version**: `0.2.0-dev` in `Cargo.toml` and
+  `pyproject.toml` builds a `0.2.0.dev0` wheel (PEP 440). The CI
+  consistency check compares the raw TOML strings, so keeping both files
+  identical is enough.
 
 ## 5. Code conventions
 
 - **Rust 2024 edition**, stable toolchain.
-- **`cargo fmt`** + **`cargo clippy -- -D warnings`** are blocking in
-  CI.
+- **`cargo fmt`** + **`cargo clippy --all-targets -- -D warnings`**
+  are blocking in CI.
 - **`#![deny(missing_docs)]`** on the public API.
 - **Doc comments on every public item.** For algorithms, cite the
   paper, textbook, or spec by full title and year. Examples:
@@ -163,8 +197,14 @@ Some differ from older tutorials:
   decision.
 
 Current core deps (do not exceed without justification): `pyo3`,
-`numpy`, `ndarray`, `rayon`, `thiserror`, `log`. v0.2 will add
-`rand`, `rand_distr` for the film grain kernel.
+`numpy`, `ndarray`, `rayon`, `thiserror`. v0.2 will add `rand`,
+`rand_distr` for the film grain kernel. `log` was dropped in v0.2-dev:
+it was declared but never used.
+
+Kernels reach rayon through `ndarray::Zip::par_for_each` and
+`ndarray::parallel::prelude`, both enabled by ndarray's `rayon`
+feature; the direct dependency is kept for kernels that need rayon's
+own iterators.
 
 `ndarray` version must match the version pulled in by `numpy` (check
 with `cargo tree | grep ndarray` after adding or updating `numpy`).
@@ -186,7 +226,7 @@ maturin develop --release             # rebuilds and installs into venv
 
 # Test everything
 cargo test
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 pytest                                # Python-side smoke tests on the bindings
 
@@ -199,8 +239,16 @@ maturin build --release               # local
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same checks — `cargo fmt --check`,
-`cargo clippy -- -D warnings`, `cargo test`, `cargo audit`, all 6 examples,
-and `pytest`. Green locally ≈ green in CI.
+`cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo audit`,
+every example (discovered from cargo metadata, not a hardcoded list), and
+`pytest`. Green locally ≈ green in CI.
+
+Run clippy with `--all-targets` locally too: the bare form lints only the
+library, so warnings in examples, benches and tests go unseen until CI.
+
+`cargo audit` is a separate binary (`cargo install cargo-audit`); CI uses
+the `rustsec/audit-check` action instead, so a fresh clone will not have
+the local command until it is installed.
 
 ## 8. Examples (`examples/`)
 
@@ -270,9 +318,9 @@ example as part of the test suite.
 ```
 maturin develop --release             # rebuild + install Python bindings
 cargo test                            # Rust unit + integration tests
-cargo clippy -- -D warnings           # lint
+cargo clippy --all-targets -- -D warnings   # lint (incl. examples/benches)
 cargo fmt --check                     # format check
-cargo audit                           # supply-chain audit
+cargo audit                           # supply-chain audit (needs cargo-audit)
 cargo bench                           # criterion benchmarks (bench profile = optimised; no --release flag)
 cargo run --example zone_system       # run a single example
 pytest                                # Python-side smoke tests

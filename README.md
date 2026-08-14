@@ -27,7 +27,7 @@ no GUI, no hidden state. Any front-end can build on it.
 | `local_contrast` | He–Sun–Tang guided filter for local contrast enhancement |
 | `encode_srgb` | IEC 61966-2-1 sRGB transfer encoding (terminal stage) |
 
-### Roadmap — v0.2
+### Roadmap — v0.2 (in progress)
 
 | Kernel | Description |
 |--------|-------------|
@@ -116,27 +116,32 @@ Corresponding source is available at the repository URL above
 
 ---
 
-## Publishing v0.1.0
+## Releasing
 
-The release workflow (`.github/workflows/release.yml`) builds wheels for
-manylinux_2_17, Windows x86_64, and macOS arm64, then publishes
-to PyPI and crates.io. Before tagging, you need:
+Version history is in [CHANGELOG.md](CHANGELOG.md).
 
-**crates.io**
-1. `cargo login` locally, or add `CARGO_REGISTRY_TOKEN` to the GitHub
-   repo's *Settings → Secrets → Actions*.
+The release workflow (`.github/workflows/release.yml`) fires on any
+`v*` tag. It first runs a `verify` job — the tag must match the version
+in both `Cargo.toml` and `pyproject.toml`, and `fmt`, `clippy` and the
+test suite must pass on the tagged commit — and only then builds wheels
+for manylinux_2_17, Windows x86_64 and macOS arm64 and publishes them.
+Nothing is built until `verify` is green, because neither PyPI nor
+crates.io allows a version to be re-uploaded.
 
-**PyPI (OIDC trusted publishing — no token stored)**
-1. Create the `phaios-core` project on PyPI (first upload can use
-   `maturin publish` locally with an API token).
-2. In the PyPI project: *Manage → Publishing → Add a new publisher*:
-   - Repository owner: `sdhdez`
-   - Repository name: `phaios-core`
-   - Workflow filename: `release.yml`
-   - Environment name: `pypi`
-
-**Tagging**
 ```sh
-git tag v0.1.0
-git push origin v0.1.0   # triggers release.yml
+# Bump Cargo.toml, pyproject.toml and Cargo.lock in one commit, then:
+git tag v0.2.0
+git push origin v0.2.0   # triggers release.yml
 ```
+
+One-time setup, already in place for this repository:
+
+**crates.io** — `CARGO_REGISTRY_TOKEN` in *Settings → Secrets →
+Actions*. The token needs both `publish-new` and `publish-update`
+scopes; one missing `publish-update` returns 403 on every version after
+the first.
+
+**PyPI** — OIDC trusted publishing, no stored token. In the PyPI
+project: *Manage → Publishing → Add a new publisher*, with owner
+`sdhdez`, repository `phaios-core`, workflow `release.yml`, environment
+`pypi`.

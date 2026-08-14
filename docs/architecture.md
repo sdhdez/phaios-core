@@ -14,8 +14,9 @@ Consumer delivers:
         │
         ▼
   ┌─────────────┐
-  │  exposure   │  × 2^stops                           src/exposure.rs
-  └─────────────┘
+  │  exposure   │  × 2^stops    (planned, v0.2)        src/exposure.rs
+  └─────────────┘  not implemented — consumers apply
+        │          their own exposure for now
         │
         ▼
   ┌─────────────┐
@@ -54,6 +55,10 @@ local-contrast (which operate on single-channel luminance). Exposure
 must precede B&W conversion. All other orderings within those
 constraints are mathematically equivalent, though the canonical order
 above is recommended.
+
+**Layout.** Every kernel accepts any array layout — C-contiguous,
+Fortran-order, strided views, negative strides — and always returns a
+freshly allocated C-contiguous array. See `docs/ffi.md` §1.
 
 ---
 
@@ -269,16 +274,31 @@ params = phaios_core.ZoneParams({5: +1.0, 7: -0.5})
 # Zone V brightened by 1 stop; Zone VII darkened by 0.5 stops.
 ```
 
-The zone index is an integer 0..=10. The offset is a float in the range
-[−3, +3] stops (clamped by the kernel). Omitted zones default to 0.
+The zone index is an integer 0..=10; anything outside that range is
+rejected with a `ValueError` (`PhaiosError::Parameter`). An index of 99
+would otherwise be a silent no-op — its Gaussian is zero everywhere in
+range — which hides what is almost always a caller bug.
+
+The offset is a number of stops. [−3, +3] is the useful range, but the
+kernel does **not** clamp: an offset of +10 really does multiply that
+zone by 2¹⁰. Only non-finite offsets are rejected. Omitted zones default
+to 0.
 
 ### Numerical notes
 
-- `log₂` is computed as `f32::ln(x) / std::f32::consts::LN_2`.
+- The zone position is computed as `(L / 0.18).log2()` — one division
+  and one `log2`, rather than two logarithms.
 - The Gaussian is evaluated for each zone index in the map; zones not
   in the map contribute 0.
 - Input values ≤ 0 are clamped to a small positive epsilon before
-  the log to avoid −∞.
+  the log to avoid −∞. A negative input keeps its sign in the output:
+  the multiplier is applied to the original value, not the clamped one.
+- **The zone offsets are summed in ascending zone order.** f32 addition
+  is not associative, so summing them in `HashMap` order would make the
+  output depend on the per-process hash seed — the same image and the
+  same parameters would produce different bytes on every run. Any future
+  kernel that reduces over an unordered collection must impose an order
+  the same way.
 
 ---
 
@@ -358,6 +378,46 @@ windows), then the coefficient images a and b are box-filtered to
 average overlapping windows. All box filters use the same integral-
 image trick.
 
+`var_k(L)` is clamped at zero. The subtraction above cancels two nearly
+equal quantities, and the rounding error of the tables grows with both
+image area and pixel magnitude; where it exceeds the true variance the
+result goes slightly negative, which would make `a` negative (the local
+linear model inverted) or greater than one (over-driven). Zero variance
+means "no measurable structure here", whose correct limit is `a = 0`,
+i.e. pure smoothing.
+
+### Precision and memory
+
+The tables are accumulated in f64. A window statistic is the difference
+of two large partial sums — at 24 MP the bottom-right entry of the L²
+table is of order 10⁷ — and an f32 table would lose exactly the low bits
+the variance is computed from.
+
+That costs 8 bytes per pixel per table, and the algorithm needs four
+tables (L, L², a, b), so the order of operations matters as much as the
+formula. The tables of L and L² are dropped as soon as a and b exist,
+and each coefficient array is dropped as soon as its own table is built;
+the L² table is accumulated through a mapping closure rather than from a
+materialised squared copy of the image. Peak scratch is about 24 bytes
+per pixel — roughly 600 MB for a 24 MP frame, against 1.3 GB when all
+the intermediates were left live.
+
+### Parallelism
+
+Each table is built in two passes, both parallel:
+
+1. **Horizontal prefix sums.** Rows are independent, so they are summed
+   in parallel.
+2. **Vertical prefix sums.** Columns are independent. Rather than one
+   task per column — which would stride across the full row pitch on
+   every step — the table is split into blocks of 512 columns and each
+   block is accumulated row by row, keeping the traversal row-major and
+   cache-friendly.
+
+The per-pixel coefficient and output passes are parallel over pixels.
+A single-threaded cell-by-cell table build was the dominant cost of the
+kernel before this split: 452 ms of the original 24 MP measurement.
+
 ### Local contrast output
 
 ```
@@ -373,9 +433,9 @@ Subtracting it from L gives the high-frequency (detail) component.
 
 | Parameter | Type | Range | Meaning |
 |-----------|------|-------|---------|
-| `radius` | u32 | 1..512 | Window half-size in pixels |
-| `eps` | f32 | > 0 | Regularisation; try 0.01 |
-| `strength` | f32 | 0..2 | Detail amplification |
+| `radius` | u32 | any; 1..512 useful | Window half-size in pixels. 0 makes the filter the identity; a radius larger than the image is legal, since windows clamp to the image extent, and makes every window the whole image |
+| `eps` | f32 | ≥ 0, finite | Regularisation; try 0.01. Negative values are rejected: they make `a = var/(var+ε)` singular wherever the local variance approaches −ε |
+| `strength` | f32 | finite; 0..2 useful | Detail amplification. Negative values smooth instead of sharpening |
 
 ---
 
@@ -392,30 +452,39 @@ f(x) = 12.92 · x                      if x ≤ 0.0031308
 f(x) = 1.055 · x^(1/2.4) − 0.055     if x > 0.0031308
 ```
 
-The clamping to [0, 1] is applied before encoding; values outside this
-range are clamped, not reflected.
+This kernel does **not** clamp. Values outside [0, 1] pass through the
+transfer as they are: a negative input takes the linear branch and stays
+negative (`encode_srgb(−0.05)` = −0.646), and a value above 1 encodes
+above 1. Clamping is the caller's decision, because whether out-of-range
+data is an error or headroom depends on what the consumer is doing with
+it — the kernel cannot know.
 
-### C¹ continuity at the threshold
+Negative inputs are why the branch is written `x ≤ threshold` rather
+than as a `powf` with a sign fix-up: `(−0.05)^(1/2.4)` is NaN.
+
+### Continuity at the threshold
 
 At x = 0.0031308:
 
-**Linear branch:** 12.92 · 0.0031308 = 0.04045 (value)
-**Derivative:** 12.92 (constant)
+| | Value | Derivative |
+|---|---|---|
+| **Linear branch** `12.92·x` | 0.040449936 | 12.920 |
+| **Power branch** `1.055·x^(1/2.4) − 0.055` | 0.040449908 | 12.703 |
 
-**Power branch:** 1.055 · 0.0031308^(1/2.4) − 0.055
-= 1.055 · 0.0627... − 0.055
-≈ 0.0661... − 0.055
-≈ 0.04045 ✓ (values match to 1e-5)
+The values agree to 2.9 × 10⁻⁸, so the function is C⁰ — visually and
+numerically seamless.
 
-**Power branch derivative:** 1.055 · (1/2.4) · 0.0031308^(1/2.4 - 1)
-= 1.055 · 0.4167 · 0.0031308^(-0.5833)
-= 0.4396 · 44.7...
-≈ 12.92 ✓ (derivatives match to 1e-4)
+It is **not** C¹. The derivatives differ by 1.68%. Making the junction
+C¹ as well requires the threshold to satisfy `φ·x₀ = a/1.4`, i.e.
+x₀ = 0.055/(1.4 · 12.92) = 0.0030407, and IEC 61966-2-1 specifies
+0.0031308 instead. The kink is far below the visible-difference
+threshold at that luminance, which is why the standard tolerates it, but
+anything differentiating the transfer (a gradient-domain operator, an
+analytic inverse used in optimisation) should know the corner is there.
 
-The piecewise function is C¹ (continuous with continuous first
-derivative) at the junction. The slight discrepancy from the exact
-12.92 at the power-branch derivative is within the tolerance of the
-IEC specification (which rounds the threshold and coefficients).
+`src/encode.rs` asserts the C⁰ property by evaluating the kernel on both
+sides of the threshold, rather than by re-deriving the formula in the
+test.
 
 ### Why not a simple power law (γ = 2.2)?
 
@@ -443,24 +512,33 @@ let encoded = if x <= 0.0031308_f32 {
 
 ---
 
-## 7. Performance targets (v0.1)
+## 7. Performance (v0.2-dev)
 
 Measured with `cargo bench` (criterion, bench profile) on a synthetic
-4323 × 5765 (≈ 24 MP) `f32` image. Not CI gates — informational only.
+4323 × 5765 (≈ 24 MP) `f32` image filled with deterministic
+pseudo-random values. Not CI gates — informational only.
 
 | Kernel | Measured mean | Benchmark id | Notes |
 |--------|--------------|--------------|-------|
-| `luminance_bw` | **10.1 ms** | `luminance_bw/24MP/BT709` | Memory-bandwidth bound |
-| `channel_mixer_bw` | **10.1 ms** | `channel_mixer_bw/24MP` | Same bandwidth pattern |
-| `color_filter_bw` | **10.1 ms** | `color_filter_bw/24MP/Red25A` | Combined dot product |
-| `zone_system` | **14.3 ms** | `zone_system/24MP/1-zone-offset` | exp + ln per pixel |
-| `local_contrast` | **452 ms** | `local_contrast/24MP/r=8` | 4 sequential SAT builds |
-| `encode_srgb` | **8.1 ms** | `encode_srgb/24MP` | powf per pixel (grey input) |
+| `luminance_bw` | **15.0 ms** | `luminance_bw/24MP/BT709` | Memory-bandwidth bound |
+| `channel_mixer_bw` | **15.0 ms** | `channel_mixer_bw/24MP` | Same bandwidth pattern |
+| `color_filter_bw` | **14.9 ms** | `color_filter_bw/24MP/Red25A` | Combined dot product |
+| `zone_system` | **13.0 ms** | `zone_system/24MP/1-zone-offset` | `exp` + `log2` per pixel |
+| `local_contrast` | **177.8 ms** | `local_contrast/24MP/r=8` | 4 parallel SAT builds |
+| `encode_srgb` | **10.5 ms** | `encode_srgb/24MP` | `powf` per pixel |
 
 Machine: AMD Ryzen 9 9950X 16-Core (32 threads), Linux, `cargo bench`
 (optimised profile, rayon parallelism enabled).
 
-`local_contrast` is SAT-dominated — the four sequential prefix-sum passes
-each touch every pixel once, setting a ~95 MB/pass memory-bandwidth floor.
-The parallel coefficient computation adds little overhead by comparison.
-Future work: parallelise SAT rows independently to reduce sequential cost.
+`local_contrast` remains SAT-dominated: four prefix-sum passes each
+touch every pixel once, setting a memory-bandwidth floor of roughly
+200 MB per f64 table. Making those passes parallel (§5) took the kernel
+from 452 ms to 178 ms, and peak scratch from 1.3 GB to ~600 MB. Runtime
+is independent of radius, as the O(1) formulation requires: r = 32
+measures the same 178 ms as r = 8.
+
+Comparisons with numbers published before v0.2 need care: benchmarks up
+to v0.1.1 ran on a *constant* image, which is the cheapest possible
+input for `encode_srgb` (one branch), `zone_system` (one zone position)
+and `local_contrast` (zero variance everywhere). Against the same flat
+input, the three B&W kernels measured 10.1 ms rather than 15 ms.

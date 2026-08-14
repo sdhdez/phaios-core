@@ -10,19 +10,28 @@ modifying any `#[pyfunction]` or `#[pyclass]` item.
 
 All arrays at the FFI boundary obey a single convention:
 
-| Property | Value |
-|----------|-------|
-| dtype | `numpy.float32` |
-| memory order | C-contiguous (row-major) |
-| shape | `(H, W, C)` where C ∈ {1, 3} |
-| value range | caller's responsibility; kernels do not clamp |
-| linearity | **scene-referred linear** except after `encode_srgb` |
+| Property | Input | Output |
+|----------|-------|--------|
+| dtype | `numpy.float32` | `numpy.float32` |
+| memory order | **any** — C, Fortran, strided, negative strides | always C-contiguous |
+| shape | `(H, W, C)` | `(H, W, C)` |
+| value range | caller's responsibility; kernels do not clamp | unclamped |
+| linearity | **scene-referred linear** except after `encode_srgb` | |
 
-C = 1 for single-channel (luminance) arrays; C = 3 for RGB. No other
-channel counts are accepted — kernels raise `ValueError` on mismatch.
+**Layout.** Kernels accept whatever numpy hands them and always allocate
+a fresh C-contiguous result. This is not a convenience: `img[::2, ::2]`
+— a downsampled preview — is one of the most ordinary arrays a consumer
+can produce, and two kernels used to panic on it (see §4).
 
-The height H and width W are unconstrained positive integers. Zero-size
-arrays are rejected.
+**Channel count.** C = 1 for single-channel (luminance) arrays, C = 3
+for RGB. The B&W kernels require C = 3 and the tone and contrast kernels
+require C = 1; both raise `ValueError` otherwise. `encode_srgb` is the
+exception — the transfer is a scalar function applied element-wise, so
+it accepts any channel count.
+
+**Size.** H and W are unconstrained. Zero-size arrays are accepted and
+return an empty array of the same shape; treating "no pixels" as an
+error would push a special case onto every caller.
 
 ---
 
@@ -50,8 +59,14 @@ Caller guarantees:
 
 - The input array must be alive for the duration of the call (Python
   reference counting ensures this for ordinary calls).
-- The input array must be C-contiguous. Pass `.ascontiguousarray()` from
-  Python if unsure.
+- The dtype must be `float32`. Anything else is a `TypeError` or
+  `ValueError` from PyO3 before the kernel runs.
+
+The caller does *not* have to make the array contiguous. Kernels use
+`ndarray::Zip`, which walks any layout; `.ascontiguousarray()` before a
+call only adds a copy. Note that a kernel reading a strided input is
+slower than one reading a contiguous input, but correctness never
+depends on it.
 
 ---
 
@@ -95,10 +110,24 @@ result = phaios_core.local_contrast(img, params, strength=0.3)
 Every param struct must:
 
 - Derive `Clone` (the pipeline may clone params for preview rendering).
-- Expose all fields with `#[pyo3(get, set)]`.
+- Expose all fields for reading — `#[pyo3(get, set)]` for plain fields,
+  or a `#[getter]` returning a copy for fields whose Rust type needs
+  converting (`ZoneParams.offsets` returns a dict). Consumers serialise
+  these into sidecar and preset files; a write-only param object cannot
+  round-trip.
 - Provide a `#[new]` constructor with positional arguments matching
   the field order.
+- Implement `__eq__`, so consumers can compare parameter objects to
+  decide whether a cached render is still valid. Note PyO3 makes a class
+  unhashable as soon as `__eq__` is defined — correct for value-compared
+  objects, but it means params cannot be dict keys.
+- Implement `__repr__`.
 - Be registered on the module: `m.add_class::<GuidedFilterParams>()?;`
+
+**Validation belongs in the kernel, not the constructor.** Constructors
+stay infallible so their signatures remain stable (CLAUDE.md §2); the
+kernels already return `Result`, so that is where a zone index outside
+0..=10 or a negative `eps` is rejected.
 
 ---
 
@@ -115,20 +144,39 @@ PhaiosError (thiserror)
     → Python raises ValueError (or the appropriate subclass)
 ```
 
-The `From` impl lives in `src/error.rs`. Variant-to-exception mapping:
+The `From` impl lives in `src/error.rs` and matches exhaustively, so a
+new variant cannot be added without deciding what it becomes in Python.
+Variant-to-exception mapping:
 
-| PhaiosError variant | Python exception |
-|--------------------|-----------------|
-| `Shape(_)` | `ValueError` |
+| PhaiosError variant | Python exception | Raised for |
+|--------------------|-----------------|------------|
+| `Shape(_)` | `ValueError` | wrong channel count or dimensionality |
+| `Parameter(_)` | `ValueError` | a parameter outside its domain — zone index not in 0..=10, negative `eps`, any non-finite float |
 
 Add new variants as needed; always map to the most specific Python
 exception class.
 
-Internal Rust panics (e.g. index-out-of-bounds on a checked invariant)
-are acceptable within the Rust side but must be documented on the
-function. PyO3 0.17+ converts Rust panics into `PanicException` at the
-FFI boundary rather than aborting the process, but do not rely on this:
-panics in kernel code indicate bugs, not user errors.
+### Never panic on caller input
+
+PyO3 converts a Rust panic into `pyo3_runtime.PanicException` rather
+than aborting the process — but that is not a safety net, because
+**`PanicException` inherits from `BaseException`, not `Exception`**. It
+passes straight through a consumer's `except Exception:` handler, so in
+a GUI it does not surface as a failed operation; it kills the worker
+thread.
+
+Two v0.1 kernels called `as_slice().expect("... must be C-contiguous")`
+and so panicked on any strided input. Both now accept any layout. The
+rule this leaves:
+
+- No kernel may panic on anything the caller can pass. Invalid input is
+  a `PhaiosError`, never an `expect`.
+- `expect` is acceptable only for invariants the kernel itself
+  establishes (a freshly allocated array having the shape it was just
+  allocated with), and must be documented on the function.
+- Test the boundary, not just the happy path: `tests/ffi.py` calls every
+  kernel with C-contiguous, row-strided, column-strided, Fortran-order
+  and reversed inputs.
 
 ---
 
@@ -163,10 +211,16 @@ tile-based kernels. Do not spawn rayon work outside `detach`.
 
 ---
 
-## 6. RNG determinism (reserved for v0.2)
+## 6. Determinism
 
-v0.1 contains no kernels with randomness. When grain is added in v0.2,
-the pattern is:
+Two calls with the same input, the same parameters and the same seed
+must produce **bit-identical** output — in the same process, in another
+process, and on another machine with the same target.
+
+### Explicit seeds
+
+No global RNG. No thread-local RNG. Every kernel that uses randomness
+takes `seed: u64` as an explicit parameter:
 
 ```rust
 /// `seed`: explicit RNG seed for deterministic output. Two calls with
@@ -174,8 +228,27 @@ the pattern is:
 pub fn film_grain(img: ..., params: GrainParams, seed: u64) -> ...
 ```
 
-No global RNG. No thread-local RNG. Every random kernel takes `seed: u64`
-as an explicit parameter. This rule is load-bearing for reproducibility.
+### Ordered reductions
+
+A seed is not sufficient. f32 addition is not associative, so any
+reduction over an unordered collection has to be given an order.
+
+`zone_system` shipped in v0.1 summing its Gaussian terms in `HashMap`
+iteration order, which depends on the per-instance `RandomState` seed.
+The result: eight processes given identical input produced eight
+different images — 12.8% of pixels off by 1 ULP, and 23 in 65536
+differing by one code after 16-bit quantisation. Small enough to be
+invisible, large enough to break checksums and reproducible renders.
+
+So:
+
+- Sort before reducing over a `HashMap`, `HashSet` or anything else
+  without a defined order.
+- Fix the reduction order when parallelising a sum — rayon's `sum()`
+  over a parallel iterator does not guarantee one. Where an order cannot
+  be fixed cheaply, accumulate in f64 so the result is insensitive to it.
+- Assert it: a determinism test comparing repeated calls belongs beside
+  any kernel with a seed or an unordered reduction.
 
 ---
 
