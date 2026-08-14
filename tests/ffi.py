@@ -201,3 +201,61 @@ def test_encode_srgb_wrong_dtype():
     bad = np.ones((H, W, 1), dtype=np.float64)
     with pytest.raises(Exception):
         ph.encode_srgb(bad)
+
+
+# ── Memory layout (regression: PanicException on strided input) ───────────────
+#
+# `zone_system` and `encode_srgb` used to call `as_slice().expect(...)`, which
+# panicked on any non-C-contiguous input. PyO3 turns a Rust panic into
+# `pyo3_runtime.PanicException`, which inherits from BaseException — NOT from
+# Exception — so it slips straight through a caller's `except Exception:` and
+# can take down a GUI worker thread. Downsampled previews (`img[::2, ::2]`) hit
+# this on the most ordinary of call sites.
+
+
+def _layout_variants(arr):
+    """Yield (label, array) pairs covering the layouts a caller may pass."""
+    yield "c_contiguous", arr
+    yield "strided_rows", arr[::2]
+    yield "strided_cols", arr[:, ::2]
+    yield "fortran", np.asfortranarray(arr)
+    yield "reversed", arr[::-1]
+
+
+@pytest.mark.parametrize("label", [v[0] for v in _layout_variants(np.zeros((4, 4, 1), np.float32))])
+def test_all_kernels_accept_any_layout(label, rgb_f32, grey_f32):
+    """No kernel may panic on a non-C-contiguous input, whatever its layout."""
+    rgb = dict(_layout_variants(rgb_f32))[label]
+    grey = dict(_layout_variants(grey_f32))[label]
+
+    for out in (
+        ph.luminance_bw(rgb),
+        ph.channel_mixer_bw(rgb, 0.3, 0.59, 0.11),
+        ph.color_filter_bw(rgb, ph.ColorFilter.Yellow8K2),
+    ):
+        assert out.shape == rgb.shape[:2] + (1,)
+        assert out.flags["C_CONTIGUOUS"], "output must be C-contiguous"
+
+    for out in (
+        ph.zone_system(grey, ph.ZoneParams({5: 0.5})),
+        ph.local_contrast(grey, ph.GuidedFilterParams(4, 0.01), 0.5),
+        ph.encode_srgb(grey),
+    ):
+        assert out.shape == grey.shape
+        assert out.flags["C_CONTIGUOUS"], "output must be C-contiguous"
+
+
+def test_strided_matches_contiguous_copy(grey_f32):
+    """A strided view and its contiguous copy must give identical results."""
+    view = grey_f32[::2, ::3]
+    copy = np.ascontiguousarray(view)
+    assert not view.flags["C_CONTIGUOUS"]
+
+    params = ph.ZoneParams({3: -0.4, 6: 0.8})
+    np.testing.assert_array_equal(ph.zone_system(view, params), ph.zone_system(copy, params))
+    np.testing.assert_array_equal(ph.encode_srgb(view), ph.encode_srgb(copy))
+
+    gp = ph.GuidedFilterParams(3, 0.01)
+    np.testing.assert_array_equal(
+        ph.local_contrast(view, gp, 0.7), ph.local_contrast(copy, gp, 0.7)
+    )

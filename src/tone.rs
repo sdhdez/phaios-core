@@ -21,11 +21,9 @@
 //! - Phil Davis, *Beyond the Zone System*, 4th ed., Focal Press (1999).
 
 use std::collections::HashMap;
-use std::f32::consts::LN_2;
 
 use ndarray::{Array3, ArrayView3};
 use pyo3::{pyclass, pymethods};
-use rayon::prelude::*;
 
 use crate::error::PhaiosError;
 
@@ -85,7 +83,9 @@ const L_EPSILON: f32 = 1e-10;
 /// at 18% reflectance. Offsets are blended via a Gaussian in
 /// zone-position space (σ = 0.8 zones, Davis 1999).
 ///
-/// Input shape: `(H, W, 1)` — linear luminance.
+/// Input shape: `(H, W, 1)` — linear luminance. Any memory layout is
+/// accepted (strided views and Fortran-order arrays included); the
+/// output is always freshly allocated and C-contiguous.
 /// Output shape: `(H, W, 1)` — tone-adjusted luminance.
 ///
 /// Reference: Ansel Adams, *The Negative*, Little, Brown (1948), ch. 5;
@@ -102,8 +102,6 @@ pub fn zone_system(img: ArrayView3<f32>, params: &ZoneParams) -> Result<Array3<f
         )));
     }
 
-    // Build a sorted list of (zone_float, offset) pairs for iteration.
-    // Sorting by zone index ensures deterministic Gaussian summation.
     let offsets: Vec<(f32, f32)> = params
         .offsets
         .iter()
@@ -111,35 +109,27 @@ pub fn zone_system(img: ArrayView3<f32>, params: &ZoneParams) -> Result<Array3<f
         .collect();
 
     let (h, w, _) = img.dim();
-    let in_slice = img
-        .as_slice()
-        .expect("zone_system: input must be C-contiguous");
+    let mut out = Array3::<f32>::zeros((h, w, 1));
 
-    let mut out_data: Vec<f32> = vec![0.0_f32; h * w];
+    // No offsets → identity. Hoisted out of the pixel loop.
+    if offsets.is_empty() {
+        out.assign(&img);
+        return Ok(out);
+    }
 
-    out_data
-        .par_iter_mut()
-        .zip(in_slice.par_iter())
-        .for_each(|(o, &l)| {
-            if offsets.is_empty() {
-                *o = l;
-                return;
-            }
-            let l_pos = l.max(L_EPSILON);
-            let zone_pos = 5.0 + l_pos.ln() / LN_2 - MIDDLE_GREY.ln() / LN_2;
-            let total: f32 = offsets
-                .iter()
-                .map(|(z, off)| {
-                    let d = zone_pos - z;
-                    off * (-d * d / TWO_SIGMA_SQ).exp()
-                })
-                .sum();
-            *o = l * 2.0_f32.powf(total);
-        });
+    ndarray::Zip::from(&mut out).and(img).par_for_each(|o, &l| {
+        let l_pos = l.max(L_EPSILON);
+        let zone_pos = 5.0 + (l_pos / MIDDLE_GREY).log2();
+        let total: f32 = offsets
+            .iter()
+            .map(|(z, off)| {
+                let d = zone_pos - z;
+                off * (-d * d / TWO_SIGMA_SQ).exp()
+            })
+            .sum();
+        *o = l * 2.0_f32.powf(total);
+    });
 
-    // Safety: out_data has exactly h*w elements matching the target shape.
-    let out = Array3::from_shape_vec((h, w, 1), out_data)
-        .expect("zone_system: shape mismatch (internal error)");
     Ok(out)
 }
 
@@ -184,5 +174,41 @@ mod tests {
     fn shape_error_on_rgb_input() {
         let img = Array3::<f32>::zeros((4, 4, 3));
         assert!(zone_system(img.view(), &ZoneParams::default()).is_err());
+    }
+
+    #[test]
+    fn accepts_non_contiguous_input() {
+        // Regression: the kernel used to call `as_slice().expect(...)`,
+        // which panicked on any strided view. Reaching Python that panic
+        // became `pyo3_runtime.PanicException`, which does not inherit
+        // from `Exception` and so escapes ordinary caller error handling.
+        let img =
+            Array3::<f32>::from_shape_fn((8, 4, 1), |(y, x, _)| (y * 4 + x) as f32 / 32.0 + 0.01);
+        let strided = img.slice(ndarray::s![..;2, .., ..]);
+        assert!(
+            !strided.is_standard_layout(),
+            "test setup: view should not be C-contiguous"
+        );
+
+        let mut offsets = HashMap::new();
+        offsets.insert(5_i32, 0.5_f32);
+        let params = ZoneParams::new(offsets);
+
+        let out = zone_system(strided, &params).unwrap();
+        assert_eq!(out.dim(), (4, 4, 1));
+        assert!(out.is_standard_layout(), "output must be C-contiguous");
+
+        // Must agree bit-for-bit with the same data laid out contiguously.
+        let expected = zone_system(strided.to_owned().view(), &params).unwrap();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn identity_path_accepts_non_contiguous_input() {
+        // The empty-offsets fast path takes a different code branch.
+        let img = Array3::<f32>::from_shape_fn((6, 3, 1), |(y, x, _)| (y + x) as f32);
+        let strided = img.slice(ndarray::s![..;2, .., ..]);
+        let out = zone_system(strided, &ZoneParams::default()).unwrap();
+        assert_eq!(out, strided.to_owned());
     }
 }

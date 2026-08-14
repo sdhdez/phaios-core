@@ -127,8 +127,9 @@ pub fn color_filter_bw(
 /// Parameters
 /// ----------
 /// img : numpy.ndarray
-///     Input array, shape ``(H, W, 1)``, dtype ``float32``, C-contiguous,
-///     linear luminance (output of a B&W conversion kernel).
+///     Input array, shape ``(H, W, 1)``, dtype ``float32``, linear
+///     luminance (output of a B&W conversion kernel). Any memory layout
+///     is accepted; the returned array is always C-contiguous.
 /// params : ZoneParams
 ///     Zone offsets mapping zone index 0..10 → stop offset.
 ///
@@ -204,17 +205,14 @@ pub fn local_contrast_py(
 /// Parameters
 /// ----------
 /// img : numpy.ndarray
-///     Input array, shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+///     Input array, shape ``(H, W, C)``, dtype ``float32``. Any channel
+///     count and any memory layout are accepted; the returned array is
+///     always C-contiguous.
 ///
 /// Returns
 /// -------
 /// numpy.ndarray
 ///     Shape ``(H, W, C)``, dtype ``float32``, display-referred sRGB.
-///
-/// Raises
-/// ------
-/// ValueError
-///     If ``img`` does not have exactly 3 dimensions.
 #[pyfunction]
 pub fn encode_srgb(py: Python<'_>, img: PyReadonlyArray3<f32>) -> PyResult<Py<PyArray3<f32>>> {
     let view = img.as_array();
