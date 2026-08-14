@@ -30,16 +30,15 @@ numpy = "0.28"
 ndarray = { version = "0.17", features = ["rayon"] }
 
 # licence: MIT OR Apache-2.0  source: https://github.com/rayon-rs/rayon
-# Data parallelism via work-stealing thread pool; used for tile-based kernels.
+# Data parallelism via work-stealing thread pool. Kernels reach it through
+# `ndarray::Zip::par_for_each` and `ndarray::parallel::prelude`, which the
+# `rayon` feature of ndarray enables; the direct dependency is kept because
+# v0.2's grain kernel generates noise tiles with rayon's own iterators.
 rayon = "1"
 
 # licence: MIT OR Apache-2.0  source: https://github.com/dtolnay/thiserror
 # Derive macro for std::error::Error; used to define PhaiosError.
 thiserror = "2"
-
-# licence: MIT OR Apache-2.0  source: https://github.com/rust-lang/log
-# Logging facade; no concrete logger is chosen here (consumer's concern).
-log = "0.4"
 
 [dev-dependencies]
 # licence: MIT OR Apache-2.0  source: https://github.com/bheisler/criterion.rs

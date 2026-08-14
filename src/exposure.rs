@@ -5,4 +5,7 @@
 //! of the pipeline after the consumer delivers scene-referred linear
 //! f32 RGB data.
 //!
-//! Placeholder — implementation deferred to v0.1 kernel pass.
+//! Not yet implemented — planned for v0.2 (see `CHANGELOG.md`). The
+//! module exists so the pipeline documented in `docs/architecture.md`
+//! §1 has a home for it; it exports nothing today, and consumers apply
+//! their own exposure in the meantime.
