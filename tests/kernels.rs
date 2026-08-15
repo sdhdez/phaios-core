@@ -189,6 +189,133 @@ fn zone_v_plus_one_stop() {
     );
 }
 
+// ── Parametric tone curve tests ───────────────────────────────────────────────
+
+use phaios_core::tone::{ToneCurveParams, tone_curve};
+
+/// The curve must be monotonic, so no two tones ever swap order.
+///
+/// This is the property that justified choosing ASC CDL over a spline:
+/// it holds for any positive slope and power, with nothing to constrain.
+#[test]
+fn tone_curve_never_inverts_tonal_order() {
+    let n = 2048;
+    let ramp = ndarray::Array3::from_shape_fn((1, n, 1), |(_, x, _)| x as f32 / n as f32 * 4.0);
+
+    for (slope, offset, power) in [
+        (1.0_f32, 0.0_f32, 1.0_f32),
+        (2.0, -0.3, 0.5),
+        (0.4, 0.2, 3.0),
+        (1.15, 0.01, 0.85),
+    ] {
+        let out = tone_curve(ramp.view(), &ToneCurveParams::new(slope, offset, power)).unwrap();
+        let mut previous = f32::NEG_INFINITY;
+        for &v in out.iter() {
+            assert!(
+                v >= previous,
+                "slope={slope} offset={offset} power={power}: {previous} then {v}"
+            );
+            assert!(v.is_finite(), "produced {v}");
+            previous = v;
+        }
+    }
+}
+
+// ── Film grain tests ──────────────────────────────────────────────────────────
+
+use phaios_core::film_grain::{GrainParams, film_grain};
+
+/// Same seed, same bytes — the guarantee the kernel is built around.
+///
+/// Checked across thread pools, since the reason for hashing coordinates
+/// rather than running a generator is that the schedule cannot matter.
+#[test]
+fn grain_is_reproducible_across_thread_counts() {
+    let img = ndarray::Array3::from_elem((96, 96, 1), 0.5_f32);
+    let params = GrainParams::new(0.35, 2.0, 20_260_815);
+
+    let reference = film_grain(img.view(), &params).unwrap();
+    for threads in [1, 2, 5, 16] {
+        let out = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| film_grain(img.view(), &params).unwrap());
+        assert_eq!(out, reference, "grain changed on {threads} threads");
+    }
+}
+
+/// Grain must vanish where the emulsion has no density and where it is
+/// saturated: `4·L·(1−L)` is zero at both ends.
+#[test]
+fn grain_envelope_is_silent_at_both_ends() {
+    for level in [0.0_f32, 1.0] {
+        let img = ndarray::Array3::from_elem((32, 32, 1), level);
+        let out = film_grain(img.view(), &GrainParams::new(1.0, 2.0, 3)).unwrap();
+        for &v in out.iter() {
+            assert!((v - level).abs() < 1e-6, "grain at L = {level}: {v}");
+        }
+    }
+}
+
+// ── Split-toning tests ────────────────────────────────────────────────────────
+
+use phaios_core::split_toning::{SplitToningParams, split_toning};
+
+/// An untinted pass must return the input as a neutral RGB triple.
+///
+/// Everything a tint does is measured against this baseline, so a drift
+/// here would be a colour cast in every toned image.
+#[test]
+fn untinted_split_toning_round_trips_to_neutral() {
+    let img = ndarray::Array3::from_shape_fn((16, 16, 1), |(y, x, _)| (y * 16 + x) as f32 / 256.0);
+    let out = split_toning(img.view(), &SplitToningParams::default()).unwrap();
+    assert_eq!(out.dim(), (16, 16, 3));
+    for y in 0..16 {
+        for x in 0..16 {
+            for c in 0..3 {
+                let (got, expected) = (out[[y, x, c]], img[[y, x, 0]]);
+                assert!(
+                    (got - expected).abs() < 1e-5,
+                    "({y}, {x}, {c}): {got} vs {expected}"
+                );
+            }
+        }
+    }
+}
+
+// ── Vignette tests ────────────────────────────────────────────────────────────
+
+use phaios_core::vignette::{VignetteParams, vignette};
+
+/// The same parameters must give the same picture at any resolution.
+///
+/// A consumer renders a small preview and then the full frame; if these
+/// disagreed, the preview would be lying.
+#[test]
+fn vignette_is_resolution_independent() {
+    let params = VignetteParams::new(0.6, 0.8, 0.2);
+    let small = vignette(
+        ndarray::Array3::from_elem((64, 64, 1), 1.0_f32).view(),
+        &params,
+    )
+    .unwrap();
+    let large = vignette(
+        ndarray::Array3::from_elem((512, 512, 1), 1.0_f32).view(),
+        &params,
+    )
+    .unwrap();
+
+    for (sy, sx) in [(0, 0), (16, 48), (32, 32), (63, 63)] {
+        let a = small[[sy, sx, 0]];
+        let b = large[[sy * 8 + 4, sx * 8 + 4, 0]];
+        assert!(
+            (a - b).abs() < 0.02,
+            "preview and full frame disagree at ({sy}, {sx}): {a} vs {b}"
+        );
+    }
+}
+
 // ── Guided filter tests ───────────────────────────────────────────────────────
 
 use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
