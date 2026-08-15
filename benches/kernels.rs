@@ -18,6 +18,7 @@ use phaios_core::bw::{
 };
 use phaios_core::encode::encode_srgb;
 use phaios_core::exposure::exposure;
+use phaios_core::film_grain::{GrainParams, film_grain};
 use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
 use phaios_core::split_toning::{SplitToningParams, split_toning};
 use phaios_core::tone::{ToneCurveParams, ZoneParams, tone_curve, zone_system};
@@ -130,6 +131,14 @@ fn bench_local_contrast(c: &mut Criterion) {
     });
 }
 
+fn bench_film_grain(c: &mut Criterion) {
+    let grey = pseudo_random_image(H, W, 1);
+    let params = GrainParams::new(0.25, 2.0, 20_260_815);
+    c.bench_function("film_grain/24MP/size=2", |b| {
+        b.iter(|| film_grain(black_box(grey.view()), black_box(&params)).unwrap())
+    });
+}
+
 fn bench_split_toning(c: &mut Criterion) {
     let grey = pseudo_random_image(H, W, 1);
     let params = SplitToningParams::new([0.0, 0.03, -0.04], [0.0, -0.02, 0.05], 0.5, 0.1);
@@ -163,6 +172,7 @@ criterion_group!(
     bench_zone_system,
     bench_tone_curve,
     bench_local_contrast,
+    bench_film_grain,
     bench_split_toning,
     bench_vignette,
     bench_encode_srgb,

@@ -350,6 +350,75 @@ def test_local_contrast_wrong_channels(rgb_f32):
         ph.local_contrast(rgb_f32, params, 0.5)
 
 
+# ── Film grain ────────────────────────────────────────────────────────────────
+
+
+def test_film_grain_shape_dtype(grey_f32):
+    assert_valid_output(ph.film_grain(grey_f32, ph.GrainParams(0.2, 2.0, 42)), (H, W, 1))
+
+
+def test_film_grain_zero_intensity_is_identity(grey_f32):
+    np.testing.assert_array_equal(ph.film_grain(grey_f32, ph.GrainParams(0.0, 2.0, 42)), grey_f32)
+
+
+def test_film_grain_is_deterministic(grey_f32):
+    """The guarantee the kernel is built around: same seed, same bytes."""
+    params = ph.GrainParams(0.3, 2.0, 20260815)
+    first = ph.film_grain(grey_f32, params)
+    for _ in range(4):
+        np.testing.assert_array_equal(ph.film_grain(grey_f32, params), first)
+
+
+def test_film_grain_different_seeds_differ(grey_f32):
+    a = ph.film_grain(grey_f32, ph.GrainParams(0.3, 2.0, 1))
+    b = ph.film_grain(grey_f32, ph.GrainParams(0.3, 2.0, 2))
+    assert not np.array_equal(a, b)
+
+
+@pytest.mark.parametrize("level", [0.0, 1.0])
+def test_film_grain_envelope_silences_the_ends(level):
+    flat = np.full((32, 32, 1), level, dtype=np.float32)
+    out = ph.film_grain(flat, ph.GrainParams(1.0, 2.0, 5))
+    np.testing.assert_allclose(out, level, atol=1e-6)
+
+
+def test_film_grain_peaks_in_midtones():
+    def spread(level):
+        flat = np.full((64, 64, 1), level, dtype=np.float32)
+        return float(ph.film_grain(flat, ph.GrainParams(0.3, 2.0, 7)).std())
+
+    assert spread(0.5) > spread(0.1) * 2
+    assert spread(0.5) > spread(0.9) * 2
+
+
+@pytest.mark.parametrize("size", [0.5, 1.0, 1.5, 2.0, 4.0, 8.0])
+def test_film_grain_every_size_produces_grain(size):
+    """Regression: equal band-pass radii silently produced no grain."""
+    flat = np.full((64, 64, 1), 0.5, dtype=np.float32)
+    assert float(ph.film_grain(flat, ph.GrainParams(0.3, size, 17)).std()) > 0.01
+
+
+def test_film_grain_rejects_invalid_parameters(grey_f32):
+    with pytest.raises(ValueError):
+        ph.film_grain(grey_f32, ph.GrainParams(-0.1, 2.0, 0))
+    with pytest.raises(ValueError):
+        ph.film_grain(grey_f32, ph.GrainParams(0.2, 0.0, 0))
+
+
+def test_film_grain_rejects_rgb(rgb_f32):
+    with pytest.raises(ValueError):
+        ph.film_grain(rgb_f32, ph.GrainParams(0.2, 2.0, 0))
+
+
+def test_grain_params_round_trip():
+    p = ph.GrainParams(0.25, 1.5, 20260815)
+    assert p.intensity == pytest.approx(0.25)
+    assert p.size_pixels == pytest.approx(1.5)
+    assert p.seed == 20260815
+    assert p == ph.GrainParams(0.25, 1.5, 20260815)
+    assert p != ph.GrainParams(0.25, 1.5, 1)
+
+
 # ── Split-toning ──────────────────────────────────────────────────────────────
 
 

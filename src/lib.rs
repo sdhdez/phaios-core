@@ -16,6 +16,8 @@ pub mod bw;
 pub mod encode;
 pub mod error;
 pub mod exposure;
+pub mod film_grain;
+mod integral;
 pub mod local_contrast;
 pub mod split_toning;
 pub mod tone;
@@ -316,6 +318,48 @@ pub fn local_contrast_py(
     Ok(result.into_pyarray(py).unbind())
 }
 
+// ── Film grain binding ────────────────────────────────────────────────────────
+
+/// Add procedural film grain.
+///
+/// Computes ``out = max(L + intensity * 4*t*(1-t) * bandpass(noise), 0)``
+/// with ``t = clip(L, 0, 1)``, so the grain peaks in the midtones and
+/// vanishes at both ends of the range.
+///
+/// Deterministic by construction: each pixel's noise is a hash of
+/// ``(seed, x, y)``, not a draw from a sequential generator, so the
+/// output is bit-identical on any thread count and any platform.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, 1)``, dtype ``float32``, any layout.
+/// params : GrainParams
+///     Intensity, grain size in pixels, and the explicit seed.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, 1)``, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``img`` is not shape ``(H, W, 1)``, if ``intensity`` is
+///     negative or non-finite, or if ``size_pixels`` is not positive.
+#[pyfunction]
+#[pyo3(name = "film_grain")]
+pub fn film_grain_py(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: pyo3::PyRef<'_, film_grain::GrainParams>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let params_owned = params.clone();
+    let result = py.detach(move || film_grain::film_grain(view, &params_owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── Split-toning binding ──────────────────────────────────────────────────────
 
 /// Tint shadows and highlights separately, returning linear sRGB.
@@ -450,6 +494,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<tone::ZoneParams>()?;
     m.add_class::<tone::ToneCurveParams>()?;
     m.add_class::<local_contrast::GuidedFilterParams>()?;
+    m.add_class::<film_grain::GrainParams>()?;
     m.add_class::<split_toning::SplitToningParams>()?;
     m.add_class::<vignette::VignetteParams>()?;
 
@@ -470,6 +515,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(local_contrast_py, m)?)?;
 
     // Finishing
+    m.add_function(wrap_pyfunction!(film_grain_py, m)?)?;
     m.add_function(wrap_pyfunction!(split_toning_py, m)?)?;
     m.add_function(wrap_pyfunction!(vignette_py, m)?)?;
 

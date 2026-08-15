@@ -94,3 +94,7 @@ path = "examples/10_vignette.rs"
 [[example]]
 name = "11_split_toning"
 path = "examples/11_split_toning.rs"
+
+[[example]]
+name = "12_film_grain"
+path = "examples/12_film_grain.rs"
