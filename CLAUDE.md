@@ -39,15 +39,29 @@ belongs in a consumer.
 
 ## 2. Hard constraints (never violate)
 
-- **Pure functions only.** Public kernels take immutable inputs and
-  return new arrays (or write into caller-provided scratch buffers
-  explicitly typed as such). No globals, no thread-locals, no hidden
-  state.
+- **Pure functions only — no *implicit* state.** Public kernels take
+  immutable inputs and return new arrays. No globals, no thread-locals,
+  no lazily-initialised singletons, no ambient context. State a backend
+  genuinely requires — a CUDA device, its stream, its module cache —
+  lives in a `Context` the caller constructs, owns and passes
+  explicitly (on the GPU path, inside the `DeviceImage`); it is
+  reachable only through that argument and cannot affect results. A
+  kernel's output depends on its arguments and nothing else. CI-greps
+  `src/cuda/` for `static mut|OnceLock|OnceCell|lazy_static!|thread_local!`.
 - **`f32`, linear, scene-referred** for all pipeline math. The sRGB
   transfer is applied only by `encode_srgb`, which is the very last
   stage and is the only kernel that produces display-referred output.
-- **Determinism.** Any kernel using randomness takes an explicit
-  `seed: u64`. No global RNG.
+- **Determinism is per backend.** Bit-identical output is promised
+  within a backend (any thread count, any launch geometry) and bounded
+  across backends — see `docs/ffi.md` §6; kernels free of
+  transcendentals are bit-exact even across. Any kernel using
+  randomness takes an explicit `seed: u64`. No global RNG. A GPU port
+  must reproduce the *integer* part of a noise scheme bit-for-bit.
+- **The CPU implementation is the specification.** Every GPU kernel is
+  validated against it, never the other way round; disagreement beyond
+  the committed bound means the GPU kernel is wrong. Validation logic
+  is extracted (`pub(crate) validate*`) and shared, so both backends
+  reject identical inputs with identical messages.
 - **No I/O.** No `std::fs`, no `std::net`, no `println!` outside of
   examples and tests. The crate currently emits no diagnostics at
   all; if a kernel ever needs them, add the `log` facade back with a

@@ -170,6 +170,7 @@ Variant-to-exception mapping:
 |--------------------|-----------------|------------|
 | `Shape(_)` | `ValueError` | wrong channel count or dimensionality |
 | `Parameter(_)` | `ValueError` | a parameter outside its domain — zone index not in 0..=10, negative `eps`, any non-finite float |
+| `Backend(_)` | `RuntimeError` | no CUDA device, driver missing, compute capability below 8.0, or a device operation failed — an environment condition, not a bad argument |
 
 Add new variants as needed; always map to the most specific Python
 exception class.
@@ -231,9 +232,56 @@ tile-based kernels. Do not spawn rayon work outside `detach`.
 
 ## 6. Determinism
 
-Two calls with the same input, the same parameters and the same seed
-must produce **bit-identical** output — in the same process, in another
-process, and on another machine with the same target.
+Determinism is scoped to a **backend** — a named pair of implementation
+and target:
+
+- `cpu/<target-triple>`: the reference implementation, together with the
+  platform libm it links against.
+- `cuda/<device>/cc<maj>.<min>/ptx-compute_80`: a CUDA device, together
+  with this crate's PTX revision. `GpuContext.fingerprint` returns this
+  string.
+
+**Within one backend**, two calls with the same input, parameters and
+seed produce **bit-identical** output — in the same process, in another
+process, on another machine with the same fingerprint, at any thread
+count, block schedule or launch geometry. This is asserted per kernel
+by the conformance suite and must never be relaxed.
+
+**Across backends**, output is *bounded*, not identical — and this was
+never achievable, GPU or no GPU. IEEE-754 standardises `+ − × ÷ √` and
+requires correct rounding; it standardises **no** transcendental. The
+CPU kernels do not implement `exp`, `pow`, `log`, `cos` or `cbrt` —
+`nm -D` on the built extension shows them resolving to the platform
+libm, and the published wheels link three different libms (glibc,
+Windows UCRT, Apple's). Two CPU machines with different libms already
+disagree in the low bits. The CUDA backend adds one more math library
+to that list, not a new category of problem.
+
+What is promised across backends:
+
+- Kernels free of transcendentals are **bit-exact** between CPU and
+  CUDA: `exposure`, `luminance_bw`, `channel_mixer_bw`,
+  `color_filter_bw`, `vignette`, `tone_curve` at `power == 1`, every
+  identity fast path, and `film_grain`'s integer hash (asserted over
+  2²⁰ coordinates). This is achievable because the PTX is compiled with
+  `-fmad=false` — Rust does not contract `a*b+c` into FMA, and with the
+  device told the same, every remaining operation is correctly rounded
+  on both sides.
+- Kernels containing transcendentals hold a committed per-kernel bound,
+  asserted against the CPU oracle by `tests/cuda_conformance.rs`:
+  (rtol 1e-5, atol 1e-7) for one-`powf`/`expf`/`cbrtf` kernels,
+  (rtol 1e-4, atol 1e-6) for `local_contrast` (which also reformulates
+  the f64 summed-area tables as separable Kahan-compensated f32 box
+  filters), (rtol 1e-3, atol 1e-5) for `film_grain`'s Box–Muller half.
+  A driver update that regresses accuracy fails the suite rather than
+  being absorbed.
+
+**The backend fingerprint is part of the reproducibility key.** A
+consumer that promises exact reproduction from a settings file must
+either record the fingerprint alongside the parameters, or designate
+`cpu` as the archival backend and use CUDA for interactive work.
+`phaios` desktop should do the latter and record the fingerprint
+regardless, so a preview render is identifiable as one.
 
 ### Explicit seeds
 

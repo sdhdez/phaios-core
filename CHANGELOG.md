@@ -8,6 +8,46 @@ The Rust crate and the Python wheel always carry the same version.
 
 ## [Unreleased] — 0.2.0-dev
 
+### Added — optional CUDA backend (`--features cuda`)
+
+All twelve kernels on NVIDIA GPUs, off by default: published wheels
+stay CPU-only and the ordinary dependency graph is unchanged (cudarc
+adds three lines to `cargo tree`). Building with the feature needs
+`nvcc`; running needs only the NVIDIA driver, dlopened — a CUDA build
+imports cleanly on machines with no driver and `gpu.available()` is
+simply `False`. One `compute_80` PTX covers sm_80 → sm_120+; older
+cards get a clear `RuntimeError`.
+
+Measured on an RTX 5070 Ti, full nine-stage pipeline, one upload and
+one download: **24 MP export 468 → 48 ms (9.8×); 2 MP preview
+40.5 → 2.9 ms (14×)**. `local_contrast` alone: 182 → 15.5 ms.
+
+- Python: `phaios_core.gpu` — `available()`, `devices()`,
+  `GpuContext`, `GpuImage` (upload once, chain kernels resident,
+  download once). Kernel signatures mirror the CPU functions
+  argument-for-argument after the image; the existing param classes
+  are reused verbatim, so sidecars and presets stay backend-neutral.
+- Rust: `cuda::Context`, `DeviceImage`, and `<kernel>_device` +
+  per-call forms under `cuda::kernels`.
+- Determinism is now scoped to a backend (`docs/ffi.md` §6 rewritten):
+  bit-identical within a backend unconditionally; across backends,
+  transcendental-free kernels are bit-exact (PTX built with
+  `-fmad=false`) and the rest hold committed bounds asserted by
+  `tests/cuda_conformance.rs` — 28 tests, skipped cleanly without a
+  device, `PHAIOS_REQUIRE_GPU=1` to forbid skipping.
+  `film_grain`'s splitmix64 hash is asserted bit-identical over 2²⁰
+  coordinates. The cross-backend framing corrects a fiction in the old
+  contract: the CPU kernels call the platform libm, and the three
+  published wheels link three different ones, so "bit-identical on
+  another machine" was already untrue across OSes in v0.1.
+- New `PhaiosError::Backend` → Python `RuntimeError` (a missing GPU is
+  an environment condition, not a bad argument). Source-breaking for
+  Rust consumers matching `PhaiosError` exhaustively.
+- New dependency: `cudarc` 0.19 (optional, MIT OR Apache-2.0),
+  justified in `Cargo.toml`; the driver-API exit strategy (14 entry
+  points, replaceable via dlopen + cuGetProcAddress) is documented in
+  `src/cuda/context.rs`.
+
 An audit of the v0.1.1 kernels opened this cycle. All six kernels were
 verified against independent NumPy reference implementations and agree
 to f32 precision; the entries below are what the audit turned up around
