@@ -24,10 +24,28 @@ a fresh C-contiguous result. This is not a convenience: `img[::2, ::2]`
 can produce, and two kernels used to panic on it (see §4).
 
 **Channel count.** C = 1 for single-channel (luminance) arrays, C = 3
-for RGB. The B&W kernels require C = 3 and the tone and contrast kernels
-require C = 1; both raise `ValueError` otherwise. `encode_srgb` is the
-exception — the transfer is a scalar function applied element-wise, so
-it accepts any channel count.
+for RGB. What each kernel accepts follows from where it sits in the
+pipeline:
+
+| Kernel | In | Out | Notes |
+|---|---|---|---|
+| `exposure` | any | same | a scalar multiply; valid before or after the B&W stage |
+| `luminance_bw` | 3 | 1 | |
+| `channel_mixer_bw` | 3 | 1 | |
+| `color_filter_bw` | 3 | 1 | |
+| `hsl_bw` | 3 | 1 | needs hue, so it must run before the collapse |
+| `zone_system` | 1 | 1 | |
+| `local_contrast` | 1 | 1 | |
+| `film_grain` | 1 | 1 | |
+| `split_toning` | 1 | **3** | the only kernel that adds channels |
+| `vignette` | any | same | one factor per pixel, applied to every channel |
+| `tone_curve` | any | same | element-wise |
+| `encode_srgb` | any | same | element-wise |
+
+A kernel given the wrong channel count raises `ValueError`. The four
+that accept "any" do so deliberately: they run either side of
+`split_toning`, and a pipeline should not have to branch on whether
+toning is enabled.
 
 **Size.** H and W are unconstrained. Zero-size arrays are accepted and
 return an empty array of the same shape; treating "no pixels" as an
@@ -220,13 +238,29 @@ process, and on another machine with the same target.
 ### Explicit seeds
 
 No global RNG. No thread-local RNG. Every kernel that uses randomness
-takes `seed: u64` as an explicit parameter:
+takes an explicit `seed: u64` — in `film_grain` it is a field of
+`GrainParams`, so it travels with the rest of the settings and lands in
+the consumer's sidecar file automatically.
+
+### Position-keyed noise beats a seeded generator
+
+`film_grain` does not run a sequential generator at all. Each pixel's
+noise is a hash of `(seed, x, y)`:
 
 ```rust
-/// `seed`: explicit RNG seed for deterministic output. Two calls with
-/// the same `seed`, `params`, and input produce identical output.
-pub fn film_grain(img: ..., params: GrainParams, seed: u64) -> ...
+let bits = splitmix64(seed ^ splitmix64(mix(x, y)));
+let noise = box_muller(bits);
 ```
+
+The point is that no pixel depends on another's state, so the output is
+identical whatever the thread count — verified against rayon pools of 1,
+2, 3 and 8 threads.
+
+The alternative, a `SeedableRng` per tile keyed by tile index, is
+reproducible only as long as the tiling never changes. The tile size
+would become part of the output contract without ever being written
+down, and changing it later would alter every image the consumer had
+already rendered. Prefer a scheme with no hidden parameters.
 
 ### Ordered reductions
 

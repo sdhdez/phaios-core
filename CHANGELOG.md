@@ -39,7 +39,51 @@ them. No v0.1 function signature changed.
   magnitude; a negative result made `a = var/(var+ε)` invert or
   over-drive the local linear model.
 
-### Added
+### Added — kernels
+
+Six new kernels, completing the v0.2 pipeline. Each accepts any array
+layout and returns a freshly allocated C-contiguous array.
+
+- **`exposure(img, stops)`** — `out = in · 2^stops`, the first pipeline
+  stage. Any channel count. Nothing is clamped, so highlights driven
+  above 1.0 remain recoverable; `2^n` being exact for integer `n` makes
+  +n EV followed by −n EV bit-exact.
+- **`hsl_bw(img, HslWeightedParams)`** — per-hue B&W weighting across
+  eight bands (red 0°, orange 30°, yellow 60°, green 120°, aqua 180°,
+  blue 240°, purple 270°, magenta 300°), Gaussian-blended in hue space
+  with σ = 30° by default. Modulated by the chroma ratio
+  `(max − min) / max` rather than HSL saturation — the ratio is
+  invariant under exposure changes and stays well-defined above
+  L = 1, where HSL saturation is degenerate.
+- **`tone_curve(img, ToneCurveParams)`** — parametric slope/offset/power
+  curve, the ASC Color Decision List primary correction (ASC Technology
+  Committee v1.2, 2009). Monotonic for any positive slope and power.
+  Any channel count.
+- **`film_grain(img, GrainParams)`** — band-passed procedural grain with
+  a `4·L·(1−L)` midtone envelope. The noise is a hash of `(seed, x, y)`
+  rather than a sequential generator, so output is bit-identical
+  regardless of thread count — verified against rayon pools of 1, 2, 3
+  and 8 threads — and no RNG dependency is needed. Grain size comes from
+  a difference of box filters, normalised analytically so `intensity`
+  means the same thing at every size.
+- **`split_toning(img, SplitToningParams)`** — shadow and highlight
+  tinting in OKLab (Ottosson 2020), crossfaded by a smoothstep around a
+  pivot. **Takes `(H, W, 1)` and returns `(H, W, 3)`** — the only kernel
+  that changes the channel count. Lightness is carried through
+  untouched, so the tonal rendering survives the tint.
+- **`vignette(img, VignetteParams)`** — radial darkening or lightening,
+  blending circular and rectangular falloff via `roundness`. Distances
+  are normalised to the frame, so a preview and the full-size render
+  agree; all channels of a pixel share one factor, so it darkens without
+  tinting. Any channel count.
+
+New param classes: `HslWeightedParams`, `ToneCurveParams`,
+`GrainParams`, `SplitToningParams`, `VignetteParams` — each with field
+getters, `__eq__` and `__repr__`, and each validated by its kernel.
+
+Six new examples (07–12) and a criterion benchmark per kernel.
+
+### Added — other
 
 - `CHANGELOG.md` (this file).
 - `ZoneParams.offsets` getter, returning the zone-index → stop-offset

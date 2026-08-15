@@ -16,27 +16,32 @@ A Rust crate with PyO3 bindings (`phaios_core` Python module). Pure
 functions on `f32` linear scene-referred `(H, W, C)` arrays — no I/O,
 no GUI, no hidden state. Any front-end can build on it.
 
-### v0.1 feature set
+### Kernels
 
-| Kernel | Description |
-|--------|-------------|
-| `luminance_bw` | Standard B&W conversion: BT.601, BT.709 (default), BT.2020 |
-| `channel_mixer_bw` | Arbitrary RGB weights in −2..+2 (infrared-like effects) |
-| `color_filter_bw` | Wratten-style filter simulation (Yellow, Orange, Red, Green, Blue) |
-| `zone_system` | Adams/Archer Zone System tone curve, 11 zones, Gaussian-blended |
-| `local_contrast` | He–Sun–Tang guided filter for local contrast enhancement |
-| `encode_srgb` | IEC 61966-2-1 sRGB transfer encoding (terminal stage) |
+In pipeline order. Every kernel takes any array layout and returns a
+freshly allocated C-contiguous array.
 
-### Roadmap — v0.2 (in progress)
+| Kernel | Description | Since |
+|--------|-------------|-------|
+| `exposure` | Exposure compensation in EV stops | v0.2 |
+| `luminance_bw` | Standard B&W conversion: BT.601, BT.709 (default), BT.2020 | v0.1 |
+| `channel_mixer_bw` | Arbitrary RGB weights in −2..+2 (infrared-like effects) | v0.1 |
+| `color_filter_bw` | Wratten-style filter simulation (Yellow, Orange, Red, Green, Blue) | v0.1 |
+| `hsl_bw` | Per-hue weighting across 8 bands, Gaussian-blended | v0.2 |
+| `zone_system` | Adams/Archer Zone System tone curve, 11 zones, Gaussian-blended | v0.1 |
+| `local_contrast` | He–Sun–Tang guided filter for local contrast enhancement | v0.1 |
+| `film_grain` | Band-passed procedural grain, deterministic from an explicit seed | v0.2 |
+| `split_toning` | Shadow/highlight tinting in OKLab — returns `(H, W, 3)` | v0.2 |
+| `vignette` | Radial darkening or lightening, resolution-independent | v0.2 |
+| `tone_curve` | Parametric slope/offset/power curve (ASC CDL) | v0.2 |
+| `encode_srgb` | IEC 61966-2-1 sRGB transfer encoding (terminal stage) | v0.1 |
 
-| Kernel | Description |
-|--------|-------------|
-| `exposure` | Exposure compensation (EV stops) |
-| `hsl_bw` | HSL-weighted B&W conversion (8 hue bands) |
-| `film_grain` | Procedural film grain with explicit seed for determinism |
-| `split_toning` | Parametric highlights/shadows toning |
-| `vignette` | Radial vignette |
-| Parametric tone curve | Arbitrary per-zone curve, independent of Zone System |
+### Not in scope
+
+Pixel-level local adjustment (masks, U-Point-style edit propagation) and
+the Newson et al. (2017) stochastic grain model are research territory,
+deferred past v0.2. RAW decoding, file I/O, settings management and
+anything with a user interface belong to consumers, permanently.
 
 ---
 
@@ -75,25 +80,38 @@ cargo run --example 01_luminance
 
 ```python
 import numpy as np
-import phaios_core
+import phaios_core as ph
 
-# Linear f32 RGB image, shape (H, W, 3)
+# Linear scene-referred f32 RGB, shape (H, W, 3)
 img = np.random.rand(1080, 1920, 3).astype(np.float32)
 
-# B&W conversion — BT.709 luminance (default)
-bw = phaios_core.luminance_bw(img)          # shape (H, W, 1)
+# 1. Exposure, in EV stops
+x = ph.exposure(img, 0.5)
 
-# Zone System tone curve
-params = phaios_core.ZoneParams({5: 0.5})   # lift Zone V by half a stop
-toned = phaios_core.zone_system(bw, params)
+# 2. B&W conversion. Four methods; this one weights by hue —
+#    bands are red, orange, yellow, green, aqua, blue, purple, magenta.
+x = ph.hsl_bw(x, ph.HslWeightedParams([0, 0, 0.4, 0.2, 0, -0.5, 0, 0]))
 
-# Local contrast enhancement
-lc_params = phaios_core.GuidedFilterParams(radius=8, eps=0.01)
-enhanced = phaios_core.local_contrast(toned, lc_params, strength=0.5)
+# 3. Zone System tone curve
+x = ph.zone_system(x, ph.ZoneParams({3: -0.3, 7: 0.4}))
 
-# sRGB encode (always last)
-output = phaios_core.encode_srgb(enhanced)
+# 4. Local contrast
+x = ph.local_contrast(x, ph.GuidedFilterParams(radius=8, eps=0.01), strength=0.4)
+
+# 5. Finishing. Grain is deterministic: same seed, same bytes.
+x = ph.film_grain(x, ph.GrainParams(intensity=0.12, size_pixels=1.5, seed=20260815))
+x = ph.split_toning(x, ph.SplitToningParams([0.0, -0.02, -0.04],   # cool shadows
+                                            [0.0,  0.03,  0.03]))  # warm highlights
+x = ph.vignette(x, ph.VignetteParams(amount=0.35, feather=0.8))
+x = ph.tone_curve(x, ph.ToneCurveParams(slope=1.1, power=0.9))
+
+# 6. sRGB encode — always last, and the only stage that clamps nothing
+output = ph.encode_srgb(np.clip(x, 0.0, 1.0))
 ```
+
+Each stage is optional and each is a pure function; skip any of them and
+the rest still compose. `split_toning` is the one that changes shape,
+taking `(H, W, 1)` to `(H, W, 3)` — the kernels after it accept either.
 
 ---
 

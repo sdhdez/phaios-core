@@ -14,15 +14,14 @@ Consumer delivers:
         │
         ▼
   ┌─────────────┐
-  │  exposure   │  × 2^stops    (planned, v0.2)        src/exposure.rs
-  └─────────────┘  not implemented — consumers apply
-        │          their own exposure for now
-        │
+  │  exposure   │  × 2^stops                             src/exposure.rs
+  └─────────────┘
+        │  (H, W, 3)
         ▼
   ┌─────────────┐
-  │  B&W conv.  │  luminance / channel mixer /          src/bw.rs
-  └─────────────┘  colour filter → (H, W, 1)
-        │
+  │  B&W conv.  │  luminance / channel mixer /           src/bw.rs
+  └─────────────┘  colour filter / HSL-weighted
+        │  (H, W, 1)   ← the image becomes monochrome here
         ▼
   ┌─────────────┐
   │  zone tone  │  Adams/Archer + Davis Gaussian         src/tone.rs
@@ -35,8 +34,23 @@ Consumer delivers:
   └─────────────┘
         │
         ▼
-  ┌─────────────┐  (v0.2: grain, split-toning, vignette)
-  │  finishing  │
+  ┌─────────────┐
+  │  grain      │  band-passed hashed noise              src/film_grain.rs
+  └─────────────┘
+        │
+        ▼
+  ┌─────────────┐
+  │ split-tone  │  OKLab chroma blend                    src/split_toning.rs
+  └─────────────┘
+        │  (H, W, 3)   ← and colour again here
+        ▼
+  ┌─────────────┐
+  │  vignette   │  radial falloff                        src/vignette.rs
+  └─────────────┘
+        │
+        ▼
+  ┌─────────────┐
+  │ tone curve  │  ASC CDL slope/offset/power            src/tone.rs
   └─────────────┘
         │
         ▼
@@ -49,12 +63,25 @@ Consumer receives:
   display-referred f32 RGB  (H, W, 3)  → write to file
 ```
 
-**Order sensitivity.** The sRGB encode must be last — all other kernels
-operate on linear data. B&W conversion must precede zone-system and
-local-contrast (which operate on single-channel luminance). Exposure
-must precede B&W conversion. All other orderings within those
-constraints are mathematically equivalent, though the canonical order
-above is recommended.
+**Channel count along the pipeline.** The B&W stage collapses three
+channels to one; split-toning takes it back to three. Everything between
+those two points is single-channel, and everything after split-toning
+(`vignette`, `tone_curve`, `encode_srgb`) accepts any channel count so
+that the same pipeline runs whether or not toning is enabled.
+
+**Order sensitivity.** Some of the ordering is forced, and some of it is
+a judgement that the kernels document but do not enforce:
+
+| Constraint | Why |
+|---|---|
+| `encode_srgb` last | every other kernel assumes linear input |
+| `exposure` first | a stop is a factor of two only in linear light |
+| B&W before zone/local-contrast/grain | those kernels take `(H, W, 1)` |
+| `split_toning` after B&W | it takes `(H, W, 1)` and returns `(H, W, 3)` |
+| grain after the tone stages | a tone curve applied afterwards reshapes the grain, and the `4·L·(1−L)` envelope would no longer sit on the midtones the viewer sees |
+| vignette after the tone stages | otherwise the tone curve acts on already-darkened corners |
+
+Within those constraints the remaining orderings are equivalent.
 
 **Layout.** Every kernel accepts any array layout — C-contiguous,
 Fortran-order, strided views, negative strides — and always returns a
@@ -62,7 +89,30 @@ freshly allocated C-contiguous array. See `docs/ffi.md` §1.
 
 ---
 
-## 2. Luminance weights (B&W method 1)
+## 2. Exposure
+
+```
+out = in · 2^stops
+```
+
+A stop is a doubling of exposure, so in linear scene-referred data the
+operation is a single multiply. That is the whole reason the pipeline
+keeps its data linear until the final encode: applied after a transfer
+function, the same adjustment would be a curve whose shape depended on
+the transfer, and "+1 EV" would no longer mean one stop.
+
+Nothing is clamped. Highlights driven above 1.0 stay above 1.0, where
+the tone stages can still pull them back; clipping here would throw away
+information irrecoverably. Since `2^n` is exact for integer `n`, +n EV
+followed by −n EV is bit-exact, not merely close.
+
+Reference: the stop as a doubling of luminous exposure is standard
+photographic practice; Ansel Adams, *The Negative*, Little, Brown
+(1948), chapter 4.
+
+---
+
+## 3. Luminance weights (B&W method 1)
 
 ### Derivation
 
@@ -145,7 +195,7 @@ Y[h, w, 0] = w[0]·R[h,w] + w[1]·G[h,w] + w[2]·B[h,w]
 
 ---
 
-## 3. Coloured-filter simulation (B&W method 3)
+## 4. Coloured-filter simulation (B&W method 3)
 
 ### Spectral basis
 
@@ -200,7 +250,72 @@ kernel is purely multiplicative.
 
 ---
 
-## 4. Zone System tone curve
+## 5. HSL-weighted conversion (B&W method 4)
+
+The three methods above assign one weight per *channel*. This one
+assigns a weight per *hue*, which is what a photographer means by
+"darken the sky without darkening the foliage".
+
+### Bands
+
+Eight bands, spaced more finely at the warm end where skin, foliage and
+sky separations matter most:
+
+| Index | Band | Centre |
+|-------|------|--------|
+| 0 | red | 0° |
+| 1 | orange | 30° |
+| 2 | yellow | 60° |
+| 3 | green | 120° |
+| 4 | aqua | 180° |
+| 5 | blue | 240° |
+| 6 | purple | 270° |
+| 7 | magenta | 300° |
+
+### Formula
+
+```
+Y_out = max(Y_base · (1 + chroma · Σ_i  w_i · exp(-d_i² / (2σ²))), 0)
+```
+
+where `Y_base` is the luminance from the chosen ITU-R standard, `d_i` is
+the **circular** distance from the pixel's hue to band `i` (350° is 10°
+from red, not 350°), and σ is 30° by default, at which adjacent bands
+overlap at roughly half weight.
+
+The eight terms are summed in fixed array order, so the result is
+bit-reproducible — see `docs/ffi.md` §6.
+
+### Saturation measure
+
+`chroma` is `(max − min) / max`, the HSV-style chroma ratio, **not** HSL
+saturation `(max − min) / (1 − |2L − 1|)`. This is a deliberate
+departure from the usual formulation, for two reasons:
+
+1. **Scale invariance.** The chroma ratio does not change when the
+   image is brightened. Exposure is a kernel two stages upstream, and a
+   saturation measure that moved with it would silently change the B&W
+   conversion whenever exposure was adjusted.
+2. **Scene-referred data.** HSL saturation's denominator passes through
+   zero at L = 1 and goes negative above it. Highlights above 1.0 are
+   normal here, so the formula is not merely imprecise in that range —
+   it is degenerate.
+
+The visible consequence: a bright saturated yellow responds strongly to
+the yellow band, where HSL saturation would have judged it barely
+saturated on account of its lightness.
+
+Negative components are clamped to zero before the hue geometry, since
+white balance can push a channel slightly negative and a negative `min`
+would inflate the chroma ratio past 1.
+
+Reference: the hue/chroma geometry is the standard hexagonal projection
+of Joblove & Greenberg, "Color spaces for computer graphics",
+*SIGGRAPH '78*, pp. 20–25.
+
+---
+
+## 6. Zone System tone curve
 
 ### Historical context
 
@@ -302,7 +417,42 @@ to 0.
 
 ---
 
-## 5. Guided filter for local contrast
+## 7. Parametric tone curve (ASC CDL)
+
+```
+out = max(in · slope + offset, 0)^power
+```
+
+Three controls, under the names photographers already use: `slope` is
+gain, `offset` is lift, `power` is gamma. The identity is
+`(1.0, 0.0, 1.0)`.
+
+Chosen over a four-point spline — the alternative the design brief
+offered — for three reasons:
+
+- It is a published interchange standard, so a grade means the same
+  thing in other tools.
+- Three numbers cover the adjustment; a spline needs four control points
+  and a UI to place them.
+- It is monotonic for any positive `slope` and `power`, so it cannot
+  invert tonal order. A spline has to be constrained to guarantee that.
+
+The clamp before the exponent is required rather than defensive: a
+negative base raised to a fractional power has no real value, so without
+it a negative `offset` would produce NaN across the shadows. With it,
+those values crush to black — and *irreversibly*, which is the one thing
+to know when reaching for a negative offset.
+
+Applies to any channel count, since it sits after split-toning where the
+data may have become three-channel again.
+
+Reference: American Society of Cinematographers Technology Committee,
+"ASC Color Decision List (ASC CDL) Transfer Functions and Interchange
+Syntax", version 1.2 (2009), §2.1.
+
+---
+
+## 8. Guided filter for local contrast
 
 ### Background
 
@@ -439,7 +589,184 @@ Subtracting it from L gives the high-frequency (detail) component.
 
 ---
 
-## 6. sRGB transfer encoding
+## 9. Film grain
+
+```
+out = max(L + intensity · 4·t·(1−t) · bandpass(noise, size), 0),  t = clamp(L, 0, 1)
+```
+
+### Deterministic noise without a generator
+
+Each pixel's noise is a hash of `(seed, x, y)` — splitmix64, then
+Box–Muller — rather than a draw from a sequential RNG. No pixel depends
+on another's state, which buys three properties:
+
+- identical output on one thread or thirty-two;
+- identical output across platforms, since integer hashing has no
+  floating-point tolerance;
+- no hidden contract. A per-tile `SeedableRng` is reproducible too, but
+  only while the tiling holds still: the tile size would quietly become
+  part of the output, and changing it later would alter every rendered
+  image.
+
+This is also why the kernel needs no RNG dependency.
+
+The coordinates are mixed once before meeting the seed. Without that
+step `(x, y)` and `(y, x)` collide and the grain shows a diagonal
+mirror line.
+
+### Band-pass, and why grain has a size
+
+White noise added per pixel is sensor noise, not grain: it has no
+characteristic scale, so it vanishes when the image is downsampled and
+turns to mush when it is enlarged. Real grain clumps.
+
+The band-pass is a difference of two box filters over the same noise
+field, with radii `floor(size/2)` and `round(size)`, the inner capped
+one below the outer. The energy that survives is concentrated around
+`size_pixels`.
+
+Both filters read one summed-area table (§8), so the cost is independent
+of the grain size.
+
+**Normalisation.** For nested windows of `n₁` and `n₂` pixels over
+unit-variance input, the difference of box means has variance
+`1/n₁ − 1/n₂`. Dividing by its square root makes `intensity` mean the
+same thing at every grain size — analytically, with no second pass over
+the image and no order-dependent reduction. `intensity` is then the
+standard deviation of the grain, in linear units, where the envelope
+peaks.
+
+### The envelope
+
+`4·t·(1−t)` peaks at mid-grey and vanishes at both ends: film has no
+grain where no silver was developed, and none where the emulsion
+saturated. `t` is clamped to `[0, 1]` first — above 1.0 the parabola
+goes negative, which would invert the grain rather than fade it out.
+
+Reference: Sebastiano Vigna, "Further scramblings of Marsaglia's
+xorshift generators", *J. Comput. Appl. Math.* 315 (2017), pp. 175–181;
+G. E. P. Box and Mervin E. Muller, "A Note on the Generation of Random
+Normal Deviates", *Ann. Math. Statist.* 29(2) (1958), pp. 610–611.
+
+The Newson et al. (2017) stochastic grain model — which simulates
+individual silver grains rather than filtering noise — is deliberately
+out of scope; it is v0.3 material at the earliest.
+
+---
+
+## 10. Split-toning
+
+Takes `(H, W, 1)` monochrome and returns `(H, W, 3)` linear sRGB. The
+only kernel that adds channels.
+
+### Why OKLab
+
+Tinting means adding chroma without disturbing the lightness the tone
+stages just established. That needs a space whose lightness axis is
+genuinely independent of its colour axes. In linear sRGB, adding to the
+red channel makes a pixel both redder and brighter. CIELAB separates
+them in principle, but its blue-hue non-uniformity bends a
+constant-chroma sweep visibly towards purple.
+
+OKLab was fitted to fix exactly that, and costs two 3×3 matrices with a
+cube root between them.
+
+### Algorithm
+
+1. Take the OKLab lightness `L` of the luminance sample. For a neutral
+   the three cone responses are equal, so the forward transform
+   collapses to one cube root instead of three.
+2. Crossfade the two tints with a smoothstep centred on the pivot:
+   `mix = smoothstep(pivot − 0.25, pivot + 0.25, L)`.
+3. Convert `(L, a, b)` back to linear sRGB.
+
+Only the `a` and `b` components of each tint are used. The parameters
+are full OKLab triples so that a colour picked in an OKLab picker can be
+passed through unchanged, but honouring the `L` component would move the
+tonal rendering — the very thing the space was chosen to protect.
+
+`balance` shifts the crossover: positive moves it down, so more of the
+image reads as highlight and takes the highlight tint.
+
+The crossover half-width is fixed at 0.25 rather than exposed. A fourth
+control would let the user reproduce the pivot's job by another route.
+
+### Behaviour at black
+
+OKLab lightness 0 with non-zero chroma is not a colour — nothing is both
+black and tinted. Asked for one, the inverse transform returns the
+nearest thing it can, slightly outside the sRGB cube, mostly as a small
+*negative* blue. The kernel does not clamp; the sign means a clamping
+consumer sees black rather than a lifted shadow.
+
+| tint (applied to both a and b) | worst channel at L = 0 |
+|------|---------------|
+| 0.02 | 3.6e−5 |
+| 0.05 | 5.6e−4 |
+| 0.10 | 4.5e−3 |
+| 0.20 | 3.6e−2 |
+
+The error grows as the cube of the tint, so it is negligible across the
+range anyone tones in.
+
+Reference: Björn Ottosson, "A perceptual color space for image
+processing" (2020), <https://bottosson.github.io/posts/oklab/>.
+
+---
+
+## 11. Vignette
+
+```
+out = max(in · (1 − amount · falloff(distance)), 0)
+```
+
+Positive `amount` darkens the corners, negative lightens them.
+
+### Distance
+
+Normalised frame coordinates put the centre at the origin and the
+corners at `(±1, ±1)`. Two measures are blended by `roundness`:
+
+- **Euclidean**, `√(nx² + ny²) / √2` — a circle, reaching 1 only at the
+  corners, so the middle of each edge darkens less than the corners do;
+- **Chebyshev**, `max(|nx|, |ny|)` — a rectangle following the frame,
+  reaching 1 along the whole border.
+
+`roundness = 0` is the circle, `1` the rectangle.
+
+Because the coordinates are normalised, the kernel is
+**resolution-independent**: the same parameters give the same picture on
+a preview and on the full-size frame. A consumer can render a small
+preview and trust it. Pixel *centres* are used, so a single-row image
+sits on the centre line rather than at an edge.
+
+### Falloff
+
+A Hermite smoothstep from `1 − feather` to `1`. The cubic `3t² − 2t³`
+has zero derivative at both ends, so the vignette meets the untouched
+centre and the fully-applied corner without a seam — even a narrow
+feather has no banding edge.
+
+Every channel of a pixel gets the same factor, so the vignette darkens
+without tinting.
+
+### What this is not
+
+Real lenses vignette because off-axis illumination falls as cos⁴ of the
+field angle. Correcting *that* needs the lens, the aperture and the
+focal length, and belongs in the RAW decoder. This kernel is the
+darkroom gesture — burning the edges to hold the eye in the frame —
+with a shape the photographer picks directly.
+
+Reference for the falloff: Ebert et al., *Texturing & Modeling: A
+Procedural Approach*, 3rd ed., Morgan Kaufmann (2003), §2.3. For the
+cos⁴ law: Sidney F. Ray, *Applied Photographic Optics*, 3rd ed., Focal
+Press (2002), §14.
+
+---
+
+## 12. sRGB transfer encoding
 
 ### Specification
 
@@ -512,7 +839,7 @@ let encoded = if x <= 0.0031308_f32 {
 
 ---
 
-## 7. Performance (v0.2-dev)
+## 13. Performance (v0.2-dev)
 
 Measured with `cargo bench` (criterion, bench profile) on a synthetic
 4323 × 5765 (≈ 24 MP) `f32` image filled with deterministic
@@ -520,12 +847,22 @@ pseudo-random values. Not CI gates — informational only.
 
 | Kernel | Measured mean | Benchmark id | Notes |
 |--------|--------------|--------------|-------|
-| `luminance_bw` | **15.0 ms** | `luminance_bw/24MP/BT709` | Memory-bandwidth bound |
+| `exposure` | **29.3 ms** | `exposure/24MP/+1EV` | 3 channels in *and* out — 300 MB of traffic, twice the B&W kernels' |
+| `luminance_bw` | **14.8 ms** | `luminance_bw/24MP/BT709` | Memory-bandwidth bound |
 | `channel_mixer_bw` | **15.0 ms** | `channel_mixer_bw/24MP` | Same bandwidth pattern |
 | `color_filter_bw` | **14.9 ms** | `color_filter_bw/24MP/Red25A` | Combined dot product |
+| `hsl_bw` | **52.0 ms** | `hsl_bw/24MP/8-bands` | Hue geometry plus 8 `exp` per pixel |
 | `zone_system` | **13.0 ms** | `zone_system/24MP/1-zone-offset` | `exp` + `log2` per pixel |
-| `local_contrast` | **177.8 ms** | `local_contrast/24MP/r=8` | 4 parallel SAT builds |
-| `encode_srgb` | **10.5 ms** | `encode_srgb/24MP` | `powf` per pixel |
+| `tone_curve` | **10.4 ms** | `tone_curve/24MP/slope-offset-power` | One `powf` per pixel |
+| `local_contrast` | **177.5 ms** | `local_contrast/24MP/r=8` | 4 parallel SAT builds |
+| `film_grain` | **58.1 ms** | `film_grain/24MP/size=2` | Hash + Box–Muller per pixel, then one SAT |
+| `split_toning` | **23.4 ms** | `split_toning/24MP` | 1 cube root in, 3 cubes out, per pixel |
+| `vignette` | **10.6 ms** | `vignette/24MP` | `sqrt` per pixel |
+| `encode_srgb` | **10.7 ms** | `encode_srgb/24MP` | `powf` per pixel |
+
+A full v0.2 pipeline — exposure, HSL conversion, zone system, local
+contrast, grain, toning, vignette, curve, encode — is therefore around
+400 ms for a 24 MP frame on this machine, dominated by `local_contrast`.
 
 Machine: AMD Ryzen 9 9950X 16-Core (32 threads), Linux, `cargo bench`
 (optimised profile, rayon parallelism enabled).

@@ -11,15 +11,23 @@ Licence: GPLv3. Maintainer: Simon ([github.com/sdhdez](https://github.com/sdhdez
 
 ## 1. What this crate does — and what it doesn't
 
-**v0.1 (implemented):** three B&W conversion kernels (standard
-luminance, channel mixer, coloured-filter simulation), Adams/Archer
-Zone System tone curve, He–Sun–Tang guided filter for local contrast,
-sRGB transfer encoding. All as pure functions on `f32` `(H, W, C)`
-arrays: any input layout, always a C-contiguous result.
+**v0.1 (shipped):** three B&W conversion kernels (standard luminance,
+channel mixer, coloured-filter simulation), Adams/Archer Zone System
+tone curve, He–Sun–Tang guided filter for local contrast, sRGB transfer
+encoding.
 
-**v0.2 (planned):** exposure compensation, HSL-weighted B&W
-(8 hue bands), procedural film grain (explicit seed), split-toning,
-radial vignette, parametric tone curve.
+**v0.2 (implemented, unreleased):** exposure compensation, HSL-weighted
+B&W (8 hue bands), procedural film grain (explicit seed, no RNG
+dependency), split-toning in OKLab, radial vignette, parametric tone
+curve (ASC CDL).
+
+All as pure functions on `f32` `(H, W, C)` arrays: any input layout,
+always a C-contiguous result.
+
+**v0.3 (not started, deliberately):** pixel-level local adjustment
+(masks, U-Point-style edit propagation) and the Newson et al. (2017)
+stochastic grain model. Both are research territory; do not start
+either without an explicit decision.
 
 **Never does:** open RAW files, write TIFFs, manage settings, draw
 pixels on a screen, talk to the network. Those belong to consumers
@@ -79,15 +87,23 @@ belongs in a consumer.
 
 ```
 RAW (consumer's problem)
-  → linear scene-referred f32 RGB                  ← input to kernels
-  → exposure                                        ← kernel (v0.2 planned)
-  → B&W conversion (three kernels; +HSL in v0.2)   ← kernel
-  → tone (zone system v0.1; parametric curve v0.2)  ← kernel
-  → local contrast (guided filter)                  ← kernel (v0.1)
-  → finishing (grain, toning, vignette)             ← kernels (v0.2 planned)
-  → sRGB encode                                     ← kernel (terminal, v0.1)
-  → display-referred f32 RGB                        ← output, consumer writes file
+  → linear scene-referred f32 RGB     (H, W, 3)   ← input to kernels
+  → exposure                                       ← kernel
+  → B&W conversion (four methods)     → (H, W, 1) ← kernel
+  → zone system                                    ← kernel
+  → local contrast (guided filter)                 ← kernel
+  → film grain                                     ← kernel
+  → split-toning                      → (H, W, 3) ← kernel
+  → vignette                                       ← kernel
+  → parametric tone curve                          ← kernel
+  → sRGB encode                                    ← kernel (terminal)
+  → display-referred f32 RGB                       ← output, consumer writes file
 ```
+
+The channel count collapses at the B&W stage and returns at
+split-toning. Kernels after that point (`vignette`, `tone_curve`,
+`encode_srgb`) accept any channel count, so a pipeline need not branch
+on whether toning is enabled.
 
 The pipeline order matters. Document any kernel that has order
 sensitivity in its doc comment.
@@ -95,8 +111,11 @@ sensitivity in its doc comment.
 Reference values worth committing to memory:
 - BT.709 luminance weights: `(0.2126, 0.7152, 0.0722)`. Default for
   sRGB-primary data.
-- Middle grey: 18% reflectance = `0.18` linear.
-- sRGB threshold: `0.0031308`.
+- Middle grey: 18% reflectance = `0.18` linear; OKLab lightness ≈ 0.565.
+- sRGB threshold: `0.0031308`. The transfer is C⁰ there but **not** C¹ —
+  slope 12.920 below, 12.703 above.
+- Hue band centres: red 0°, orange 30°, yellow 60°, green 120°,
+  aqua 180°, blue 240°, purple 270°, magenta 300°.
 
 Full derivations and citations live in `docs/architecture.md`.
 
@@ -156,6 +175,32 @@ Some differ from older tutorials:
   `pyproject.toml` builds a `0.2.0.dev0` wheel (PEP 440). The CI
   consistency check compares the raw TOML strings, so keeping both files
   identical is enough.
+- **Fixed-size arrays cross the boundary**: `[f32; 8]` works as a
+  `#[pyo3(get, set)]` field and as a `#[new]` argument, converting to
+  and from a Python list. Used by `HslWeightedParams.hue_weights` and
+  the OKLab triples in `SplitToningParams`.
+- **`#[pyo3(signature = ...)]` gives keyword defaults** on `#[new]`, so
+  `GrainParams(intensity=0.2)` works without writing a builder. Array
+  defaults are written inline: `shadow_oklab = [0.0, 0.0, 0.0]`.
+
+### Kernel-writing checklist (v0.2 practice)
+
+Each kernel shipped as one commit containing all of:
+
+1. `src/<kernel>.rs` with the kernel, its `#[pyclass]` params, and
+   `#[cfg(test)] mod tests`.
+2. The PyO3 binding in `lib.rs`, plus `m.add_class` / `m.add_function`.
+3. An integration test in `tests/kernels.rs` asserting a *property*, not
+   just a shape — the thing the kernel exists to do.
+4. Python smoke tests in `tests/ffi.py`, including the error paths.
+5. `examples/NN_<name>.rs` with an entry in `Cargo.toml`.
+6. A criterion benchmark on the 24 MP image.
+7. A section in `docs/architecture.md` with the citation.
+
+Prefer properties that would fail loudly if the maths were wrong:
+band ordering, exposure invariance, round-trip identity, determinism
+across thread counts. A test that only checks the output shape passes
+just as happily on a kernel that returns its input.
 
 ## 5. Code conventions
 

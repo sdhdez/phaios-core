@@ -73,3 +73,14 @@ difference.
 | `04_zone_system.rs` | `zone_system` | Tone-mapped result vs. unprocessed |
 | `05_local_contrast.rs` | `local_contrast` | Detail enhanced vs. flat original |
 | `06_srgb_encode.rs` | `encode_srgb` | Linear vs. encoded (the "gamma lift" on shadows) |
+| `07_exposure.rs` | `exposure` | ±2 EV, and why the visible step is smaller than the arithmetic one |
+| `08_hsl_weighted.rs` | `hsl_bw` | A blue weight darkens sky while foliage stays put; neutrals never move |
+| `09_tone_curve.rs` | `tone_curve` | Slope, offset and power isolated — offset is the one that lifts black |
+| `10_vignette.rs` | `vignette` | Circular vs. rectangular falloff; identical on a half-size preview |
+| `11_split_toning.rs` | `split_toning` | Sepia, selenium and cross-process; the untinted round trip stays neutral |
+| `12_film_grain.rs` | `film_grain` | The `4·L·(1−L)` envelope printed as a histogram; same seed, same bytes |
+
+Several examples print measurements as well as writing files — the
+round-trip error in 07 and 11, the preview/full-frame agreement in 10,
+the grain envelope in 12. Those numbers are the point of the example as
+much as the image is.
