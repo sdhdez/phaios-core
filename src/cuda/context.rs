@@ -225,6 +225,107 @@ impl Context {
     }
 }
 
+/// An image resident in device memory.
+///
+/// Created by [`Context::upload`] or returned by a device kernel; leaves
+/// the device only through [`Context::download`]. Carries a clone of its
+/// context (cheap: three `Arc`s), so it can never outlive the device
+/// state it points into, and kernels never need a separate context
+/// argument — which also makes cross-context mixing unrepresentable.
+pub struct DeviceImage {
+    pub(crate) ctx: Context,
+    pub(crate) buf: cudarc::driver::CudaSlice<f32>,
+    pub(crate) shape: (usize, usize, usize),
+}
+
+impl DeviceImage {
+    /// Shape as `(H, W, C)`.
+    #[must_use]
+    pub fn shape(&self) -> (usize, usize, usize) {
+        self.shape
+    }
+
+    /// The context this image lives on.
+    #[must_use]
+    pub fn context(&self) -> &Context {
+        &self.ctx
+    }
+}
+
+impl std::fmt::Debug for DeviceImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceImage")
+            .field("shape", &self.shape)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Context {
+    /// Upload an image to the device. Accepts any layout, like every
+    /// input in this crate; the staging copy is the same Zip-walk a CPU
+    /// kernel would do.
+    ///
+    /// # Errors
+    /// [`PhaiosError::Backend`] if allocation or the copy fails.
+    pub fn upload(&self, img: ndarray::ArrayView3<f32>) -> Result<DeviceImage, PhaiosError> {
+        let shape = img.dim();
+        let staged = img.as_standard_layout();
+        let host = staged
+            .as_slice()
+            .expect("as_standard_layout output is contiguous by construction");
+        let buf = self
+            .stream
+            .clone_htod(host)
+            .map_err(|e| backend_err("upload failed", e))?;
+        Ok(DeviceImage {
+            ctx: self.clone(),
+            buf,
+            shape,
+        })
+    }
+
+    /// Download an image from the device into a freshly allocated,
+    /// C-contiguous array. Synchronises the stream, so on return the
+    /// data is complete.
+    ///
+    /// # Errors
+    /// [`PhaiosError::Backend`] if the copy fails.
+    pub fn download(&self, img: &DeviceImage) -> Result<ndarray::Array3<f32>, PhaiosError> {
+        let mut out = ndarray::Array3::<f32>::zeros(img.shape);
+        if img.shape.0 * img.shape.1 * img.shape.2 > 0 {
+            self.stream
+                .memcpy_dtoh(
+                    &img.buf,
+                    out.as_slice_mut()
+                        .expect("freshly allocated Array3 is contiguous"),
+                )
+                .map_err(|e| backend_err("download failed", e))?;
+            self.stream
+                .synchronize()
+                .map_err(|e| backend_err("synchronize failed", e))?;
+        }
+        Ok(out)
+    }
+
+    /// Allocate an uninitialised device image of `shape`, for kernels
+    /// that fully overwrite their output.
+    pub(crate) fn alloc_image(
+        &self,
+        shape: (usize, usize, usize),
+    ) -> Result<DeviceImage, PhaiosError> {
+        let n = (shape.0 * shape.1 * shape.2).max(1);
+        // Safety: callers write every element before it is read; empty
+        // shapes allocate one element that is never read at all.
+        let buf = unsafe { self.stream.alloc::<f32>(n) }
+            .map_err(|e| backend_err("device allocation failed", e))?;
+        Ok(DeviceImage {
+            ctx: self.clone(),
+            buf,
+            shape,
+        })
+    }
+}
+
 impl std::fmt::Debug for Context {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Context")

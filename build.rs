@@ -48,6 +48,11 @@ fn main() {
         // the system gcc is newer than the toolkit officially supports.
         let status = Command::new(&nvcc)
             .arg("-arch=compute_80")
+            // No FMA contraction: Rust does not contract either, and with
+            // both sides emitting plain correctly-rounded mul/add, every
+            // kernel free of transcendentals agrees with the CPU to the
+            // bit instead of to a tolerance.
+            .arg("-fmad=false")
             .arg("-ptx")
             .arg("-o")
             .arg(&out)

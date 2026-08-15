@@ -124,6 +124,30 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 
 // ── Kernel ────────────────────────────────────────────────────────────────────
 
+/// Validate vignette parameters. Shared by CPU and CUDA backends so
+/// both reject the same inputs with the same messages.
+pub(crate) fn validate(params: &VignetteParams) -> Result<(), PhaiosError> {
+    if !params.amount.is_finite() {
+        return Err(PhaiosError::Parameter(format!(
+            "amount is {}, expected a finite value",
+            params.amount
+        )));
+    }
+    if !params.feather.is_finite() || !(0.0..=1.0).contains(&params.feather) {
+        return Err(PhaiosError::Parameter(format!(
+            "feather is {}, expected a value in 0..=1",
+            params.feather
+        )));
+    }
+    if !params.roundness.is_finite() || !(0.0..=1.0).contains(&params.roundness) {
+        return Err(PhaiosError::Parameter(format!(
+            "roundness is {}, expected a value in 0..=1",
+            params.roundness
+        )));
+    }
+    Ok(())
+}
+
 /// Apply a radial vignette.
 ///
 /// For each pixel, normalised coordinates `(nx, ny)` are formed with the
@@ -157,24 +181,7 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 ///   `feather` or `roundness` is outside 0..=1.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn vignette(img: ArrayView3<f32>, params: &VignetteParams) -> Result<Array3<f32>, PhaiosError> {
-    if !params.amount.is_finite() {
-        return Err(PhaiosError::Parameter(format!(
-            "amount is {}, expected a finite value",
-            params.amount
-        )));
-    }
-    if !params.feather.is_finite() || !(0.0..=1.0).contains(&params.feather) {
-        return Err(PhaiosError::Parameter(format!(
-            "feather is {}, expected a value in 0..=1",
-            params.feather
-        )));
-    }
-    if !params.roundness.is_finite() || !(0.0..=1.0).contains(&params.roundness) {
-        return Err(PhaiosError::Parameter(format!(
-            "roundness is {}, expected a value in 0..=1",
-            params.roundness
-        )));
-    }
+    validate(params)?;
 
     let (h, w, _) = img.dim();
     let mut out = Array3::<f32>::zeros(img.dim());

@@ -4,7 +4,8 @@
 use cudarc::driver::{CudaSlice, LaunchConfig, PushKernelArg};
 use ndarray::{Array3, ArrayView3};
 
-use crate::cuda::context::Context;
+use super::be;
+use crate::cuda::context::{Context, DeviceImage};
 use crate::error::PhaiosError;
 use crate::local_contrast::GuidedFilterParams;
 
@@ -21,49 +22,36 @@ fn grid_2d(h: usize, w: usize) -> LaunchConfig {
     }
 }
 
-/// Enhance local contrast on the GPU.
+/// Enhance local contrast, device-resident.
 ///
 /// Same algorithm as [`crate::local_contrast::local_contrast`], with one
 /// documented reformulation (`docs/ffi.md` §6): the four global **f64**
-/// summed-area tables become separable **f32** box filters, because each
-/// window sum then accumulates at most `2r+1` values per pass instead of
-/// feeding on a 24-million-element prefix sum — the regime where f32 is
-/// sufficient and f64 (at 1/64 rate on consumer cards) is not needed.
-/// Every output element is produced by one thread accumulating in a
-/// fixed sequential order, so the result is bit-reproducible on any
-/// launch geometry. Agreement with the CPU oracle is asserted at 1e-4
-/// relative; within-backend determinism is asserted exactly.
-///
-/// Per-call offload; accepts any input layout.
+/// summed-area tables become separable **f32** box filters with
+/// Kahan-compensated accumulation, because each window sum then adds at
+/// most `2r+1` values per pass instead of feeding on a
+/// 24-million-element prefix sum. Every output element is produced by
+/// one thread accumulating in a fixed sequential order, so the result
+/// is bit-reproducible on any launch geometry. Agreement with the CPU
+/// oracle is asserted at rtol 1e-4 / atol 1e-6.
 ///
 /// # Errors
-/// - [`PhaiosError::Shape`] / [`PhaiosError::Parameter`] — identical
-///   checks, messages included, as the CPU kernel.
-/// - [`PhaiosError::Backend`] if a device operation fails.
-#[must_use = "kernel returns a new array; ignoring it wastes work"]
-pub fn local_contrast(
-    ctx: &Context,
-    img: ArrayView3<f32>,
+/// Same [`PhaiosError::Shape`] / [`PhaiosError::Parameter`] as the CPU
+/// kernel; plus [`PhaiosError::Backend`] on device failure.
+#[must_use = "kernel returns a new image; ignoring it wastes work"]
+pub fn local_contrast_device(
+    img: &DeviceImage,
     params: &GuidedFilterParams,
     strength: f32,
-) -> Result<Array3<f32>, PhaiosError> {
-    crate::local_contrast::validate(img.shape(), params, strength)?;
+) -> Result<DeviceImage, PhaiosError> {
+    let (h, w, c) = img.shape();
+    crate::local_contrast::validate(&[h, w, c], params, strength)?;
 
-    let (h, w, _) = img.dim();
+    let ctx = img.context().clone();
     let n = h * w;
-    let mut out = Array3::<f32>::zeros((h, w, 1));
+    let mut out = ctx.alloc_image((h, w, 1))?;
     if n == 0 {
         return Ok(out);
     }
-
-    let staged = img.as_standard_layout();
-    let host_in = staged
-        .as_slice()
-        .expect("as_standard_layout output is contiguous by construction");
-
-    let be = |what: &'static str| {
-        move |e: cudarc::driver::DriverError| PhaiosError::Backend(format!("{what}: {e}"))
-    };
 
     // Radius beyond the image is legal (windows clamp), and clamping it
     // here also keeps the i32 kernel parameter in range.
@@ -71,13 +59,9 @@ pub fn local_contrast(
     let (h_i, w_i) = (h as i32, w as i32);
     let cfg = grid_2d(h, w);
 
-    let d_in = ctx
-        .stream
-        .clone_htod(host_in)
-        .map_err(be("upload failed"))?;
     // Safety (all four): uninitialised device buffers, each fully
-    // written by the kernel that produces it before any kernel reads it;
-    // the stream serialises the passes.
+    // written by the kernel that produces it before any kernel reads
+    // it; the stream serialises the passes.
     let mut buf_1: CudaSlice<f32> =
         unsafe { ctx.stream.alloc(n) }.map_err(be("device allocation failed"))?;
     let mut buf_2: CudaSlice<f32> =
@@ -86,14 +70,12 @@ pub fn local_contrast(
         unsafe { ctx.stream.alloc(n) }.map_err(be("device allocation failed"))?;
     let mut buf_b: CudaSlice<f32> =
         unsafe { ctx.stream.alloc(n) }.map_err(be("device allocation failed"))?;
-    let mut d_out: CudaSlice<f32> =
-        unsafe { ctx.stream.alloc(n) }.map_err(be("device allocation failed"))?;
 
     // Pass 1: row-window sums of L and L².
     let f = ctx.function("box_h_l_l2", PTX)?;
     let mut launch = ctx.stream.launch_builder(&f);
     launch
-        .arg(&d_in)
+        .arg(&img.buf)
         .arg(&mut buf_1)
         .arg(&mut buf_2)
         .arg(&h_i)
@@ -137,21 +119,26 @@ pub fn local_contrast(
     launch
         .arg(&buf_1)
         .arg(&buf_2)
-        .arg(&d_in)
-        .arg(&mut d_out)
+        .arg(&img.buf)
+        .arg(&mut out.buf)
         .arg(&h_i)
         .arg(&w_i)
         .arg(&r)
         .arg(&strength);
     unsafe { launch.launch(cfg) }.map_err(be("final_out launch failed"))?;
 
-    ctx.stream
-        .memcpy_dtoh(
-            &d_out,
-            out.as_slice_mut()
-                .expect("freshly allocated Array3 is contiguous"),
-        )
-        .map_err(be("download failed"))?;
-    ctx.stream.synchronize().map_err(be("synchronize failed"))?;
     Ok(out)
+}
+
+/// Per-call offload form of [`local_contrast_device`].
+#[must_use = "kernel returns a new array; ignoring it wastes work"]
+pub fn local_contrast(
+    ctx: &Context,
+    img: ArrayView3<f32>,
+    params: &GuidedFilterParams,
+    strength: f32,
+) -> Result<Array3<f32>, PhaiosError> {
+    crate::local_contrast::validate(img.shape(), params, strength)?;
+    let device = ctx.upload(img)?;
+    ctx.download(&local_contrast_device(&device, params, strength)?)
 }

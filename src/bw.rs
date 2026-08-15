@@ -122,7 +122,9 @@ impl ColorFilter {
 
 // ── Shape validation ─────────────────────────────────────────────────────────
 
-fn validate_rgb(img: ArrayView3<f32>) -> Result<(), PhaiosError> {
+/// Validate `(H, W, 3)` shape. Shared by CPU and CUDA backends so both
+/// reject the same inputs with the same message.
+pub(crate) fn validate_rgb(img: ArrayView3<f32>) -> Result<(), PhaiosError> {
     if img.shape()[2] != 3 {
         return Err(PhaiosError::Shape(format!(
             "expected (H, W, 3) RGB array, got shape {:?}",

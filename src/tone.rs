@@ -252,6 +252,30 @@ impl Default for ToneCurveParams {
     }
 }
 
+/// Validate tone-curve parameters. Shared by CPU and CUDA backends so
+/// both reject the same inputs with the same messages.
+pub(crate) fn validate_tone_curve(params: &ToneCurveParams) -> Result<(), PhaiosError> {
+    if !params.slope.is_finite() {
+        return Err(PhaiosError::Parameter(format!(
+            "slope is {}, expected a finite value",
+            params.slope
+        )));
+    }
+    if !params.offset.is_finite() {
+        return Err(PhaiosError::Parameter(format!(
+            "offset is {}, expected a finite value",
+            params.offset
+        )));
+    }
+    if !params.power.is_finite() || params.power <= 0.0 {
+        return Err(PhaiosError::Parameter(format!(
+            "power is {}, expected a finite value > 0",
+            params.power
+        )));
+    }
+    Ok(())
+}
+
 /// Apply a parametric slope/offset/power tone curve.
 ///
 /// Computes `out = max(in · slope + offset, 0)^power`, element-wise.
@@ -289,24 +313,7 @@ pub fn tone_curve(
     img: ArrayView3<f32>,
     params: &ToneCurveParams,
 ) -> Result<Array3<f32>, PhaiosError> {
-    if !params.slope.is_finite() {
-        return Err(PhaiosError::Parameter(format!(
-            "slope is {}, expected a finite value",
-            params.slope
-        )));
-    }
-    if !params.offset.is_finite() {
-        return Err(PhaiosError::Parameter(format!(
-            "offset is {}, expected a finite value",
-            params.offset
-        )));
-    }
-    if !params.power.is_finite() || params.power <= 0.0 {
-        return Err(PhaiosError::Parameter(format!(
-            "power is {}, expected a finite value > 0",
-            params.power
-        )));
-    }
+    validate_tone_curve(params)?;
 
     let ToneCurveParams {
         slope,

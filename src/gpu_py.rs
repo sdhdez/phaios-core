@@ -91,8 +91,57 @@ impl GpuContext {
         self.inner.fingerprint()
     }
 
+    /// Upload an image to this device, returning a ``GpuImage`` that
+    /// stays resident until downloaded. Accepts any layout.
+    fn upload(&self, py: Python<'_>, img: PyReadonlyArray3<f32>) -> PyResult<GpuImage> {
+        let view = img.as_array();
+        let inner = self.inner.clone();
+        let device = py.detach(move || inner.upload(view))?;
+        Ok(GpuImage { inner: device })
+    }
+
     fn __repr__(&self) -> String {
         format!("GpuContext({})", self.inner.fingerprint())
+    }
+}
+
+/// An image resident in GPU memory.
+///
+/// Produced by ``GpuContext.upload`` or returned by a GPU kernel; comes
+/// back to numpy through ``download()``. Chaining kernels over
+/// ``GpuImage`` values pays PCIe once at each end of the pipeline
+/// instead of per stage. The image keeps its context alive, so dropping
+/// the ``GpuContext`` first is safe.
+#[pyclass(name = "GpuImage", frozen)]
+pub struct GpuImage {
+    pub(crate) inner: cuda::context::DeviceImage,
+}
+
+#[pymethods]
+impl GpuImage {
+    /// Shape as ``(H, W, C)``.
+    #[getter]
+    fn shape(&self) -> (usize, usize, usize) {
+        self.inner.shape()
+    }
+
+    /// The fingerprint of the context this image lives on.
+    #[getter]
+    fn fingerprint(&self) -> String {
+        self.inner.context().fingerprint()
+    }
+
+    /// Download to a freshly allocated, C-contiguous float32 array.
+    fn download(&self, py: Python<'_>) -> PyResult<Py<PyArray3<f32>>> {
+        let ctx = self.inner.context().clone();
+        // Safety of the borrow across detach: DeviceImage is Sync.
+        let result = py.detach(|| ctx.download(&self.inner))?;
+        Ok(result.into_pyarray(py).unbind())
+    }
+
+    fn __repr__(&self) -> String {
+        let (h, w, c) = self.inner.shape();
+        format!("GpuImage(shape=({h}, {w}, {c}))")
     }
 }
 
@@ -119,21 +168,22 @@ fn devices() -> Vec<GpuInfo> {
 /// Apply exposure compensation in EV stops on the GPU.
 ///
 /// Bit-identical to ``phaios_core.exposure`` — the conformance suite
-/// asserts equality with no tolerance. Accepts any input layout.
+/// asserts equality with no tolerance. Signature-compatible with the
+/// CPU function: same arguments after the image, so a pipeline can
+/// switch backends by switching what it passes.
 ///
 /// Parameters
 /// ----------
-/// ctx : GpuContext
-///     The device to run on.
-/// img : numpy.ndarray
-///     Input array, shape ``(H, W, C)``, dtype ``float32``, any layout.
+/// img : GpuImage
+///     Device-resident input, from ``GpuContext.upload`` or a previous
+///     kernel.
 /// stops : float
 ///     Exposure adjustment in EV.
 ///
 /// Returns
 /// -------
-/// numpy.ndarray
-///     Shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+/// GpuImage
+///     Device-resident result; call ``download()`` to retrieve it.
 ///
 /// Raises
 /// ------
@@ -142,16 +192,9 @@ fn devices() -> Vec<GpuInfo> {
 /// RuntimeError
 ///     If a device operation fails.
 #[pyfunction]
-fn exposure(
-    py: Python<'_>,
-    ctx: &GpuContext,
-    img: PyReadonlyArray3<f32>,
-    stops: f32,
-) -> PyResult<Py<PyArray3<f32>>> {
-    let view = img.as_array();
-    let inner = ctx.inner.clone();
-    let result = py.detach(move || cuda::kernels::exposure(&inner, view, stops))?;
-    Ok(result.into_pyarray(py).unbind())
+fn exposure(py: Python<'_>, img: &GpuImage, stops: f32) -> PyResult<GpuImage> {
+    let result = py.detach(|| cuda::kernels::exposure_device(&img.inner, stops))?;
+    Ok(GpuImage { inner: result })
 }
 
 /// Enhance local contrast using the guided filter, on the GPU.
@@ -164,10 +207,8 @@ fn exposure(
 ///
 /// Parameters
 /// ----------
-/// ctx : GpuContext
-///     The device to run on.
-/// img : numpy.ndarray
-///     Input array, shape ``(H, W, 1)``, dtype ``float32``, any layout.
+/// img : GpuImage
+///     Device-resident ``(H, W, 1)`` input.
 /// params : GuidedFilterParams
 ///     The same parameter object the CPU kernel takes.
 /// strength : float
@@ -175,8 +216,8 @@ fn exposure(
 ///
 /// Returns
 /// -------
-/// numpy.ndarray
-///     Shape ``(H, W, 1)``, dtype ``float32``, C-contiguous.
+/// GpuImage
+///     Device-resident ``(H, W, 1)`` result.
 ///
 /// Raises
 /// ------
@@ -187,17 +228,61 @@ fn exposure(
 #[pyfunction]
 fn local_contrast(
     py: Python<'_>,
-    ctx: &GpuContext,
-    img: PyReadonlyArray3<f32>,
+    img: &GpuImage,
     params: pyo3::PyRef<'_, crate::local_contrast::GuidedFilterParams>,
     strength: f32,
-) -> PyResult<Py<PyArray3<f32>>> {
-    let view = img.as_array();
-    let inner = ctx.inner.clone();
+) -> PyResult<GpuImage> {
     let params_owned = params.clone();
     let result =
-        py.detach(move || cuda::kernels::local_contrast(&inner, view, &params_owned, strength))?;
-    Ok(result.into_pyarray(py).unbind())
+        py.detach(|| cuda::kernels::local_contrast_device(&img.inner, &params_owned, strength))?;
+    Ok(GpuImage { inner: result })
+}
+
+/// IEC 61966-2-1 sRGB transfer on the GPU. Mirrors
+/// ``phaios_core.encode_srgb``; agreement bounded by one ``powf``.
+#[pyfunction]
+fn encode_srgb(py: Python<'_>, img: &GpuImage) -> PyResult<GpuImage> {
+    let result = py.detach(|| cuda::kernels::encode_srgb_device(&img.inner))?;
+    Ok(GpuImage { inner: result })
+}
+
+/// ASC CDL tone curve on the GPU. Mirrors ``phaios_core.tone_curve``;
+/// the ``power == 1`` and identity paths are bit-exact.
+#[pyfunction]
+fn tone_curve(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: pyo3::PyRef<'_, crate::tone::ToneCurveParams>,
+) -> PyResult<GpuImage> {
+    let params_owned = params.clone();
+    let result = py.detach(|| cuda::kernels::tone_curve_device(&img.inner, &params_owned))?;
+    Ok(GpuImage { inner: result })
+}
+
+/// Radial vignette on the GPU. Mirrors ``phaios_core.vignette``;
+/// bit-exact against the CPU.
+#[pyfunction]
+fn vignette(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: pyo3::PyRef<'_, crate::vignette::VignetteParams>,
+) -> PyResult<GpuImage> {
+    let params_owned = params.clone();
+    let result = py.detach(|| cuda::kernels::vignette_device(&img.inner, &params_owned))?;
+    Ok(GpuImage { inner: result })
+}
+
+/// Standard-luminance B&W conversion on the GPU: ``(H, W, 3)`` in,
+/// ``(H, W, 1)`` out. Mirrors ``phaios_core.luminance_bw``; bit-exact.
+#[pyfunction]
+#[pyo3(signature = (img, standard = crate::bw::LuminanceStandard::Bt709))]
+fn luminance_bw(
+    py: Python<'_>,
+    img: &GpuImage,
+    standard: crate::bw::LuminanceStandard,
+) -> PyResult<GpuImage> {
+    let result = py.detach(|| cuda::kernels::luminance_bw_device(&img.inner, standard))?;
+    Ok(GpuImage { inner: result })
 }
 
 /// Register the `gpu` submodule on `phaios_core`.
@@ -205,10 +290,15 @@ pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult
     let gpu = PyModule::new(py, "gpu")?;
     gpu.add_class::<GpuInfo>()?;
     gpu.add_class::<GpuContext>()?;
+    gpu.add_class::<GpuImage>()?;
     gpu.add_function(wrap_pyfunction!(available, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(devices, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(exposure, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(local_contrast, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(encode_srgb, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(tone_curve, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(vignette, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(luminance_bw, &gpu)?)?;
     parent.add_submodule(&gpu)?;
     // Without this, `import phaios_core.gpu` / `from phaios_core.gpu
     // import ...` fail: add_submodule creates an attribute, not an

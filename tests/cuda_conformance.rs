@@ -218,13 +218,20 @@ fn local_contrast_gpu_output_satisfies_cpu_properties() {
         assert!((v - 0.3).abs() < 1e-4, "constant image changed: {v}");
     }
 
-    // Large constant: the f32 cancellation regime. The CPU bound is 1.0
-    // absolute at 1e7; the GPU's shorter accumulations meet it too.
+    // Large constant: the f32 cancellation regime, and a worked example
+    // of the documented f32-vs-f64 difference. One f32 ULP at 1e7 is
+    // exactly 1.0, and the GPU's f32 means land within a couple of ULP
+    // of the value — where the CPU's f64 tables hold it to < 1 ULP. The
+    // GPU bound is therefore 4 ULP at this magnitude, not the CPU's
+    // sub-ULP 1.0.
     let big = Array3::from_elem((128, 128, 1), 1.0e7_f32);
     let params8 = phaios_core::local_contrast::GuidedFilterParams::new(8, 0.01);
     let out = cuda::kernels::local_contrast(&ctx, big.view(), &params8, 1.0).unwrap();
     for &v in out.iter() {
-        assert!((v - 1.0e7).abs() < 1.0, "1e7 constant: got {v}");
+        assert!(
+            (v - 1.0e7).abs() <= 4.0,
+            "1e7 constant: got {v} (> 4 ULP off)"
+        );
     }
 }
 
@@ -279,6 +286,146 @@ fn local_contrast_validation_is_shared_with_the_cpu() {
         let gpu_err =
             cuda::kernels::local_contrast(&ctx, input.view(), params, strength).unwrap_err();
         assert_eq!(cpu_err.to_string(), gpu_err.to_string());
+    }
+}
+
+// ── the element-wise kernels ─────────────────────────────────────────────────
+
+/// vignette is bit-exact: every operation involved (mul, add, div,
+/// sqrt, min/max) is correctly rounded on both sides and the PTX build
+/// disables FMA contraction.
+#[test]
+fn vignette_is_bit_exact() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(517, 733, 3);
+    for (amount, feather, roundness) in [
+        (0.5_f32, 1.0_f32, 0.0_f32),
+        (0.5, 0.2, 0.0),
+        (0.5, 1.0, 1.0),
+        (-0.5, 0.7, 0.3),
+        (0.0, 0.5, 0.0), // identity fast path
+        (4.0, 1.0, 0.0), // clamp-to-zero regime
+        (0.5, 0.0, 0.5), // degenerate feather -> hard step
+    ] {
+        let params = phaios_core::vignette::VignetteParams::new(amount, feather, roundness);
+        let cpu = phaios_core::vignette::vignette(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::vignette(&ctx, img.view(), &params).unwrap();
+        assert_eq!(
+            cpu, gpu,
+            "vignette diverged at ({amount}, {feather}, {roundness})"
+        );
+    }
+}
+
+/// luminance_bw is bit-exact: a left-to-right dot product with no FMA.
+#[test]
+fn luminance_bw_is_bit_exact() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(521, 733, 3);
+    for standard in [
+        phaios_core::bw::LuminanceStandard::Bt601,
+        phaios_core::bw::LuminanceStandard::Bt709,
+        phaios_core::bw::LuminanceStandard::Bt2020,
+    ] {
+        let cpu = phaios_core::bw::luminance_bw(img.view(), standard).unwrap();
+        let gpu = cuda::kernels::luminance_bw(&ctx, img.view(), standard).unwrap();
+        assert_eq!(cpu, gpu, "luminance_bw diverged for {standard:?}");
+        assert_eq!(gpu.dim().2, 1, "channel collapse");
+    }
+}
+
+/// tone_curve: the identity and power == 1 paths are bit-exact; the
+/// general path carries one powf and is bounded.
+#[test]
+fn tone_curve_exact_paths_and_powf_bound() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(517, 733, 1);
+
+    for (slope, offset) in [(1.0_f32, 0.0_f32), (1.4, 0.05), (0.8, -0.02)] {
+        let params = phaios_core::tone::ToneCurveParams::new(slope, offset, 1.0);
+        let cpu = phaios_core::tone::tone_curve(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::tone_curve(&ctx, img.view(), &params).unwrap();
+        assert_eq!(cpu, gpu, "power == 1 path diverged at ({slope}, {offset})");
+    }
+
+    for (slope, offset, power) in [
+        (1.0_f32, 0.0_f32, 0.7_f32),
+        (1.15, 0.01, 0.85),
+        (1.3, -0.05, 1.7),
+    ] {
+        let params = phaios_core::tone::ToneCurveParams::new(slope, offset, power);
+        let cpu = phaios_core::tone::tone_curve(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::tone_curve(&ctx, img.view(), &params).unwrap();
+        let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+        assert!(
+            v <= 1.0,
+            "powf path at ({slope}, {offset}, {power}): {v:.2}x the (1e-5, 1e-7) bound"
+        );
+    }
+}
+
+/// encode_srgb: the linear branch is exact; the power branch carries
+/// one powf and is bounded.
+#[test]
+fn encode_srgb_agrees_within_powf_bound() {
+    let Some(ctx) = try_context() else { return };
+    // Sweep through both branches, negatives included.
+    let img =
+        ndarray::Array3::from_shape_fn((1, 8192, 1), |(_, x, _)| (x as f32 / 8192.0) * 1.6 - 0.1);
+    let cpu = phaios_core::encode::encode_srgb(img.view()).unwrap();
+    let gpu = cuda::kernels::encode_srgb(&ctx, img.view()).unwrap();
+    let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+    assert!(v <= 1.0, "encode_srgb: {v:.2}x the (1e-5, 1e-7) bound");
+}
+
+// ── the resident pipeline ────────────────────────────────────────────────────
+
+/// One upload, five device-resident stages, one download — against the
+/// same five stages on the CPU. This is the chaining property Stage C
+/// exists to prove; the bound is local_contrast's (loosest in chain).
+#[test]
+fn resident_chain_matches_cpu_chain() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(512, 768, 3);
+    let gf = phaios_core::local_contrast::GuidedFilterParams::new(8, 0.01);
+    let tc = phaios_core::tone::ToneCurveParams::new(1.15, 0.01, 0.85);
+    let vg = phaios_core::vignette::VignetteParams::new(0.35, 0.8, 0.1);
+
+    // CPU chain.
+    let c = phaios_core::bw::luminance_bw(img.view(), Default::default()).unwrap();
+    let c = phaios_core::local_contrast::local_contrast(c.view(), &gf, 0.4).unwrap();
+    let c = phaios_core::tone::tone_curve(c.view(), &tc).unwrap();
+    let c = phaios_core::vignette::vignette(c.view(), &vg).unwrap();
+    let cpu = phaios_core::encode::encode_srgb(c.view()).unwrap();
+
+    // GPU chain: one upload, one download.
+    let d = ctx.upload(img.view()).unwrap();
+    let d = cuda::kernels::luminance_bw_device(&d, Default::default()).unwrap();
+    let d = cuda::kernels::local_contrast_device(&d, &gf, 0.4).unwrap();
+    let d = cuda::kernels::tone_curve_device(&d, &tc).unwrap();
+    let d = cuda::kernels::vignette_device(&d, &vg).unwrap();
+    let d = cuda::kernels::encode_srgb_device(&d).unwrap();
+    let gpu = ctx.download(&d).unwrap();
+
+    assert_eq!(gpu.dim(), cpu.dim());
+    let v = worst_violation(&cpu, &gpu, 2e-4, 1e-6);
+    assert!(v <= 1.0, "resident chain: {v:.2}x the (2e-4, 1e-6) bound");
+}
+
+/// Upload → download round trip is bit-exact, for every layout.
+#[test]
+fn upload_download_round_trips_exactly() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(64, 48, 3);
+    for view in [
+        img.view(),
+        img.slice(s![..;2, ..;3, ..]),
+        img.slice(s![..;-1, .., ..]),
+    ] {
+        let device = ctx.upload(view).unwrap();
+        let back = ctx.download(&device).unwrap();
+        assert_eq!(back, view.to_owned(), "round trip corrupted data");
+        assert!(back.is_standard_layout());
     }
 }
 
