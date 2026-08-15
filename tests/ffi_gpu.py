@@ -101,6 +101,39 @@ def test_exposure_same_validation_as_cpu(ctx):
 
 
 @needs_device
+def test_local_contrast_agrees_with_cpu(ctx):
+    rng = np.random.default_rng(3)
+    img = rng.random((256, 384, 1)).astype(np.float32)
+    params = ph.GuidedFilterParams(8, 0.01)
+    cpu = ph.local_contrast(img, params, 0.5)
+    out = gpu.local_contrast(ctx, img, params, 0.5)
+    np.testing.assert_allclose(out, cpu, rtol=1e-4, atol=1e-6)
+    assert out.flags["C_CONTIGUOUS"]
+
+
+@needs_device
+def test_local_contrast_reuses_cpu_param_class(ctx):
+    """The same GuidedFilterParams object drives both backends — the
+    property that keeps sidecars and presets backend-neutral."""
+    img = np.full((32, 32, 1), 0.3, dtype=np.float32)
+    params = ph.GuidedFilterParams(4, 0.01)
+    a = ph.local_contrast(img, params, 0.5)
+    b = gpu.local_contrast(ctx, img, params, 0.5)
+    np.testing.assert_allclose(a, b, rtol=1e-4, atol=1e-6)
+
+
+@needs_device
+def test_local_contrast_same_validation_as_cpu(ctx):
+    rgb = np.ones((4, 4, 3), dtype=np.float32)
+    params = ph.GuidedFilterParams(4, 0.01)
+    with pytest.raises(ValueError) as gpu_err:
+        gpu.local_contrast(ctx, rgb, params, 0.5)
+    with pytest.raises(ValueError) as cpu_err:
+        ph.local_contrast(rgb, params, 0.5)
+    assert str(gpu_err.value) == str(cpu_err.value)
+
+
+@needs_device
 def test_fingerprint_is_stable_across_contexts():
     a = gpu.GpuContext()
     b = gpu.GpuContext()

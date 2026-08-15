@@ -161,6 +161,33 @@ fn guided_filter(img: ArrayView2<f32>, radius: u32, eps: f32) -> Array2<f32> {
 
 // ── Public kernel ─────────────────────────────────────────────────────────────
 
+/// Validate shape and parameters. Shared verbatim by the CPU kernel and
+/// the CUDA kernel in [`crate::cuda`], so both backends reject exactly
+/// the same inputs with exactly the same messages.
+pub(crate) fn validate(
+    shape: &[usize],
+    params: &GuidedFilterParams,
+    strength: f32,
+) -> Result<(), PhaiosError> {
+    if shape[2] != 1 {
+        return Err(PhaiosError::Shape(format!(
+            "local_contrast expects (H, W, 1) luminance input, got shape {shape:?}"
+        )));
+    }
+    if !params.eps.is_finite() || params.eps < 0.0 {
+        return Err(PhaiosError::Parameter(format!(
+            "eps is {}, expected a finite value >= 0",
+            params.eps
+        )));
+    }
+    if !strength.is_finite() {
+        return Err(PhaiosError::Parameter(format!(
+            "strength is {strength}, expected a finite value"
+        )));
+    }
+    Ok(())
+}
+
 /// Enhance local contrast using the guided filter.
 ///
 /// Computes `output = L + strength · (L − guided_filter(L, radius, ε))`.
@@ -192,23 +219,7 @@ pub fn local_contrast(
     params: &GuidedFilterParams,
     strength: f32,
 ) -> Result<Array3<f32>, PhaiosError> {
-    if img.shape()[2] != 1 {
-        return Err(PhaiosError::Shape(format!(
-            "local_contrast expects (H, W, 1) luminance input, got shape {:?}",
-            img.shape()
-        )));
-    }
-    if !params.eps.is_finite() || params.eps < 0.0 {
-        return Err(PhaiosError::Parameter(format!(
-            "eps is {}, expected a finite value >= 0",
-            params.eps
-        )));
-    }
-    if !strength.is_finite() {
-        return Err(PhaiosError::Parameter(format!(
-            "strength is {strength}, expected a finite value"
-        )));
-    }
+    validate(img.shape(), params, strength)?;
     let (h, w, _) = img.dim();
     let img2d = img.index_axis(ndarray::Axis(2), 0);
     let smooth = guided_filter(img2d, params.radius, params.eps);

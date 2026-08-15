@@ -145,6 +145,143 @@ fn exposure_accepts_empty_input() {
     assert_eq!(out.dim(), (0, 8, 1));
 }
 
+// ── local_contrast: the reformulated kernel ──────────────────────────────────
+
+/// Worst violation of the `|x − y| <= atol + rtol·|x|` bound, as a
+/// multiple of the bound. <= 1.0 means every element passes. The same
+/// two-term form numpy's `assert_allclose` uses: a pure relative metric
+/// punishes outputs that legitimately cross zero (out = L + s·(L − q)
+/// does), where a few-ULP absolute difference is a huge ratio.
+fn worst_violation(a: &Array3<f32>, b: &Array3<f32>, rtol: f32, atol: f32) -> f32 {
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).abs() / (atol + rtol * x.abs()))
+        .fold(0.0, f32::max)
+}
+
+/// GPU guided filter agrees with the CPU oracle within 1e-4 relative.
+///
+/// Not bit-exact by design: the CPU uses global f64 summed-area tables,
+/// the GPU uses separable f32 box filters with Kahan compensation — a
+/// documented algorithm reformulation (`docs/ffi.md` §6). The committed
+/// bound is what makes a driver-update regression visible.
+#[test]
+fn local_contrast_agrees_with_cpu_oracle() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(517, 733, 1);
+
+    for (radius, eps, strength) in [
+        (8_u32, 0.01_f32, 0.5_f32),
+        (3, 0.001, 1.0),
+        (1, 0.1, 2.0),
+        (64, 0.01, 0.7),
+        (9_999, 0.1, 0.7), // window degenerates to the whole image
+    ] {
+        let params = phaios_core::local_contrast::GuidedFilterParams::new(radius, eps);
+        let cpu =
+            phaios_core::local_contrast::local_contrast(img.view(), &params, strength).unwrap();
+        let gpu = cuda::kernels::local_contrast(&ctx, img.view(), &params, strength).unwrap();
+        // Committed bound: rtol 1e-4, atol 1e-6 — the same numbers the
+        // Python suite asserts through the FFI.
+        let v = worst_violation(&cpu, &gpu, 1e-4, 1e-6);
+        assert!(
+            v <= 1.0,
+            "r={radius} eps={eps} s={strength}: worst element at {v:.2}x the (1e-4, 1e-6) bound"
+        );
+    }
+}
+
+/// radius = 0 makes the filter the identity — and because no windowed
+/// arithmetic happens at all in that configuration, CPU and GPU agree
+/// bit-for-bit, not merely closely.
+#[test]
+fn local_contrast_radius_zero_is_bit_exact_identity() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(64, 64, 1);
+    let params = phaios_core::local_contrast::GuidedFilterParams::new(0, 0.0);
+    let gpu = cuda::kernels::local_contrast(&ctx, img.view(), &params, 1.0).unwrap();
+    assert_eq!(gpu, img, "radius 0 must be the exact identity");
+}
+
+/// The property tests the CPU kernel already answers to, re-asserted on
+/// GPU output directly — a tolerance comparison would forgive a kernel
+/// that is wrong the same way on both sides; these do not.
+#[test]
+fn local_contrast_gpu_output_satisfies_cpu_properties() {
+    let Some(ctx) = try_context() else { return };
+    let params = phaios_core::local_contrast::GuidedFilterParams::new(4, 0.01);
+
+    // Constant image: detail is zero everywhere, output == input.
+    let flat = Array3::from_elem((32, 32, 1), 0.3_f32);
+    let out = cuda::kernels::local_contrast(&ctx, flat.view(), &params, 0.5).unwrap();
+    for &v in out.iter() {
+        assert!((v - 0.3).abs() < 1e-4, "constant image changed: {v}");
+    }
+
+    // Large constant: the f32 cancellation regime. The CPU bound is 1.0
+    // absolute at 1e7; the GPU's shorter accumulations meet it too.
+    let big = Array3::from_elem((128, 128, 1), 1.0e7_f32);
+    let params8 = phaios_core::local_contrast::GuidedFilterParams::new(8, 0.01);
+    let out = cuda::kernels::local_contrast(&ctx, big.view(), &params8, 1.0).unwrap();
+    for &v in out.iter() {
+        assert!((v - 1.0e7).abs() < 1.0, "1e7 constant: got {v}");
+    }
+}
+
+/// Eight runs, one byte pattern.
+#[test]
+fn local_contrast_is_deterministic_within_the_backend() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(256, 256, 1);
+    let params = phaios_core::local_contrast::GuidedFilterParams::new(8, 0.01);
+    let first = cuda::kernels::local_contrast(&ctx, img.view(), &params, 0.5).unwrap();
+    for run in 1..8 {
+        let again = cuda::kernels::local_contrast(&ctx, img.view(), &params, 0.5).unwrap();
+        assert_eq!(first, again, "run {run} differed");
+    }
+}
+
+/// Strided input agrees with its contiguous copy.
+#[test]
+fn local_contrast_is_layout_agnostic() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(64, 48, 1);
+    let view = img.slice(s![..;2, ..;3, ..]);
+    let params = phaios_core::local_contrast::GuidedFilterParams::new(3, 0.01);
+    let gpu = cuda::kernels::local_contrast(&ctx, view, &params, 0.7).unwrap();
+    let contiguous = view.to_owned();
+    let gpu_c = cuda::kernels::local_contrast(&ctx, contiguous.view(), &params, 0.7).unwrap();
+    assert_eq!(gpu, gpu_c, "strided and contiguous inputs diverged");
+}
+
+/// Validation parity with the CPU, message for message.
+#[test]
+fn local_contrast_validation_is_shared_with_the_cpu() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(4, 4, 1);
+    let rgb = pseudo_random_image(4, 4, 3);
+
+    let bad_eps = phaios_core::local_contrast::GuidedFilterParams::new(4, -0.01);
+    let good = phaios_core::local_contrast::GuidedFilterParams::new(4, 0.01);
+
+    let cases: [(
+        &Array3<f32>,
+        &phaios_core::local_contrast::GuidedFilterParams,
+        f32,
+    ); 3] = [
+        (&rgb, &good, 0.5),           // wrong channel count
+        (&img, &bad_eps, 0.5),        // negative eps
+        (&img, &good, f32::INFINITY), // non-finite strength
+    ];
+    for (input, params, strength) in cases {
+        let cpu_err = phaios_core::local_contrast::local_contrast(input.view(), params, strength)
+            .unwrap_err();
+        let gpu_err =
+            cuda::kernels::local_contrast(&ctx, input.view(), params, strength).unwrap_err();
+        assert_eq!(cpu_err.to_string(), gpu_err.to_string());
+    }
+}
+
 // ── enumeration and context behaviour ────────────────────────────────────────
 
 /// Enumeration never panics, and every reported-supported device can

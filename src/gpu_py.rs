@@ -154,6 +154,52 @@ fn exposure(
     Ok(result.into_pyarray(py).unbind())
 }
 
+/// Enhance local contrast using the guided filter, on the GPU.
+///
+/// Same algorithm as ``phaios_core.local_contrast`` with one documented
+/// reformulation: the CPU's global f64 summed-area tables become
+/// separable f32 box filters with compensated summation. Agreement with
+/// the CPU is bounded at 1e-4 relative (asserted by the conformance
+/// suite); output is bit-reproducible within this backend.
+///
+/// Parameters
+/// ----------
+/// ctx : GpuContext
+///     The device to run on.
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, 1)``, dtype ``float32``, any layout.
+/// params : GuidedFilterParams
+///     The same parameter object the CPU kernel takes.
+/// strength : float
+///     Detail amplification factor.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, 1)``, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     Same conditions and messages as the CPU kernel.
+/// RuntimeError
+///     If a device operation fails.
+#[pyfunction]
+fn local_contrast(
+    py: Python<'_>,
+    ctx: &GpuContext,
+    img: PyReadonlyArray3<f32>,
+    params: pyo3::PyRef<'_, crate::local_contrast::GuidedFilterParams>,
+    strength: f32,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let inner = ctx.inner.clone();
+    let params_owned = params.clone();
+    let result =
+        py.detach(move || cuda::kernels::local_contrast(&inner, view, &params_owned, strength))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 /// Register the `gpu` submodule on `phaios_core`.
 pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     let gpu = PyModule::new(py, "gpu")?;
@@ -162,6 +208,7 @@ pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult
     gpu.add_function(wrap_pyfunction!(available, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(devices, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(exposure, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(local_contrast, &gpu)?)?;
     parent.add_submodule(&gpu)?;
     // Without this, `import phaios_core.gpu` / `from phaios_core.gpu
     // import ...` fail: add_submodule creates an attribute, not an
