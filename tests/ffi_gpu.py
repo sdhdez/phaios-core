@@ -168,6 +168,43 @@ def test_resident_chain_one_upload_one_download(ctx):
 
 
 @needs_device
+def test_full_pipeline_resident(ctx):
+    """All nine v0.2 stages on the GPU, one upload, one download."""
+    rng = np.random.default_rng(0)
+    img = rng.random((256, 384, 3)).astype(np.float32)
+    hsl = ph.HslWeightedParams([0, 0, 0.4, 0.2, 0, -0.5, 0, 0])
+    zones = ph.ZoneParams({3: -0.3, 7: 0.4})
+    gf = ph.GuidedFilterParams(8, 0.01)
+    grain = ph.GrainParams(0.12, 1.5, 20260815)
+    toning = ph.SplitToningParams([0.0, -0.02, -0.04], [0.0, 0.03, 0.03])
+    vg = ph.VignetteParams(0.35, 0.8, 0.1)
+    tc = ph.ToneCurveParams(1.1, 0.0, 0.9)
+
+    c = ph.exposure(img, 0.5)
+    c = ph.hsl_bw(c, hsl)
+    c = ph.zone_system(c, zones)
+    c = ph.local_contrast(c, gf, 0.4)
+    c = ph.film_grain(c, grain)
+    c = ph.split_toning(c, toning)
+    c = ph.vignette(c, vg)
+    c = ph.tone_curve(c, tc)
+    cpu = ph.encode_srgb(c)
+
+    x = ctx.upload(img)
+    x = gpu.exposure(x, 0.5)
+    x = gpu.hsl_bw(x, hsl)
+    x = gpu.zone_system(x, zones)
+    x = gpu.local_contrast(x, gf, 0.4)
+    x = gpu.film_grain(x, grain)
+    x = gpu.split_toning(x, toning)
+    x = gpu.vignette(x, vg)
+    x = gpu.tone_curve(x, tc)
+    out = gpu.encode_srgb(x).download()
+
+    np.testing.assert_allclose(out, cpu, rtol=1e-3, atol=1e-5)
+
+
+@needs_device
 def test_image_survives_context_drop():
     """A GpuImage keeps its context alive; dropping the GpuContext first
     must not invalidate the image."""

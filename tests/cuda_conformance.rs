@@ -378,7 +378,229 @@ fn encode_srgb_agrees_within_powf_bound() {
     assert!(v <= 1.0, "encode_srgb: {v:.2}x the (1e-5, 1e-7) bound");
 }
 
+// ── the stage-D kernels ──────────────────────────────────────────────────────
+
+/// The two other classic B&W conversions share luminance's dot-product
+/// kernel and are bit-exact.
+#[test]
+fn mixer_and_filter_are_bit_exact() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(257, 389, 3);
+    for weights in [[1.0_f32, 0.0, 0.0], [0.3, 0.59, 0.11], [-0.5, 1.2, 0.3]] {
+        let cpu = phaios_core::bw::channel_mixer_bw(img.view(), weights).unwrap();
+        let gpu = cuda::kernels::channel_mixer_bw(&ctx, img.view(), weights).unwrap();
+        assert_eq!(cpu, gpu, "channel_mixer diverged at {weights:?}");
+    }
+    for filter in [
+        phaios_core::bw::ColorFilter::Yellow8K2,
+        phaios_core::bw::ColorFilter::Red25A,
+        phaios_core::bw::ColorFilter::Blue47C5,
+    ] {
+        let cpu = phaios_core::bw::color_filter_bw(img.view(), filter, Default::default()).unwrap();
+        let gpu =
+            cuda::kernels::color_filter_bw(&ctx, img.view(), filter, Default::default()).unwrap();
+        assert_eq!(cpu, gpu, "color_filter diverged at {filter:?}");
+    }
+}
+
+/// hsl_bw carries eight expf terms; bounded. The neutral-pixel property
+/// (zero chroma → weights ignored) is exact and asserted separately.
+#[test]
+fn hsl_bw_agrees_within_expf_bound() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(257, 389, 3);
+    let params = phaios_core::bw::HslWeightedParams::new(
+        [0.3, -0.2, 0.5, 0.1, 0.0, -0.6, 0.2, -0.1],
+        Default::default(),
+        30.0,
+    );
+    let cpu = phaios_core::bw::hsl_bw(img.view(), &params).unwrap();
+    let gpu = cuda::kernels::hsl_bw(&ctx, img.view(), &params).unwrap();
+    let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+    assert!(v <= 1.0, "hsl_bw: {v:.2}x the (1e-5, 1e-7) bound");
+
+    // Neutral pixels bypass every transcendental: exact.
+    let grey = Array3::from_elem((16, 16, 3), 0.5_f32);
+    let cpu = phaios_core::bw::hsl_bw(grey.view(), &params).unwrap();
+    let gpu = cuda::kernels::hsl_bw(&ctx, grey.view(), &params).unwrap();
+    assert_eq!(cpu, gpu, "neutral pixels must be exact");
+}
+
+/// zone_system: log2f/expf/powf bound the general case; the empty-map
+/// identity is bit-exact (device copy, as the CPU assigns through).
+#[test]
+fn zone_system_agrees_and_identity_is_exact() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(257, 389, 1);
+
+    let mut offsets = std::collections::HashMap::new();
+    for (z, o) in [(0, -0.7_f32), (3, 0.9), (5, 0.6), (7, 0.45), (10, 0.55)] {
+        offsets.insert(z, o);
+    }
+    let params = phaios_core::tone::ZoneParams::new(offsets);
+    let cpu = phaios_core::tone::zone_system(img.view(), &params).unwrap();
+    let gpu = cuda::kernels::zone_system(&ctx, img.view(), &params).unwrap();
+    let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+    assert!(v <= 1.0, "zone_system: {v:.2}x the (1e-5, 1e-7) bound");
+
+    let empty = phaios_core::tone::ZoneParams::default();
+    let gpu = cuda::kernels::zone_system(&ctx, img.view(), &empty).unwrap();
+    assert_eq!(gpu, img, "empty offsets must be the exact identity");
+}
+
+/// split_toning: cbrtf bounds the general case; shape restored 1 → 3.
+#[test]
+fn split_toning_agrees_within_cbrt_bound() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(257, 389, 1);
+    let params = phaios_core::split_toning::SplitToningParams::new(
+        [0.0, -0.02, -0.05],
+        [0.0, 0.03, 0.04],
+        0.5,
+        0.2,
+    );
+    let cpu = phaios_core::split_toning::split_toning(img.view(), &params).unwrap();
+    let gpu = cuda::kernels::split_toning(&ctx, img.view(), &params).unwrap();
+    assert_eq!(gpu.dim().2, 3, "channel restoration");
+    let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+    assert!(v <= 1.0, "split_toning: {v:.2}x the (1e-5, 1e-7) bound");
+}
+
+// ── film_grain: the integer-exactness kernel ─────────────────────────────────
+
+/// The device-side splitmix64 pixel hash is bit-identical to the CPU's
+/// over 2²⁰ coordinates. Integer arithmetic has no tolerance and gets
+/// none: a single differing bit here means the grain field is a
+/// different image, not a slightly different one.
+#[test]
+fn grain_hash_is_bit_exact_over_2_20_coordinates() {
+    let Some(ctx) = try_context() else { return };
+    let (h, w) = (1024_usize, 1024_usize); // 2^20 coordinates
+    for seed in [0_u64, 20_260_815, u64::MAX] {
+        let gpu = cuda::kernels::hash_grid(&ctx, seed, h, w).unwrap();
+        for y in 0..h {
+            for x in 0..w {
+                let cpu = phaios_core::film_grain::pixel_hash(seed, x as u64, y as u64);
+                assert_eq!(
+                    gpu[y * w + x],
+                    cpu,
+                    "hash diverged at seed {seed}, ({x}, {y})"
+                );
+            }
+        }
+    }
+}
+
+/// film_grain agrees with the CPU oracle. The hash is exact; Box–Muller
+/// and the box filters carry logf/sqrtf/cosf plus f32-vs-f64 window
+/// sums, so agreement is bounded, far inside the plan's 1e-3.
+#[test]
+fn film_grain_agrees_with_cpu_oracle() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(517, 733, 1);
+    for (intensity, size, seed) in [
+        (0.3_f32, 2.0_f32, 12_345_u64),
+        (0.15, 1.0, 1),
+        (0.15, 4.0, 99),
+        (1.0, 8.0, 7),
+    ] {
+        let params = phaios_core::film_grain::GrainParams::new(intensity, size, seed);
+        let cpu = phaios_core::film_grain::film_grain(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::film_grain(&ctx, img.view(), &params).unwrap();
+        let v = worst_violation(&cpu, &gpu, 1e-3, 1e-5);
+        assert!(
+            v <= 1.0,
+            "grain at ({intensity}, {size}, {seed}): {v:.2}x the (1e-3, 1e-5) bound"
+        );
+    }
+}
+
+/// The grain properties that must hold exactly, on GPU output directly:
+/// zero intensity is a bit-exact identity, and the envelope silences
+/// grain completely at L = 0, 1 and above 1.
+#[test]
+fn film_grain_gpu_properties_hold_exactly() {
+    let Some(ctx) = try_context() else { return };
+
+    let img = pseudo_random_image(64, 64, 1);
+    let identity = phaios_core::film_grain::GrainParams::new(0.0, 2.0, 42);
+    let gpu = cuda::kernels::film_grain(&ctx, img.view(), &identity).unwrap();
+    assert_eq!(gpu, img, "zero intensity must be the exact identity");
+
+    let params = phaios_core::film_grain::GrainParams::new(1.0, 2.0, 5);
+    for level in [0.0_f32, 1.0, 2.5] {
+        let flat = Array3::from_elem((32, 32, 1), level);
+        let gpu = cuda::kernels::film_grain(&ctx, flat.view(), &params).unwrap();
+        assert_eq!(gpu, flat, "grain leaked at L = {level}");
+    }
+
+    // Determinism: 8 runs, one byte pattern.
+    let p = phaios_core::film_grain::GrainParams::new(0.4, 2.0, 99);
+    let first = cuda::kernels::film_grain(&ctx, img.view(), &p).unwrap();
+    for run in 1..8 {
+        assert_eq!(
+            cuda::kernels::film_grain(&ctx, img.view(), &p).unwrap(),
+            first,
+            "run {run} differed"
+        );
+    }
+}
+
 // ── the resident pipeline ────────────────────────────────────────────────────
+
+/// The full nine-stage v0.2 pipeline, resident end to end — one upload,
+/// one download — against the identical CPU chain. Every kernel the
+/// crate ships now runs on the backend.
+#[test]
+fn full_pipeline_resident_matches_cpu() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(512, 768, 3);
+
+    let hsl = phaios_core::bw::HslWeightedParams::new(
+        [0.0, 0.0, 0.4, 0.2, 0.0, -0.5, 0.0, 0.0],
+        Default::default(),
+        30.0,
+    );
+    let zones = phaios_core::tone::ZoneParams::new([(3, -0.3_f32), (7, 0.4)].into_iter().collect());
+    let gf = phaios_core::local_contrast::GuidedFilterParams::new(8, 0.01);
+    let grain = phaios_core::film_grain::GrainParams::new(0.12, 1.5, 20_260_815);
+    let toning = phaios_core::split_toning::SplitToningParams::new(
+        [0.0, -0.02, -0.04],
+        [0.0, 0.03, 0.03],
+        0.5,
+        0.0,
+    );
+    let vg = phaios_core::vignette::VignetteParams::new(0.35, 0.8, 0.1);
+    let tc = phaios_core::tone::ToneCurveParams::new(1.1, 0.0, 0.9);
+
+    // CPU chain.
+    let c = phaios_core::exposure::exposure(img.view(), 0.5).unwrap();
+    let c = phaios_core::bw::hsl_bw(c.view(), &hsl).unwrap();
+    let c = phaios_core::tone::zone_system(c.view(), &zones).unwrap();
+    let c = phaios_core::local_contrast::local_contrast(c.view(), &gf, 0.4).unwrap();
+    let c = phaios_core::film_grain::film_grain(c.view(), &grain).unwrap();
+    let c = phaios_core::split_toning::split_toning(c.view(), &toning).unwrap();
+    let c = phaios_core::vignette::vignette(c.view(), &vg).unwrap();
+    let c = phaios_core::tone::tone_curve(c.view(), &tc).unwrap();
+    let cpu = phaios_core::encode::encode_srgb(c.view()).unwrap();
+
+    // GPU chain, resident throughout.
+    let d = ctx.upload(img.view()).unwrap();
+    let d = cuda::kernels::exposure_device(&d, 0.5).unwrap();
+    let d = cuda::kernels::hsl_bw_device(&d, &hsl).unwrap();
+    let d = cuda::kernels::zone_system_device(&d, &zones).unwrap();
+    let d = cuda::kernels::local_contrast_device(&d, &gf, 0.4).unwrap();
+    let d = cuda::kernels::film_grain_device(&d, &grain).unwrap();
+    let d = cuda::kernels::split_toning_device(&d, &toning).unwrap();
+    let d = cuda::kernels::vignette_device(&d, &vg).unwrap();
+    let d = cuda::kernels::tone_curve_device(&d, &tc).unwrap();
+    let d = cuda::kernels::encode_srgb_device(&d).unwrap();
+    let gpu = ctx.download(&d).unwrap();
+
+    assert_eq!(gpu.dim(), cpu.dim());
+    let v = worst_violation(&cpu, &gpu, 1e-3, 1e-5);
+    assert!(v <= 1.0, "full pipeline: {v:.2}x the (1e-3, 1e-5) bound");
+}
 
 /// One upload, five device-resident stages, one download — against the
 /// same five stages on the CPU. This is the chaining property Stage C

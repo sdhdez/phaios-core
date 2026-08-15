@@ -55,7 +55,8 @@ use crate::integral::{sat, window_sum};
 /// xorshift generators", *Journal of Computational and Applied
 /// Mathematics* 315 (2017), pp. 175–181.
 #[inline]
-fn splitmix64(mut z: u64) -> u64 {
+#[doc(hidden)]
+pub fn splitmix64(mut z: u64) -> u64 {
     z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -68,7 +69,8 @@ fn splitmix64(mut z: u64) -> u64 {
 /// seed: without it, `(x, y)` and `(y, x)` would collide, and the grain
 /// would show a visible diagonal symmetry.
 #[inline]
-fn pixel_hash(seed: u64, x: u64, y: u64) -> u64 {
+#[doc(hidden)]
+pub fn pixel_hash(seed: u64, x: u64, y: u64) -> u64 {
     let key = x.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ y.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
     splitmix64(seed ^ splitmix64(key))
 }
@@ -164,6 +166,43 @@ impl Default for GrainParams {
 
 // ── Kernel ────────────────────────────────────────────────────────────────────
 
+/// Validate shape and parameters. Shared verbatim by the CPU kernel and
+/// the CUDA kernel so both backends reject exactly the same inputs with
+/// exactly the same messages.
+pub(crate) fn validate(shape: &[usize], params: &GrainParams) -> Result<(), PhaiosError> {
+    if shape[2] != 1 {
+        return Err(PhaiosError::Shape(format!(
+            "film_grain expects (H, W, 1) luminance input, got shape {shape:?}"
+        )));
+    }
+    if !params.intensity.is_finite() || params.intensity < 0.0 {
+        return Err(PhaiosError::Parameter(format!(
+            "intensity is {}, expected a finite value >= 0",
+            params.intensity
+        )));
+    }
+    if !params.size_pixels.is_finite() || params.size_pixels <= 0.0 {
+        return Err(PhaiosError::Parameter(format!(
+            "size_pixels is {}, expected a finite value > 0",
+            params.size_pixels
+        )));
+    }
+    Ok(())
+}
+
+/// The band-pass radii and analytic normalisation for `size_pixels`,
+/// shared with the CUDA backend so both compute the identical f32
+/// constant from the identical f64 arithmetic.
+pub(crate) fn bandpass_geometry(size_pixels: f32) -> (usize, usize, f32) {
+    let outer = size_pixels.max(1.0).round() as usize;
+    let inner = ((size_pixels * 0.5).floor() as usize).min(outer - 1);
+    let n_inner = ((2 * inner + 1) * (2 * inner + 1)) as f64;
+    let n_outer = ((2 * outer + 1) * (2 * outer + 1)) as f64;
+    let variance = (1.0 / n_inner - 1.0 / n_outer).max(f64::MIN_POSITIVE);
+    let normalisation = (1.0 / variance.sqrt()) as f32;
+    (inner, outer, normalisation)
+}
+
 /// Add procedural film grain.
 ///
 /// ```text
@@ -203,24 +242,7 @@ impl Default for GrainParams {
 ///   non-finite, or `size_pixels` is not finite and positive.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn film_grain(img: ArrayView3<f32>, params: &GrainParams) -> Result<Array3<f32>, PhaiosError> {
-    if img.shape()[2] != 1 {
-        return Err(PhaiosError::Shape(format!(
-            "film_grain expects (H, W, 1) luminance input, got shape {:?}",
-            img.shape()
-        )));
-    }
-    if !params.intensity.is_finite() || params.intensity < 0.0 {
-        return Err(PhaiosError::Parameter(format!(
-            "intensity is {}, expected a finite value >= 0",
-            params.intensity
-        )));
-    }
-    if !params.size_pixels.is_finite() || params.size_pixels <= 0.0 {
-        return Err(PhaiosError::Parameter(format!(
-            "size_pixels is {}, expected a finite value > 0",
-            params.size_pixels
-        )));
-    }
+    validate(img.shape(), params)?;
 
     let (h, w, _) = img.dim();
     let mut out = Array3::<f32>::zeros((h, w, 1));
@@ -248,16 +270,7 @@ pub fn film_grain(img: ArrayView3<f32>, params: &GrainParams) -> Result<Array3<f
     // Flooring the inner radius sends size 1 to (0, 1) — the raw noise
     // minus its 3×3 mean, the finest grain that a pixel grid can carry —
     // and the `outer - 1` cap keeps them apart at every other size.
-    let outer = params.size_pixels.max(1.0).round() as usize;
-    let inner = ((params.size_pixels * 0.5).floor() as usize).min(outer - 1);
-
-    // Variance of a difference of nested box means, for unit-variance
-    // input: 1/n_inner − 1/n_outer. Normalising by its square root keeps
-    // `intensity` comparable across sizes.
-    let n_inner = ((2 * inner + 1) * (2 * inner + 1)) as f64;
-    let n_outer = ((2 * outer + 1) * (2 * outer + 1)) as f64;
-    let variance = (1.0 / n_inner - 1.0 / n_outer).max(f64::MIN_POSITIVE);
-    let normalisation = (1.0 / variance.sqrt()) as f32;
+    let (inner, outer, normalisation) = bandpass_geometry(params.size_pixels);
 
     let intensity = params.intensity;
     ndarray::Zip::indexed(out.slice_mut(s![.., .., 0]))

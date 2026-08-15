@@ -97,6 +97,51 @@ const L_EPSILON: f32 = 1e-10;
 
 // ── Kernel ────────────────────────────────────────────────────────────────────
 
+/// Validate shape and zone offsets. Shared by CPU and CUDA backends so
+/// both reject the same inputs with the same messages.
+pub(crate) fn validate_zones(shape: &[usize], params: &ZoneParams) -> Result<(), PhaiosError> {
+    if shape[2] != 1 {
+        return Err(PhaiosError::Shape(format!(
+            "zone_system expects (H, W, 1) luminance input, got shape {shape:?}"
+        )));
+    }
+    for (&zone, &offset) in &params.offsets {
+        if !(0..=10).contains(&zone) {
+            return Err(PhaiosError::Parameter(format!(
+                "zone index {zone} is outside the eleven zones 0..=10"
+            )));
+        }
+        if !offset.is_finite() {
+            return Err(PhaiosError::Parameter(format!(
+                "offset for zone {zone} is {offset}, expected a finite number of stops"
+            )));
+        }
+    }
+    Ok(())
+}
+
+impl ZoneParams {
+    /// Whether the map is empty (the identity configuration).
+    pub(crate) fn is_identity(&self) -> bool {
+        self.offsets.is_empty()
+    }
+
+    /// The offsets as a dense 11-entry array in zone order, absent zones
+    /// as 0.0. Adding an exact +0.0 term is the IEEE-754 identity, so a
+    /// dense ascending iteration computes bit-for-bit the same sum as
+    /// the sparse sorted one — this is how the CUDA kernel inherits the
+    /// ordered-reduction guarantee mechanically.
+    pub(crate) fn dense_offsets(&self) -> [f32; 11] {
+        let mut dense = [0.0_f32; 11];
+        for (&z, &off) in &self.offsets {
+            if (0..=10).contains(&z) {
+                dense[z as usize] = off;
+            }
+        }
+        dense
+    }
+}
+
 /// Apply the Adams/Archer Zone System tone curve.
 ///
 /// Eleven zones (0..=10), each one stop apart; Zone V = middle grey
@@ -123,25 +168,7 @@ const L_EPSILON: f32 = 1e-10;
 ///   range), silently swallowing what is almost always a caller bug.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn zone_system(img: ArrayView3<f32>, params: &ZoneParams) -> Result<Array3<f32>, PhaiosError> {
-    if img.shape()[2] != 1 {
-        return Err(PhaiosError::Shape(format!(
-            "zone_system expects (H, W, 1) luminance input, got shape {:?}",
-            img.shape()
-        )));
-    }
-
-    for (&zone, &offset) in &params.offsets {
-        if !(0..=10).contains(&zone) {
-            return Err(PhaiosError::Parameter(format!(
-                "zone index {zone} is outside the eleven zones 0..=10"
-            )));
-        }
-        if !offset.is_finite() {
-            return Err(PhaiosError::Parameter(format!(
-                "offset for zone {zone} is {offset}, expected a finite number of stops"
-            )));
-        }
-    }
+    validate_zones(img.shape(), params)?;
 
     // Sort by zone index. `HashMap` iteration order depends on the
     // per-instance `RandomState` seed, and f32 addition is not

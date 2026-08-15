@@ -245,6 +245,96 @@ pub fn luminance_bw_device(
     Ok(out)
 }
 
+/// Shared launcher: the (H, W, 3) → (H, W, 1) dot product all three
+/// classic B&W methods compile to. One PTX serves them all.
+fn dot3_device(img: &DeviceImage, weights: [f32; 3]) -> Result<DeviceImage, PhaiosError> {
+    let (h, w, c) = img.shape();
+    if c != 3 {
+        return Err(PhaiosError::Shape(format!(
+            "expected (H, W, 3) RGB array, got shape [{h}, {w}, {c}]"
+        )));
+    }
+    let ctx = img.context().clone();
+    let npix = h * w;
+    let mut out = ctx.alloc_image((h, w, 1))?;
+    if npix == 0 {
+        return Ok(out);
+    }
+    let [wr, wg, wb] = weights;
+    let n_ll = npix as i64;
+    let func = ctx.function("luminance_bw_kernel", PTX_LUMINANCE)?;
+    let mut launch = ctx.stream.launch_builder(&func);
+    launch
+        .arg(&img.buf)
+        .arg(&mut out.buf)
+        .arg(&wr)
+        .arg(&wg)
+        .arg(&wb)
+        .arg(&n_ll);
+    // Safety: signature matches the .cu; input holds 3·npix elements,
+    // output npix; the kernel bounds-checks against npix.
+    unsafe { launch.launch(grid_1d(npix)) }.map_err(be("kernel launch failed"))?;
+    Ok(out)
+}
+
+/// Arbitrary-weight channel mixer, device-resident. Mirrors
+/// [`crate::bw::channel_mixer_bw`]; **bit-exact** (same dot product as
+/// [`luminance_bw_device`], caller-supplied weights).
+///
+/// # Errors
+/// Same [`PhaiosError::Shape`] as the CPU kernel; plus
+/// [`PhaiosError::Backend`] on device failure.
+#[must_use = "kernel returns a new image; ignoring it wastes work"]
+pub fn channel_mixer_bw_device(
+    img: &DeviceImage,
+    weights: [f32; 3],
+) -> Result<DeviceImage, PhaiosError> {
+    dot3_device(img, weights)
+}
+
+/// Per-call offload form of [`channel_mixer_bw_device`].
+#[must_use = "kernel returns a new array; ignoring it wastes work"]
+pub fn channel_mixer_bw(
+    ctx: &Context,
+    img: ArrayView3<f32>,
+    weights: [f32; 3],
+) -> Result<Array3<f32>, PhaiosError> {
+    crate::bw::validate_rgb(img)?;
+    let device = ctx.upload(img)?;
+    ctx.download(&channel_mixer_bw_device(&device, weights)?)
+}
+
+/// Wratten-style colour-filter conversion, device-resident. Mirrors
+/// [`crate::bw::color_filter_bw`]; **bit-exact**. The combined weights
+/// `tᵢ·wᵢ` are computed on the host exactly as the CPU kernel does.
+///
+/// # Errors
+/// Same [`PhaiosError::Shape`] as the CPU kernel; plus
+/// [`PhaiosError::Backend`] on device failure.
+#[must_use = "kernel returns a new image; ignoring it wastes work"]
+pub fn color_filter_bw_device(
+    img: &DeviceImage,
+    filter: crate::bw::ColorFilter,
+    standard: LuminanceStandard,
+) -> Result<DeviceImage, PhaiosError> {
+    let t = filter.transmission();
+    let lw = standard.weights();
+    dot3_device(img, [t[0] * lw[0], t[1] * lw[1], t[2] * lw[2]])
+}
+
+/// Per-call offload form of [`color_filter_bw_device`].
+#[must_use = "kernel returns a new array; ignoring it wastes work"]
+pub fn color_filter_bw(
+    ctx: &Context,
+    img: ArrayView3<f32>,
+    filter: crate::bw::ColorFilter,
+    standard: LuminanceStandard,
+) -> Result<Array3<f32>, PhaiosError> {
+    crate::bw::validate_rgb(img)?;
+    let device = ctx.upload(img)?;
+    ctx.download(&color_filter_bw_device(&device, filter, standard)?)
+}
+
 /// Per-call offload form of [`luminance_bw_device`].
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn luminance_bw(

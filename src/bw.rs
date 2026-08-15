@@ -360,6 +360,25 @@ fn hue_distance_deg(a: f32, b: f32) -> f32 {
     if d > 180.0 { 360.0 - d } else { d }
 }
 
+/// Validate HSL-weighted parameters. Shared by CPU and CUDA backends so
+/// both reject the same inputs with the same messages.
+pub(crate) fn validate_hsl(params: &HslWeightedParams) -> Result<(), PhaiosError> {
+    if !params.sigma_deg.is_finite() || params.sigma_deg <= 0.0 {
+        return Err(PhaiosError::Parameter(format!(
+            "sigma_deg is {}, expected a finite value > 0",
+            params.sigma_deg
+        )));
+    }
+    for (name, w) in HUE_BAND_NAMES.iter().zip(params.hue_weights.iter()) {
+        if !w.is_finite() {
+            return Err(PhaiosError::Parameter(format!(
+                "hue weight for {name} is {w}, expected a finite value"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Convert a linear RGB image to greyscale with per-hue-band weighting.
 ///
 /// Computes a base luminance with the chosen standard, then scales it by
@@ -405,20 +424,7 @@ pub fn hsl_bw(
     params: &HslWeightedParams,
 ) -> Result<Array3<f32>, PhaiosError> {
     validate_rgb(img)?;
-
-    if !params.sigma_deg.is_finite() || params.sigma_deg <= 0.0 {
-        return Err(PhaiosError::Parameter(format!(
-            "sigma_deg is {}, expected a finite value > 0",
-            params.sigma_deg
-        )));
-    }
-    for (name, w) in HUE_BAND_NAMES.iter().zip(params.hue_weights.iter()) {
-        if !w.is_finite() {
-            return Err(PhaiosError::Parameter(format!(
-                "hue weight for {name} is {w}, expected a finite value"
-            )));
-        }
-    }
+    validate_hsl(params)?;
 
     let (h, w, _) = img.dim();
     let lw = params.standard.weights();

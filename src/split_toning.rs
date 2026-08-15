@@ -218,6 +218,51 @@ impl Default for SplitToningParams {
 
 // ── Kernel ────────────────────────────────────────────────────────────────────
 
+/// Validate shape and parameters. Shared verbatim by the CPU kernel and
+/// the CUDA kernel so both backends reject exactly the same inputs with
+/// exactly the same messages.
+pub(crate) fn validate(shape: &[usize], params: &SplitToningParams) -> Result<(), PhaiosError> {
+    if shape[2] != 1 {
+        return Err(PhaiosError::Shape(format!(
+            "split_toning expects (H, W, 1) luminance input, got shape {shape:?}"
+        )));
+    }
+    if !params.pivot.is_finite() || !(0.0..=1.0).contains(&params.pivot) {
+        return Err(PhaiosError::Parameter(format!(
+            "pivot is {}, expected a value in 0..=1",
+            params.pivot
+        )));
+    }
+    if !params.balance.is_finite() || !(-1.0..=1.0).contains(&params.balance) {
+        return Err(PhaiosError::Parameter(format!(
+            "balance is {}, expected a value in -1..=1",
+            params.balance
+        )));
+    }
+    for (name, tint) in [
+        ("shadow_oklab", &params.shadow_oklab),
+        ("highlight_oklab", &params.highlight_oklab),
+    ] {
+        if let Some(bad) = tint.iter().find(|v| !v.is_finite()) {
+            return Err(PhaiosError::Parameter(format!(
+                "{name} contains {bad}, expected finite values"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The smoothstep window `(edge0, edge1)` implied by pivot and balance —
+/// one definition for both backends.
+pub(crate) fn crossfade_edges(params: &SplitToningParams) -> (f32, f32) {
+    let pivot = (params.pivot - params.balance * 0.5).clamp(0.0, 1.0);
+    (pivot - CROSSOVER_HALF_WIDTH, pivot + CROSSOVER_HALF_WIDTH)
+}
+
+/// The neutral-lightness row sum, shared with the CUDA kernel so the
+/// host passes the exact f32 constant the CPU folds at compile time.
+pub(crate) const NEUTRAL_ROW_SUM: f32 = 0.210_454_26 + 0.793_617_8 - 0.004_072_047;
+
 /// Tint shadows and highlights separately, returning linear sRGB.
 ///
 /// For each luminance sample:
@@ -273,34 +318,7 @@ pub fn split_toning(
     img: ArrayView3<f32>,
     params: &SplitToningParams,
 ) -> Result<Array3<f32>, PhaiosError> {
-    if img.shape()[2] != 1 {
-        return Err(PhaiosError::Shape(format!(
-            "split_toning expects (H, W, 1) luminance input, got shape {:?}",
-            img.shape()
-        )));
-    }
-    if !params.pivot.is_finite() || !(0.0..=1.0).contains(&params.pivot) {
-        return Err(PhaiosError::Parameter(format!(
-            "pivot is {}, expected a value in 0..=1",
-            params.pivot
-        )));
-    }
-    if !params.balance.is_finite() || !(-1.0..=1.0).contains(&params.balance) {
-        return Err(PhaiosError::Parameter(format!(
-            "balance is {}, expected a value in -1..=1",
-            params.balance
-        )));
-    }
-    for (name, tint) in [
-        ("shadow_oklab", &params.shadow_oklab),
-        ("highlight_oklab", &params.highlight_oklab),
-    ] {
-        if let Some(bad) = tint.iter().find(|v| !v.is_finite()) {
-            return Err(PhaiosError::Parameter(format!(
-                "{name} contains {bad}, expected finite values"
-            )));
-        }
-    }
+    validate(img.shape(), params)?;
 
     let (h, w, _) = img.dim();
     let mut out = Array3::<f32>::zeros((h, w, 3));
@@ -309,8 +327,7 @@ pub fn split_toning(
     let [_, highlight_a, highlight_b] = params.highlight_oklab;
     // Positive balance moves the crossover down, so more of the image
     // reads as "highlight" and takes the highlight tint.
-    let pivot = (params.pivot - params.balance * 0.5).clamp(0.0, 1.0);
-    let (edge0, edge1) = (pivot - CROSSOVER_HALF_WIDTH, pivot + CROSSOVER_HALF_WIDTH);
+    let (edge0, edge1) = crossfade_edges(params);
 
     // One lane per pixel: `rows_mut` hands the closure the whole
     // three-element channel axis, so the converted triple is written in

@@ -285,6 +285,90 @@ fn luminance_bw(
     Ok(GpuImage { inner: result })
 }
 
+/// Arbitrary-weight channel mixer on the GPU. Mirrors
+/// ``phaios_core.channel_mixer_bw``; bit-exact.
+#[pyfunction]
+fn channel_mixer_bw(
+    py: Python<'_>,
+    img: &GpuImage,
+    wr: f32,
+    wg: f32,
+    wb: f32,
+) -> PyResult<GpuImage> {
+    let result = py.detach(|| cuda::kernels::channel_mixer_bw_device(&img.inner, [wr, wg, wb]))?;
+    Ok(GpuImage { inner: result })
+}
+
+/// Wratten-style colour-filter conversion on the GPU. Mirrors
+/// ``phaios_core.color_filter_bw``; bit-exact.
+#[pyfunction]
+#[pyo3(signature = (img, filter = crate::bw::ColorFilter::NoFilter, standard = crate::bw::LuminanceStandard::Bt709))]
+fn color_filter_bw(
+    py: Python<'_>,
+    img: &GpuImage,
+    filter: crate::bw::ColorFilter,
+    standard: crate::bw::LuminanceStandard,
+) -> PyResult<GpuImage> {
+    let result =
+        py.detach(|| cuda::kernels::color_filter_bw_device(&img.inner, filter, standard))?;
+    Ok(GpuImage { inner: result })
+}
+
+/// HSL-weighted B&W conversion on the GPU. Mirrors
+/// ``phaios_core.hsl_bw``; agreement bounded by ``expf``.
+#[pyfunction]
+fn hsl_bw(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: pyo3::PyRef<'_, crate::bw::HslWeightedParams>,
+) -> PyResult<GpuImage> {
+    let params_owned = params.clone();
+    let result = py.detach(|| cuda::kernels::hsl_bw_device(&img.inner, &params_owned))?;
+    Ok(GpuImage { inner: result })
+}
+
+/// Zone System tone curve on the GPU. Mirrors
+/// ``phaios_core.zone_system``; the dense in-order offset sum inherits
+/// the CPU's ordered-reduction guarantee mechanically.
+#[pyfunction]
+fn zone_system(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: pyo3::PyRef<'_, crate::tone::ZoneParams>,
+) -> PyResult<GpuImage> {
+    let params_owned = params.clone();
+    let result = py.detach(|| cuda::kernels::zone_system_device(&img.inner, &params_owned))?;
+    Ok(GpuImage { inner: result })
+}
+
+/// Split-toning on the GPU: ``(H, W, 1)`` in, ``(H, W, 3)`` out.
+/// Mirrors ``phaios_core.split_toning``; agreement bounded by ``cbrtf``.
+#[pyfunction]
+fn split_toning(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: pyo3::PyRef<'_, crate::split_toning::SplitToningParams>,
+) -> PyResult<GpuImage> {
+    let params_owned = params.clone();
+    let result = py.detach(|| cuda::kernels::split_toning_device(&img.inner, &params_owned))?;
+    Ok(GpuImage { inner: result })
+}
+
+/// Procedural film grain on the GPU. Mirrors
+/// ``phaios_core.film_grain``: the splitmix64 hash is bit-exact against
+/// the CPU (asserted over 2**20 coordinates); Box-Muller and the box
+/// filters are bounded.
+#[pyfunction]
+fn film_grain(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: pyo3::PyRef<'_, crate::film_grain::GrainParams>,
+) -> PyResult<GpuImage> {
+    let params_owned = params.clone();
+    let result = py.detach(|| cuda::kernels::film_grain_device(&img.inner, &params_owned))?;
+    Ok(GpuImage { inner: result })
+}
+
 /// Register the `gpu` submodule on `phaios_core`.
 pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     let gpu = PyModule::new(py, "gpu")?;
@@ -299,6 +383,12 @@ pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult
     gpu.add_function(wrap_pyfunction!(tone_curve, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(vignette, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(luminance_bw, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(channel_mixer_bw, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(color_filter_bw, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(hsl_bw, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(zone_system, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(split_toning, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(film_grain, &gpu)?)?;
     parent.add_submodule(&gpu)?;
     // Without this, `import phaios_core.gpu` / `from phaios_core.gpu
     // import ...` fail: add_submodule creates an attribute, not an
