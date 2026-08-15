@@ -11,11 +11,32 @@
 //! corrections are the desktop's job, not this tool's.
 
 use ndarray::Array3;
+use rawler::decoders::Orientation;
 use rawler::imgop::develop::{Intermediate, ProcessingStep, RawDevelop};
+
+/// Apply the camera's recorded orientation so the image displays the
+/// way it was shot. The transforms are lazy ndarray views made
+/// contiguous at the end; naming follows rawler (rotations clockwise).
+fn apply_orientation(img: Array3<f32>, o: Orientation) -> Array3<f32> {
+    use ndarray::s;
+    let v = img.view();
+    let oriented = match o {
+        Orientation::Normal | Orientation::Unknown => return img,
+        Orientation::HorizontalFlip => v.slice_move(s![.., ..;-1, ..]),
+        Orientation::Rotate180 => v.slice_move(s![..;-1, ..;-1, ..]),
+        Orientation::VerticalFlip => v.slice_move(s![..;-1, .., ..]),
+        Orientation::Transpose => v.permuted_axes([1, 0, 2]),
+        Orientation::Rotate90 => v.permuted_axes([1, 0, 2]).slice_move(s![.., ..;-1, ..]),
+        Orientation::Transverse => v.permuted_axes([1, 0, 2]).slice_move(s![..;-1, ..;-1, ..]),
+        Orientation::Rotate270 => v.permuted_axes([1, 0, 2]).slice_move(s![..;-1, .., ..]),
+    };
+    oriented.as_standard_layout().to_owned()
+}
 
 /// Decode and develop a RAW file to linear (H, W, 3) f32.
 pub fn load_dng(path: &std::path::Path) -> Result<Array3<f32>, String> {
     let raw = rawler::decode_file(path).map_err(|e| format!("RAW decode failed: {e}"))?;
+    let orientation = raw.orientation;
 
     // rawler's default pipeline, with the terminal SRgb gamma removed:
     // the kernels want linear, and display encoding is color.rs's job.
@@ -45,7 +66,7 @@ pub fn load_dng(path: &std::path::Path) -> Result<Array3<f32>, String> {
                     out[[y, x, c]] = px[c];
                 }
             }
-            Ok(out)
+            Ok(apply_orientation(out, orientation))
         }
         Intermediate::Monochrome(pixels) => {
             let dim = pixels.dim();
@@ -58,7 +79,7 @@ pub fn load_dng(path: &std::path::Path) -> Result<Array3<f32>, String> {
                     out[[y, x, c]] = v;
                 }
             }
-            Ok(out)
+            Ok(apply_orientation(out, orientation))
         }
         _ => Err("unsupported RAW colour layout (4-colour)".into()),
     }
@@ -94,8 +115,12 @@ mod tests {
         let img = load_dng(path).expect("decode");
         let (h, w, c) = img.dim();
         assert_eq!(c, 3);
-        // GR IIIx active area, after crops: near 6000×4000.
-        assert!(w > 5900 && h > 3900, "unexpected size {w}x{h}");
+        // GR IIIx active area near 6000×4000; this file is EXIF
+        // orientation 8 (Rotate 270 CW), so corrected output is PORTRAIT.
+        assert!(
+            h > 5900 && w > 3900 && h > w,
+            "orientation not applied: got {w}x{h}, expected portrait"
+        );
         let mean = img.iter().sum::<f32>() / img.len() as f32;
         assert!(
             mean > 0.005 && mean < 0.9,

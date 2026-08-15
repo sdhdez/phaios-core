@@ -20,11 +20,22 @@ pub fn srgb_decode(x: f32) -> f32 {
     }
 }
 
-/// Load a JPEG/PNG from bytes into linear (H, W, 3) f32.
+/// Load a JPEG/PNG from bytes into linear (H, W, 3) f32, honouring the
+/// EXIF orientation recorded by the camera.
 pub fn load_linear(bytes: &[u8]) -> Result<Array3<f32>, String> {
-    let img = image::load_from_memory(bytes)
-        .map_err(|e| format!("cannot decode image: {e}"))?
-        .to_rgb8();
+    use image::ImageDecoder;
+    let mut decoder = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("cannot read image: {e}"))?
+        .into_decoder()
+        .map_err(|e| format!("cannot decode image: {e}"))?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut dynimg = image::DynamicImage::from_decoder(decoder)
+        .map_err(|e| format!("cannot decode image: {e}"))?;
+    dynimg.apply_orientation(orientation);
+    let img = dynimg.to_rgb8();
     let (w, h) = (img.width() as usize, img.height() as usize);
     let mut out = Array3::<f32>::zeros((h, w, 3));
     for (x, y, p) in img.enumerate_pixels() {
