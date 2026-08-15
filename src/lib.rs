@@ -13,6 +13,8 @@ use numpy::{IntoPyArray, PyArray3, PyReadonlyArray3};
 use pyo3::prelude::*;
 
 pub mod bw;
+#[cfg(feature = "cuda")]
+pub mod cuda;
 pub mod encode;
 pub mod error;
 pub mod exposure;
@@ -22,6 +24,9 @@ pub mod local_contrast;
 pub mod split_toning;
 pub mod tone;
 pub mod vignette;
+
+#[cfg(feature = "cuda")]
+mod gpu_py;
 
 // ── Exposure binding ─────────────────────────────────────────────────────────
 
@@ -521,6 +526,10 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // sRGB encode
     m.add_function(wrap_pyfunction!(encode_srgb, m)?)?;
+
+    // Optional GPU backend (only when built with --features cuda).
+    #[cfg(feature = "cuda")]
+    gpu_py::register(m.py(), m)?;
 
     Ok(())
 }

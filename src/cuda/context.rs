@@ -1,0 +1,234 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! CUDA device context — the only file in the crate that names a
+//! `cudarc` type.
+//!
+//! That confinement is deliberate: it is the exit strategy. If cudarc is
+//! ever abandoned or breaks, this file is the entire replacement surface.
+//!
+//! # Driver-API entry points used (the exit-strategy ledger)
+//!
+//! Everything this crate does reaches the driver through the calls below,
+//! all stable since the CUDA 4 era, over a C ABI NVIDIA guarantees
+//! backward-compatible. Replacing cudarc means `dlopen("libcuda.so.1")`
+//! plus these, resolved via `cuGetProcAddress` so the versioned symbols
+//! (`cuMemAlloc_v2` and friends) are picked up correctly:
+//!
+//! | Entry point | Used for |
+//! |---|---|
+//! | `cuInit` | driver initialisation |
+//! | `cuDeviceGetCount` | enumeration |
+//! | `cuDeviceGet` | enumeration |
+//! | `cuDeviceGetName` | device info |
+//! | `cuDeviceGetAttribute` | compute capability check |
+//! | `cuDevicePrimaryCtxRetain` | context creation |
+//! | `cuModuleLoadData` | loading embedded PTX |
+//! | `cuModuleGetFunction` | kernel lookup |
+//! | `cuMemAlloc` | device buffers |
+//! | `cuMemcpyHtoD` | upload |
+//! | `cuMemcpyDtoH` | download |
+//! | `cuMemFree` | buffer release |
+//! | `cuLaunchKernel` | dispatch |
+//! | `cuStreamSynchronize` | completion |
+//!
+//! **Keep this table current**: one line per new call, checked in review.
+//!
+//! # No hidden state
+//!
+//! There is no singleton, no `OnceLock`, no ambient context anywhere in
+//! `src/cuda/`. A [`Context`] is constructed and owned by the caller and
+//! passed in explicitly; a kernel's output depends on its arguments and
+//! nothing else. The mutable state a device genuinely needs — the loaded
+//! module cache — lives inside the context and cannot affect results.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use cudarc::driver::sys::CUdevice_attribute;
+use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream};
+
+use crate::error::PhaiosError;
+
+/// Minimum supported compute capability (Ampere).
+///
+/// The embedded PTX is compiled at `compute_80`; PTX is
+/// forward-compatible, so anything newer JITs it natively. Older cards
+/// are rejected here with a clear message instead of a cryptic JIT
+/// failure at first launch.
+pub const MIN_COMPUTE_CAPABILITY: (i32, i32) = (8, 0);
+
+/// Convert any cudarc driver error into the crate's error type.
+///
+/// Free function rather than a `From` impl so that no cudarc type leaks
+/// into `error.rs`.
+fn backend_err(what: &str, e: impl std::fmt::Display) -> PhaiosError {
+    PhaiosError::Backend(format!("{what}: {e}"))
+}
+
+/// Information about one CUDA device, safe to expose to Python.
+#[derive(Clone, Debug)]
+pub struct DeviceInfo {
+    /// Device ordinal, the index `Context::new` accepts.
+    pub ordinal: usize,
+    /// Marketing name, e.g. "NVIDIA GeForce RTX 5070 Ti".
+    pub name: String,
+    /// Compute capability as (major, minor).
+    pub compute_capability: (i32, i32),
+    /// Whether this crate's kernels can run on it (cc >= 8.0).
+    pub supported: bool,
+}
+
+/// Enumerate CUDA devices. **Never fails**: any error — no driver, no
+/// device, broken installation — yields an empty list, because "no GPU"
+/// is an ordinary state of the world, not an exception.
+#[must_use]
+pub fn devices() -> Vec<DeviceInfo> {
+    let Ok(count) = CudaContext::device_count() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for ordinal in 0..count.max(0) as usize {
+        // A device that errors mid-enumeration is skipped, not fatal.
+        let Ok(ctx) = CudaContext::new(ordinal) else {
+            continue;
+        };
+        let name = ctx.name().unwrap_or_else(|_| format!("device {ordinal}"));
+        let major = ctx
+            .attribute(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)
+            .unwrap_or(0);
+        let minor = ctx
+            .attribute(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR)
+            .unwrap_or(0);
+        out.push(DeviceInfo {
+            ordinal,
+            name,
+            compute_capability: (major, minor),
+            supported: (major, minor) >= MIN_COMPUTE_CAPABILITY,
+        });
+    }
+    out
+}
+
+/// True if at least one supported CUDA device exists. Never raises.
+#[must_use]
+pub fn available() -> bool {
+    devices().iter().any(|d| d.supported)
+}
+
+/// An owned handle to one CUDA device.
+///
+/// Caller-constructed, caller-owned, explicitly passed to every GPU
+/// kernel — see the module docs on hidden state. Cheap to clone (Arcs
+/// inside); clones share the device, stream and module cache.
+#[derive(Clone)]
+pub struct Context {
+    pub(crate) ctx: Arc<CudaContext>,
+    pub(crate) stream: Arc<CudaStream>,
+    /// PTX modules already loaded on this context, keyed by kernel name.
+    /// Loading is idempotent and keyed content is `include_str!`-embedded,
+    /// so this cache can only affect *speed*, never results.
+    modules: Arc<Mutex<HashMap<&'static str, Arc<CudaModule>>>>,
+    info: DeviceInfo,
+}
+
+impl Context {
+    /// Open device `ordinal`.
+    ///
+    /// # Errors
+    /// [`PhaiosError::Backend`] if the driver cannot be loaded, the
+    /// ordinal does not exist, or the device's compute capability is
+    /// below [`MIN_COMPUTE_CAPABILITY`].
+    pub fn new(ordinal: usize) -> Result<Self, PhaiosError> {
+        let count =
+            CudaContext::device_count().map_err(|e| backend_err("CUDA driver unavailable", e))?;
+        if ordinal >= count.max(0) as usize {
+            return Err(PhaiosError::Backend(format!(
+                "no CUDA device at index {ordinal}: {count} device(s) present"
+            )));
+        }
+        let ctx =
+            CudaContext::new(ordinal).map_err(|e| backend_err("cannot open CUDA device", e))?;
+
+        let name = ctx.name().unwrap_or_else(|_| format!("device {ordinal}"));
+        let major = ctx
+            .attribute(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)
+            .map_err(|e| backend_err("cannot query compute capability", e))?;
+        let minor = ctx
+            .attribute(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR)
+            .map_err(|e| backend_err("cannot query compute capability", e))?;
+        if (major, minor) < MIN_COMPUTE_CAPABILITY {
+            return Err(PhaiosError::Backend(format!(
+                "device \"{name}\" has compute capability {major}.{minor}; \
+                 this crate's kernels require >= {}.{} (Ampere)",
+                MIN_COMPUTE_CAPABILITY.0, MIN_COMPUTE_CAPABILITY.1
+            )));
+        }
+
+        let stream = ctx.default_stream();
+        Ok(Self {
+            ctx,
+            stream,
+            modules: Arc::new(Mutex::new(HashMap::new())),
+            info: DeviceInfo {
+                ordinal,
+                name,
+                compute_capability: (major, minor),
+                supported: true,
+            },
+        })
+    }
+
+    /// Information about the device this context owns.
+    #[must_use]
+    pub fn info(&self) -> &DeviceInfo {
+        &self.info
+    }
+
+    /// The backend fingerprint, the reproducibility key from
+    /// `docs/ffi.md` §6: `cuda/<device>/cc<maj>.<min>/ptx-compute_80`.
+    ///
+    /// Two machines with the same fingerprint produce bit-identical
+    /// output for the same input, parameters and seed.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        format!(
+            "cuda/{}/cc{}.{}/ptx-compute_80",
+            self.info.name, self.info.compute_capability.0, self.info.compute_capability.1
+        )
+    }
+
+    /// Load (or fetch from cache) `kernel_name` from embedded PTX.
+    pub(crate) fn function(
+        &self,
+        kernel_name: &'static str,
+        ptx_src: &'static str,
+    ) -> Result<CudaFunction, PhaiosError> {
+        let module = {
+            let mut cache = self
+                .modules
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match cache.get(kernel_name) {
+                Some(m) => Arc::clone(m),
+                None => {
+                    let m = self
+                        .ctx
+                        .load_module(ptx_src.into())
+                        .map_err(|e| backend_err("cannot load PTX module", e))?;
+                    cache.insert(kernel_name, Arc::clone(&m));
+                    m
+                }
+            }
+        };
+        module
+            .load_function(kernel_name)
+            .map_err(|e| backend_err("kernel not found in PTX", e))
+    }
+}
+
+impl std::fmt::Debug for Context {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Context")
+            .field("info", &self.info)
+            .finish_non_exhaustive()
+    }
+}

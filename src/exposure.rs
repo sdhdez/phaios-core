@@ -36,15 +36,23 @@ use crate::error::PhaiosError;
 /// Order-sensitive: this is the *first* pipeline stage, operating on
 /// linear scene-referred data. See the module documentation.
 ///
-/// # Errors
-/// Returns [`PhaiosError::Parameter`] if `stops` is not finite.
-#[must_use = "kernel returns a new array; ignoring it wastes work"]
-pub fn exposure(img: ArrayView3<f32>, stops: f32) -> Result<Array3<f32>, PhaiosError> {
+/// Validate `stops`. Shared verbatim by the CPU kernel below and the
+/// CUDA kernel in [`crate::cuda`], so both backends reject exactly the
+/// same inputs with exactly the same message.
+pub(crate) fn validate(stops: f32) -> Result<(), PhaiosError> {
     if !stops.is_finite() {
         return Err(PhaiosError::Parameter(format!(
             "stops is {stops}, expected a finite number of EV"
         )));
     }
+    Ok(())
+}
+
+/// # Errors
+/// Returns [`PhaiosError::Parameter`] if `stops` is not finite.
+#[must_use = "kernel returns a new array; ignoring it wastes work"]
+pub fn exposure(img: ArrayView3<f32>, stops: f32) -> Result<Array3<f32>, PhaiosError> {
+    validate(stops)?;
 
     // One multiply per pixel: 2^stops is constant across the image.
     let gain = 2.0_f32.powf(stops);

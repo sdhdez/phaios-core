@@ -6,7 +6,7 @@
 //! converts to `pyo3::PyErr` via the `From` impl below.
 
 use pyo3::PyErr;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use thiserror::Error;
 
 /// Errors that can occur in phaios-core kernels.
@@ -27,6 +27,16 @@ pub enum PhaiosError {
     /// not silently clamp; see `docs/architecture.md`.
     #[error("parameter error: {0}")]
     Parameter(String),
+
+    /// A compute backend failed or is unavailable.
+    ///
+    /// Raised when no CUDA device exists, the driver cannot be loaded,
+    /// a device is below the supported compute capability, or a
+    /// device-side operation fails. Maps to Python `RuntimeError`, not
+    /// `ValueError`: a missing GPU is an environment condition, not a
+    /// bad argument.
+    #[error("backend error: {0}")]
+    Backend(String),
 }
 
 impl From<PhaiosError> for PyErr {
@@ -35,6 +45,7 @@ impl From<PhaiosError> for PyErr {
             PhaiosError::Shape(_) | PhaiosError::Parameter(_) => {
                 PyValueError::new_err(e.to_string())
             }
+            PhaiosError::Backend(_) => PyRuntimeError::new_err(e.to_string()),
         }
     }
 }

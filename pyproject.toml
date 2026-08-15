@@ -29,4 +29,4 @@ module-name = "phaios_core"
 # pytest configuration
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = ["ffi.py"]
+python_files = ["ffi.py", "ffi_gpu.py"]
