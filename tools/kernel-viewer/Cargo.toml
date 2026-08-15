@@ -1,0 +1,31 @@
+[package]
+name = "kernel-viewer"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Interactive parameter explorer for phaios-core kernels"
+publish = false
+
+# Deliberately standalone: its own lockfile keeps the GUI stack out of
+# phaios-core's Cargo.lock and audit surface. Not a workspace member.
+[workspace]
+
+[dependencies]
+phaios-core = { path = "../.." }
+# licence: MIT OR Apache-2.0 — must match phaios-core, see its Cargo.toml.
+ndarray = "0.17"
+# licence: MIT OR Apache-2.0 — immediate-mode GUI (egui) + native windowing.
+eframe = "0.36"
+# licence: MIT OR Apache-2.0 — the GUI library eframe hosts.
+egui = "0.36"
+# licence: MIT OR Apache-2.0 — JPEG/PNG loading only.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# licence: LGPL-2.1 (GPLv3-compatible) — RAW/DNG decoding (dnglab's decoder).
+rawler = "0.7"
+
+[features]
+cuda = ["phaios-core/cuda"]
+
+# Keep debug builds usable: optimise the kernels, compile the tool fast.
+[profile.dev.package."*"]
+opt-level = 3

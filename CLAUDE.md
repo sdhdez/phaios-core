@@ -329,6 +329,17 @@ Conventions:
 When adding a new kernel, add a new example for it. CI runs every
 example as part of the test suite.
 
+The interactive counterpart lives in `tools/kernel-viewer/` — a
+standalone GUI (eframe/egui) with live sliders for every kernel, RAW/DNG
+loading via rawler, CPU/GPU A/B split and difference view, and a
+synthetic photo scene. It has its own `Cargo.toml`, `Cargo.lock` and an
+empty `[workspace]` table, and is deliberately **not** a workspace
+member: its GUI dependencies must never enter this crate's lockfile or
+audit surface. It consumes only the public Rust API. The "no real image
+inputs, ever" rule applies to committed assets; the viewer loads images
+at runtime, and its `testdata/` directory is gitignored. It is a local
+dev tool: no CI.
+
 ## 9. Commit & branch hygiene
 
 - Conventional commits with optional scope: `feat(bw):`,

@@ -32,3 +32,8 @@ phaios-core.code-workspace
 
 # Criterion benchmark artefacts
 criterion/
+
+# kernel-viewer tool: build artefacts and local test images (never commit
+# image assets — CLAUDE.md §1/§8)
+tools/kernel-viewer/target/
+tools/kernel-viewer/testdata/
