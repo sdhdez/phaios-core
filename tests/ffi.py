@@ -350,6 +350,65 @@ def test_local_contrast_wrong_channels(rgb_f32):
         ph.local_contrast(rgb_f32, params, 0.5)
 
 
+# ── Split-toning ──────────────────────────────────────────────────────────────
+
+
+def test_split_toning_returns_three_channels(grey_f32):
+    """The one kernel that adds channels: (H, W, 1) in, (H, W, 3) out."""
+    out = ph.split_toning(grey_f32, ph.SplitToningParams())
+    assert_valid_output(out, (H, W, 3))
+
+
+def test_split_toning_untinted_is_a_faithful_round_trip(grey_f32):
+    """With no chroma the result must be neutral, not merely close."""
+    out = ph.split_toning(grey_f32, ph.SplitToningParams())
+    for c in range(3):
+        np.testing.assert_allclose(out[..., c], grey_f32[..., 0], atol=1e-5)
+
+
+def test_split_toning_tints_shadows_and_highlights_differently():
+    img = np.array([[[0.005], [0.9]]], dtype=np.float32)
+    params = ph.SplitToningParams([0.0, 0.05, 0.05], [0.0, -0.05, -0.05], 0.5, 0.0)
+    out = ph.split_toning(img, params)
+    assert out[0, 0, 0] > out[0, 0, 2], "shadow should be warm"
+    assert out[0, 1, 2] > out[0, 1, 0], "highlight should be cool"
+
+
+def test_split_toning_rejects_rgb_input(rgb_f32):
+    with pytest.raises(ValueError):
+        ph.split_toning(rgb_f32, ph.SplitToningParams())
+
+
+@pytest.mark.parametrize("pivot", [-0.1, 1.1, float("nan")])
+def test_split_toning_rejects_bad_pivot(grey_f32, pivot):
+    with pytest.raises(ValueError):
+        ph.split_toning(grey_f32, ph.SplitToningParams([0.0] * 3, [0.0] * 3, pivot, 0.0))
+
+
+@pytest.mark.parametrize("balance", [-1.5, 1.5, float("inf")])
+def test_split_toning_rejects_bad_balance(grey_f32, balance):
+    with pytest.raises(ValueError):
+        ph.split_toning(grey_f32, ph.SplitToningParams([0.0] * 3, [0.0] * 3, 0.5, balance))
+
+
+def test_split_toning_params_round_trip():
+    p = ph.SplitToningParams([0.0, 0.02, -0.03], [0.0, -0.01, 0.04], 0.45, 0.2)
+    assert list(p.shadow_oklab) == pytest.approx([0.0, 0.02, -0.03])
+    assert list(p.highlight_oklab) == pytest.approx([0.0, -0.01, 0.04])
+    assert p.pivot == pytest.approx(0.45)
+    assert p.balance == pytest.approx(0.2)
+    assert p == ph.SplitToningParams([0.0, 0.02, -0.03], [0.0, -0.01, 0.04], 0.45, 0.2)
+    assert p != ph.SplitToningParams()
+
+
+def test_split_toning_feeds_the_rest_of_the_pipeline(grey_f32):
+    """Downstream kernels must accept the three-channel result."""
+    toned = ph.split_toning(grey_f32, ph.SplitToningParams([0.0, 0.02, 0.03], [0.0, -0.02, 0.01]))
+    out = ph.encode_srgb(ph.vignette(ph.tone_curve(toned, ph.ToneCurveParams(1.1, 0.0, 0.9)),
+                                     ph.VignetteParams(0.3, 0.8, 0.0)))
+    assert_valid_output(out, (H, W, 3))
+
+
 # ── Vignette ──────────────────────────────────────────────────────────────────
 
 

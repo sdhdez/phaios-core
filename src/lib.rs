@@ -17,6 +17,7 @@ pub mod encode;
 pub mod error;
 pub mod exposure;
 pub mod local_contrast;
+pub mod split_toning;
 pub mod tone;
 pub mod vignette;
 
@@ -315,6 +316,52 @@ pub fn local_contrast_py(
     Ok(result.into_pyarray(py).unbind())
 }
 
+// ── Split-toning binding ──────────────────────────────────────────────────────
+
+/// Tint shadows and highlights separately, returning linear sRGB.
+///
+/// **Changes the shape of the data**: takes ``(H, W, 1)`` monochrome
+/// luminance and returns ``(H, W, 3)`` linear sRGB. It is the only
+/// kernel that adds channels, which is why ``vignette``, ``tone_curve``
+/// and ``encode_srgb`` all accept any channel count.
+///
+/// Works in OKLab (Ottosson 2020), so the tint adds chroma without
+/// moving the lightness that the tone stages established. Only the
+/// ``a`` and ``b`` components of each tint are used; the ``L``
+/// component is ignored.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, 1)``, dtype ``float32``, any layout.
+/// params : SplitToningParams
+///     Shadow and highlight tints as OKLab triples, plus pivot and
+///     balance.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, 3)``, dtype ``float32``, C-contiguous, linear sRGB.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``img`` is not shape ``(H, W, 1)``, if ``pivot`` is outside
+///     0..=1, if ``balance`` is outside -1..=1, or if a tint component
+///     is not finite.
+#[pyfunction]
+#[pyo3(name = "split_toning")]
+pub fn split_toning_py(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: pyo3::PyRef<'_, split_toning::SplitToningParams>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let params_owned = params.clone();
+    let result = py.detach(move || split_toning::split_toning(view, &params_owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── Vignette binding ──────────────────────────────────────────────────────────
 
 /// Apply a radial vignette.
@@ -403,6 +450,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<tone::ZoneParams>()?;
     m.add_class::<tone::ToneCurveParams>()?;
     m.add_class::<local_contrast::GuidedFilterParams>()?;
+    m.add_class::<split_toning::SplitToningParams>()?;
     m.add_class::<vignette::VignetteParams>()?;
 
     // Exposure
@@ -422,6 +470,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(local_contrast_py, m)?)?;
 
     // Finishing
+    m.add_function(wrap_pyfunction!(split_toning_py, m)?)?;
     m.add_function(wrap_pyfunction!(vignette_py, m)?)?;
 
     // sRGB encode

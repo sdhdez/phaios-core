@@ -90,3 +90,7 @@ path = "examples/09_tone_curve.rs"
 [[example]]
 name = "10_vignette"
 path = "examples/10_vignette.rs"
+
+[[example]]
+name = "11_split_toning"
+path = "examples/11_split_toning.rs"
