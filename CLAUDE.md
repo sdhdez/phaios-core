@@ -134,9 +134,10 @@ See `docs/ffi.md` for the full contract. Summary:
 - The Python module is named `phaios_core`. The crate is `phaios-core`.
   The version of both must match exactly — CI enforces this.
 
-### PyO3 0.28 implementation notes (verified in v0.1)
+### PyO3 0.29 implementation notes (verified in v0.1–v0.2)
 
-The following patterns are current as of PyO3 0.28 / numpy 0.28.
+The following patterns are current as of PyO3 0.29 / numpy 0.29; all
+survived the 0.28 → 0.29 bump unchanged.
 Some differ from older tutorials:
 
 - **GIL release**: `py.detach(move || { ... })` — `allow_threads` was
@@ -147,7 +148,7 @@ Some differ from older tutorials:
   `.unbind()` to get the `Py<PyArray3<f32>>` that `#[pyfunction]` returns.
 - **`#[pyclass]` with `Clone`**: add `from_py_object` to opt in to the
   `FromPyObject` derive: `#[pyclass(from_py_object)]`. Without it, PyO3
-  0.28 emits a deprecation warning and will break in a future release.
+  0.28+ emits a deprecation warning and will break in a future release.
 - **Enums**: `#[pyclass(eq, eq_int)]` enables Python integer comparison.
   Use `#[derive(Default)]` with `#[default]` on the default variant —
   clippy `-D warnings` rejects a manual `impl Default` when derive works.

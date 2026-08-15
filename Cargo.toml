@@ -17,15 +17,15 @@ crate-type = ["cdylib", "rlib"]
 # licence: MIT OR Apache-2.0  source: https://github.com/PyO3/pyo3
 # PyO3 bindings to the Python interpreter. abi3-py312 builds a stable-ABI
 # wheel compatible with CPython 3.12+.
-pyo3 = { version = "0.28", features = ["extension-module", "abi3-py312"] }
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py312"] }
 
 # licence: MIT OR Apache-2.0  source: https://github.com/PyO3/rust-numpy
 # PyO3-based bindings for the NumPy C-API; provides PyReadonlyArray3 / PyArray3.
-numpy = "0.28"
+numpy = "0.29"
 
 # licence: MIT OR Apache-2.0  source: https://github.com/rust-ndarray/ndarray
 # N-dimensional array library. Must match the version that the `numpy` crate
-# uses (currently 0.17 as of numpy 0.28) to avoid type incompatibilities at
+# uses (currently 0.17 as of numpy 0.29) to avoid type incompatibilities at
 # the FFI boundary. The `rayon` feature enables Zip::par_for_each.
 ndarray = { version = "0.17", features = ["rayon"] }
 
