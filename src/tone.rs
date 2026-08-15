@@ -131,6 +131,7 @@ impl ZoneParams {
     /// dense ascending iteration computes bit-for-bit the same sum as
     /// the sparse sorted one — this is how the CUDA kernel inherits the
     /// ordered-reduction guarantee mechanically.
+    #[cfg(feature = "cuda")]
     pub(crate) fn dense_offsets(&self) -> [f32; 11] {
         let mut dense = [0.0_f32; 11];
         for (&z, &off) in &self.offsets {
@@ -186,7 +187,7 @@ pub fn zone_system(img: ArrayView3<f32>, params: &ZoneParams) -> Result<Array3<f
     let mut out = Array3::<f32>::zeros((h, w, 1));
 
     // No offsets → identity. Hoisted out of the pixel loop.
-    if offsets.is_empty() {
+    if params.is_identity() {
         out.assign(&img);
         return Ok(out);
     }

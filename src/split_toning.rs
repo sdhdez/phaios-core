@@ -100,8 +100,7 @@ pub fn oklab_to_linear_srgb(lab: [f32; 3]) -> [f32; 3] {
 /// `neutral_shortcut_matches_the_full_transform` pins the two together.
 #[inline]
 fn neutral_oklab_lightness(y: f32) -> f32 {
-    const ROW_SUM: f32 = 0.210_454_26 + 0.793_617_8 - 0.004_072_047;
-    y.cbrt() * ROW_SUM
+    y.cbrt() * NEUTRAL_ROW_SUM
 }
 
 /// Hermite smoothstep, as in [`crate::vignette`].

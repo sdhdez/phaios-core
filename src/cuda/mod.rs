@@ -17,4 +17,4 @@
 pub mod context;
 pub mod kernels;
 
-pub use context::{Context, DeviceInfo, available, devices};
+pub use context::{Context, DeviceImage, DeviceInfo, available, devices};
