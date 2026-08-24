@@ -644,7 +644,8 @@ pub(crate) fn straighten_geometry(
 /// Output shape: the inscribed rectangle, C-contiguous.
 ///
 /// # Errors
-/// [`PhaiosError::Parameter`] per [`straighten_geometry`].
+/// [`PhaiosError::Parameter`] if `degrees` is not finite, exceeds
+/// ±45°, or leaves no whole pixel inscribed.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn straighten(
     img: ArrayView3<f32>,

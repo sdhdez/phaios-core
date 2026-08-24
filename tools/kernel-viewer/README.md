@@ -20,7 +20,7 @@ cargo run --release -- --help
 kernel-viewer [KERNEL] [IMAGE] [--scene photo|macbeth] [--gpu] [--full]
 ```
 
-- **KERNEL** — any of the twelve kernel names (`exposure`, `hsl_bw`,
+- **KERNEL** — any of the sixteen kernel names (`exposure`, `hsl_bw`,
   `zone_system`, …); the in-window dropdown or `[` `]` switch at runtime.
 - **IMAGE** — a JPEG, PNG or RAW/DNG. Defaults to
   `testdata/R0000096.DNG` when present, else the synthetic scene.

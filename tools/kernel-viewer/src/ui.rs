@@ -49,6 +49,46 @@ fn standard_combo(ui: &mut Ui, v: &mut phaios_core::bw::LuminanceStandard) {
 
 pub fn kernel_controls(ui: &mut Ui, id: KernelId, p: &mut AllParams) {
     match id {
+        KernelId::Crop => {
+            slider(ui, "x", &mut p.crop_frac[0], 0.0..=0.9);
+            slider(ui, "y", &mut p.crop_frac[1], 0.0..=0.9);
+            slider(ui, "width", &mut p.crop_frac[2], 0.05..=1.0);
+            slider(ui, "height", &mut p.crop_frac[3], 0.05..=1.0);
+            ui.label("(fractions of the frame; clamped to stay inside)");
+        }
+        KernelId::Orient => {
+            use phaios_core::geometry::Orientation as O;
+            combo(
+                ui,
+                "orientation",
+                &mut p.orientation,
+                &[
+                    (O::Normal, "normal"),
+                    (O::FlipHorizontal, "flip H"),
+                    (O::Rotate180, "rotate 180"),
+                    (O::FlipVertical, "flip V"),
+                    (O::Transpose, "transpose"),
+                    (O::Rotate90, "rotate 90 CW"),
+                    (O::Transverse, "transverse"),
+                    (O::Rotate270, "rotate 270 CW"),
+                ],
+            );
+        }
+        KernelId::Straighten => slider(ui, "degrees", &mut p.straighten_deg, -45.0..=45.0),
+        KernelId::Resize => {
+            slider(ui, "scale", &mut p.resize_scale, 0.1..=2.0);
+            use phaios_core::geometry::ResizeFilter as F;
+            combo(
+                ui,
+                "filter",
+                &mut p.resize_filter,
+                &[
+                    (F::Area, "area"),
+                    (F::Bilinear, "bilinear"),
+                    (F::CatmullRom, "Catmull-Rom"),
+                ],
+            );
+        }
         KernelId::Exposure => slider(ui, "stops (EV)", &mut p.exposure_stops, -5.0..=5.0),
         KernelId::LuminanceBw => standard_combo(ui, &mut p.standard),
         KernelId::ChannelMixerBw => {

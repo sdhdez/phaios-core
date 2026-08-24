@@ -79,6 +79,9 @@ difference.
 | `10_vignette.rs` | `vignette` | Circular vs. rectangular falloff; identical on a half-size preview |
 | `11_split_toning.rs` | `split_toning` | Sepia, selenium and cross-process; the untinted round trip stays neutral |
 | `12_film_grain.rs` | `film_grain` | The `4·L·(1−L)` envelope printed as a histogram; same seed, same bytes |
+| `13_geometry.rs` | `crop`, `orient` | All eight Exif orientations; crop-then-vignette vs vignette-then-crop |
+| `14_resample.rs` | `resize`, `straighten` | Three filters at two ratios; inscribed-crop dimensions printed |
+| `15_gpu_exposure.rs` | CUDA backend | Needs `--features cuda`; bit-exactness and the resident-image pattern |
 
 Several examples print measurements as well as writing files — the
 round-trip error in 07 and 11, the preview/full-frame agreement in 10,

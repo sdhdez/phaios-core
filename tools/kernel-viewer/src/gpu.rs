@@ -44,7 +44,15 @@ impl Gpu {
         // matching the CPU prep in app.rs).
         let luma = |d: &cuda::DeviceImage| k::luminance_bw_device(d, LuminanceStandard::Bt709);
 
+        let (src_h, src_w, _) = src_rgb.dim();
         let out = match id {
+            KernelId::Crop => k::crop_device(&d, &p.crop_params(src_h, src_w))?,
+            KernelId::Orient => k::orient_device(&d, p.orientation)?,
+            KernelId::Straighten => k::straighten_device(
+                &d,
+                &phaios_core::geometry::StraightenParams::new(p.straighten_deg),
+            )?,
+            KernelId::Resize => k::resize_device(&d, &p.resize_params(src_h, src_w))?,
             KernelId::Exposure => k::exposure_device(&d, p.exposure_stops)?,
             KernelId::LuminanceBw => k::luminance_bw_device(&d, p.standard)?,
             KernelId::ChannelMixerBw => k::channel_mixer_bw_device(&d, p.mixer_weights)?,

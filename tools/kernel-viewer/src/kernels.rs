@@ -9,6 +9,9 @@ use ndarray::{Array3, ArrayView3};
 use phaios_core::bw::{ColorFilter, HslWeightedParams, LuminanceStandard};
 use phaios_core::error::PhaiosError;
 use phaios_core::film_grain::GrainParams;
+use phaios_core::geometry::{
+    CropParams, Orientation, ResizeFilter, ResizeParams, StraightenParams,
+};
 use phaios_core::local_contrast::GuidedFilterParams;
 use phaios_core::split_toning::SplitToningParams;
 use phaios_core::tone::{ToneCurveParams, ZoneParams};
@@ -16,6 +19,10 @@ use phaios_core::vignette::VignetteParams;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum KernelId {
+    Crop,
+    Orient,
+    Straighten,
+    Resize,
     Exposure,
     LuminanceBw,
     ChannelMixerBw,
@@ -31,7 +38,11 @@ pub enum KernelId {
 }
 
 impl KernelId {
-    pub const ALL: [KernelId; 12] = [
+    pub const ALL: [KernelId; 16] = [
+        KernelId::Crop,
+        KernelId::Orient,
+        KernelId::Straighten,
+        KernelId::Resize,
         KernelId::Exposure,
         KernelId::LuminanceBw,
         KernelId::ChannelMixerBw,
@@ -48,6 +59,10 @@ impl KernelId {
 
     pub fn name(self) -> &'static str {
         match self {
+            KernelId::Crop => "crop",
+            KernelId::Orient => "orient",
+            KernelId::Straighten => "straighten",
+            KernelId::Resize => "resize",
             KernelId::Exposure => "exposure",
             KernelId::LuminanceBw => "luminance_bw",
             KernelId::ChannelMixerBw => "channel_mixer_bw",
@@ -81,6 +96,16 @@ impl KernelId {
         p: &AllParams,
     ) -> Result<Array3<f32>, PhaiosError> {
         match self {
+            KernelId::Crop => {
+                phaios_core::geometry::crop(rgb, &p.crop_params(rgb.dim().0, rgb.dim().1))
+            }
+            KernelId::Orient => phaios_core::geometry::orient(rgb, p.orientation),
+            KernelId::Straighten => {
+                phaios_core::geometry::straighten(rgb, &StraightenParams::new(p.straighten_deg))
+            }
+            KernelId::Resize => {
+                phaios_core::geometry::resize(rgb, &p.resize_params(rgb.dim().0, rgb.dim().1))
+            }
             KernelId::Exposure => phaios_core::exposure::exposure(rgb, p.exposure_stops),
             KernelId::LuminanceBw => phaios_core::bw::luminance_bw(rgb, p.standard),
             KernelId::ChannelMixerBw => phaios_core::bw::channel_mixer_bw(rgb, p.mixer_weights),
@@ -107,6 +132,13 @@ impl KernelId {
             v.to_bits().hash(h);
         }
         match self {
+            KernelId::Crop => p.crop_frac.iter().for_each(|&v| f(v, h)),
+            KernelId::Orient => (p.orientation as u16).hash(h),
+            KernelId::Straighten => f(p.straighten_deg, h),
+            KernelId::Resize => {
+                f(p.resize_scale, h);
+                p.resize_filter.hash(h);
+            }
             KernelId::Exposure => f(p.exposure_stops, h),
             KernelId::LuminanceBw => p.standard.hash(h),
             KernelId::ChannelMixerBw => p.mixer_weights.iter().for_each(|&w| f(w, h)),
@@ -156,6 +188,12 @@ impl KernelId {
 /// Every kernel's parameters, held simultaneously so switching kernels
 /// preserves edits. Defaults are each kernel's neutral.
 pub struct AllParams {
+    /// Crop rectangle as fractions of the frame: [x, y, width, height].
+    pub crop_frac: [f32; 4],
+    pub orientation: Orientation,
+    pub straighten_deg: f32,
+    pub resize_scale: f32,
+    pub resize_filter: ResizeFilter,
     pub exposure_stops: f32,
     pub standard: LuminanceStandard,
     pub mixer_weights: [f32; 3],
@@ -186,6 +224,11 @@ pub struct AllParams {
 impl Default for AllParams {
     fn default() -> Self {
         Self {
+            crop_frac: [0.1, 0.1, 0.8, 0.8],
+            orientation: Orientation::Rotate90,
+            straighten_deg: 2.0,
+            resize_scale: 0.5,
+            resize_filter: ResizeFilter::Area,
             exposure_stops: 0.0,
             standard: LuminanceStandard::Bt709,
             mixer_weights: [0.21, 0.72, 0.07],
@@ -216,6 +259,23 @@ impl Default for AllParams {
 }
 
 impl AllParams {
+    /// Pixel crop rectangle from the fractional sliders, clamped valid
+    /// for the current frame.
+    pub fn crop_params(&self, h: usize, w: usize) -> CropParams {
+        let (h, w) = (h as f32, w as f32);
+        let x = (self.crop_frac[0] * w).clamp(0.0, w - 1.0) as u32;
+        let y = (self.crop_frac[1] * h).clamp(0.0, h - 1.0) as u32;
+        let cw = ((self.crop_frac[2] * w) as u32).clamp(1, w as u32 - x);
+        let ch = ((self.crop_frac[3] * h) as u32).clamp(1, h as u32 - y);
+        CropParams::new(x, y, cw, ch)
+    }
+
+    pub fn resize_params(&self, h: usize, w: usize) -> ResizeParams {
+        let tw = ((w as f32 * self.resize_scale) as u32).max(1);
+        let th = ((h as f32 * self.resize_scale) as u32).max(1);
+        ResizeParams::new(tw, th, self.resize_filter)
+    }
+
     pub fn hsl_params(&self) -> HslWeightedParams {
         HslWeightedParams::new(self.hsl_weights, self.standard, self.hsl_sigma)
     }

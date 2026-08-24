@@ -173,7 +173,7 @@ pub fn resize_device(img: &DeviceImage, params: &ResizeParams) -> Result<DeviceI
 /// Rotate by a small angle and crop to the inscribed rectangle,
 /// device-resident. Mirrors [`crate::geometry::straighten`];
 /// **bit-exact** — sin/cos come from the same host computation
-/// ([`crate::geometry::straighten_geometry`]) and the 16-tap
+/// (`geometry::straighten_geometry`) and the 16-tap
 /// Catmull-Rom accumulates in the CPU's exact order.
 ///
 /// # Errors

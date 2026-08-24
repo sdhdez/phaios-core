@@ -8,9 +8,15 @@ readme = "README.md"
 repository = "https://github.com/sdhdez/phaios-core"
 keywords = ["image-processing", "black-and-white", "photography", "pyo3"]
 categories = ["multimedia::images", "science"]
-# The dev tool under tools/ (own lockfile, GUI deps) must not ship in the
-# published crate or sdist.
-exclude = ["tools/"]
+# The dev tool under tools/ (own lockfile, GUI deps) and the repo's
+# internal working documents must not ship in the published crate/sdist.
+exclude = [
+    "tools/",
+    ".claude/",
+    "02-phaios-bootstrap.md",
+    "03-phase3-prompt.md",
+    "phase2-design-brief.md",
+]
 
 [lib]
 name = "phaios_core"
@@ -146,6 +152,6 @@ name = "14_resample"
 path = "examples/14_resample.rs"
 
 [[example]]
-name = "13_gpu_exposure"
-path = "examples/13_gpu_exposure.rs"
+name = "15_gpu_exposure"
+path = "examples/15_gpu_exposure.rs"
 required-features = ["cuda"]

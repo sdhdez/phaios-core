@@ -32,7 +32,7 @@ fn grid_2d(h: usize, w: usize) -> LaunchConfig {
 /// band-pass reuses the separable Kahan-compensated box filters proven
 /// in `local_contrast`, and the radii and analytic normalisation come
 /// from the same host function the CPU kernel calls
-/// ([`crate::film_grain::bandpass_geometry`]). Agreement with the CPU
+/// (`film_grain::bandpass_geometry`). Agreement with the CPU
 /// oracle is bounded; within-backend output is bit-reproducible.
 ///
 /// # Errors

@@ -126,7 +126,7 @@ pub struct Context {
     /// PTX modules already loaded on this context, keyed by kernel name.
     /// Loading is idempotent and keyed content is `include_str!`-embedded,
     /// so this cache can only affect *speed*, never results.
-    modules: Arc<Mutex<HashMap<&'static str, Arc<CudaModule>>>>,
+    modules: Arc<Mutex<HashMap<usize, Arc<CudaModule>>>>,
     info: DeviceInfo,
 }
 
@@ -202,19 +202,26 @@ impl Context {
         kernel_name: &'static str,
         ptx_src: &'static str,
     ) -> Result<CudaFunction, PhaiosError> {
+        // Cache keyed by the PTX source's address (stable for 'static
+        // data): one module per embedded PTX file. The audit caught the
+        // previous keying by KERNEL NAME, which loaded the same module
+        // once per kernel it contains (4x for the guided filter) and
+        // would have silently returned the wrong module had two PTX
+        // files ever shared a kernel name.
+        let key = ptx_src.as_ptr() as usize;
         let module = {
             let mut cache = self
                 .modules
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match cache.get(kernel_name) {
+            match cache.get(&key) {
                 Some(m) => Arc::clone(m),
                 None => {
                     let m = self
                         .ctx
                         .load_module(ptx_src.into())
                         .map_err(|e| backend_err("cannot load PTX module", e))?;
-                    cache.insert(kernel_name, Arc::clone(&m));
+                    cache.insert(key, Arc::clone(&m));
                     m
                 }
             }
