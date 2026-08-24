@@ -8,6 +8,29 @@ The Rust crate and the Python wheel always carry the same version.
 
 ## [Unreleased] — 0.2.0-dev
 
+### Added — exact geometry (crop, orientation)
+
+`crop(img, CropParams)` and `orient(img, Orientation)` — the first
+geometry kernels, deliberately in the core because their parameters
+live in consumers' sidecar files: two front ends implementing the same
+crop differently would make the same sidecar render different images.
+
+Both are pure index permutations — no arithmetic on pixel values — so
+they are **bit-exact across every backend unconditionally**, asserted
+by the conformance suite for all crop rectangles and all eight
+orientations, including a geometry-first resident GPU chain.
+`Orientation`'s discriminants are the Exif codes 1..=8 (JEITA CP-3451);
+rotations are clockwise; every variant decomposes through one shared
+`flags()` definition both backends implement.
+
+**Pipeline position: geometry runs first** — `orient`, then `crop`,
+before exposure and the look pipeline. The order is load-bearing, not
+stylistic: the vignette centres on the frame it is given (which must be
+the cropped frame — asserted by test), and film grain keys its noise to
+pixel coordinates (which must be the final grid). The kernel-viewer's
+RAW path now applies camera orientation through the core kernel instead
+of private code.
+
 ### Added — optional CUDA backend (`--features cuda`)
 
 All twelve kernels on NVIDIA GPUs, off by default: published wheels

@@ -74,8 +74,9 @@ a judgement that the kernels document but do not enforce:
 
 | Constraint | Why |
 |---|---|
+| **geometry first** (`orient`, then `crop`) | `vignette` centres on the frame it is given, which must be the *cropped* frame; `film_grain` keys noise to pixel coordinates, which must be the final grid; crop rectangles are expressed in the upright (oriented) frame |
 | `encode_srgb` last | every other kernel assumes linear input |
-| `exposure` first | a stop is a factor of two only in linear light |
+| `exposure` opens the look pipeline (right after geometry) | a stop is a factor of two only in linear light |
 | B&W before zone/local-contrast/grain | those kernels take `(H, W, 1)` |
 | `split_toning` after B&W | it takes `(H, W, 1)` and returns `(H, W, 3)` |
 | grain after the tone stages | a tone curve applied afterwards reshapes the grain, and the `4·L·(1−L)` envelope would no longer sit on the midtones the viewer sees |
@@ -879,3 +880,36 @@ to v0.1.1 ran on a *constant* image, which is the cheapest possible
 input for `encode_srgb` (one branch), `zone_system` (one zone position)
 and `local_contrast` (zero variance everywhere). Against the same flat
 input, the three B&W kernels measured 10.1 ms rather than 15 ms.
+
+---
+
+## 14. Geometry (crop, orientation)
+
+Two exact operations, deliberately in the core rather than in front
+ends: their parameters live in consumers' sidecar files, and if two
+front ends implemented the same crop differently, the same sidecar
+would render different images.
+
+Both are **pure index permutations** — no arithmetic on pixel values —
+so they are bit-identical across every backend unconditionally, unlike
+the transcendental-bearing kernels of §13.
+
+**`crop(img, CropParams{x, y, width, height})`** extracts the
+rectangle; it must lie entirely within the frame (validated with u64
+arithmetic so near-`u32::MAX` coordinates cannot wrap). Zero-size
+rectangles are legal, per the crate's zero-size policy.
+
+**`orient(img, Orientation)`** applies one of the eight dihedral
+transforms. The enum discriminants are the Exif orientation codes 1..=8
+(JEITA CP-3451, tag 0x0112); rotations are clockwise. Internally every
+variant decomposes to `(transpose, flip_y, flip_x)` with the flips
+acting on the *output* axes — one shared definition
+(`Orientation::flags`) that both backends implement, so they cannot
+drift. The composition properties (each orientation undone by its
+`inverse()`, four quarter-turns closing to the identity) are asserted
+in the test suite.
+
+**Pipeline position: first**, `orient` before `crop`, both before
+exposure and the look pipeline. See the order table in §1 — the
+vignette centre and the grain coordinate grid make this load-bearing,
+not stylistic.

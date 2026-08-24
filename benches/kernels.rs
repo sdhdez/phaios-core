@@ -19,6 +19,7 @@ use phaios_core::bw::{
 use phaios_core::encode::encode_srgb;
 use phaios_core::exposure::exposure;
 use phaios_core::film_grain::{GrainParams, film_grain};
+use phaios_core::geometry::{CropParams, Orientation, crop, orient};
 use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
 use phaios_core::split_toning::{SplitToningParams, split_toning};
 use phaios_core::tone::{ToneCurveParams, ZoneParams, tone_curve, zone_system};
@@ -49,6 +50,17 @@ fn pseudo_random_image(h: usize, w: usize, c: usize) -> Array3<f32> {
         // Top 24 bits → [0, 1) with exact f32 spacing.
         (state >> 40) as f32 / 16_777_216.0
     })
+}
+
+fn bench_geometry(c: &mut Criterion) {
+    let img = pseudo_random_image(H, W, 3);
+    let params = CropParams::new(W as u32 / 4, H as u32 / 4, W as u32 / 2, H as u32 / 2);
+    c.bench_function("crop/24MP/centre-half", |b| {
+        b.iter(|| crop(black_box(img.view()), black_box(&params)).unwrap())
+    });
+    c.bench_function("orient/24MP/rotate90", |b| {
+        b.iter(|| orient(black_box(img.view()), black_box(Orientation::Rotate90)).unwrap())
+    });
 }
 
 fn bench_exposure(c: &mut Criterion) {
@@ -164,6 +176,7 @@ fn bench_encode_srgb(c: &mut Criterion) {
 
 criterion_group!(
     benches,
+    bench_geometry,
     bench_exposure,
     bench_luminance_bw,
     bench_channel_mixer_bw,

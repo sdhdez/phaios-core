@@ -138,6 +138,10 @@ name = "12_film_grain"
 path = "examples/12_film_grain.rs"
 
 [[example]]
+name = "13_geometry"
+path = "examples/13_geometry.rs"
+
+[[example]]
 name = "13_gpu_exposure"
 path = "examples/13_gpu_exposure.rs"
 required-features = ["cuda"]

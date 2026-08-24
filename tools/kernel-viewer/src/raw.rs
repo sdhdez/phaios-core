@@ -14,23 +14,24 @@ use ndarray::Array3;
 use rawler::decoders::Orientation;
 use rawler::imgop::develop::{Intermediate, ProcessingStep, RawDevelop};
 
-/// Apply the camera's recorded orientation so the image displays the
-/// way it was shot. The transforms are lazy ndarray views made
-/// contiguous at the end; naming follows rawler (rotations clockwise).
+/// Apply the camera's recorded orientation via the core's geometry
+/// kernel — the same code every consumer uses, so a sidecar recording
+/// an orientation reproduces identically everywhere. Only the enum
+/// mapping (rawler's naming → Exif codes) lives here.
 fn apply_orientation(img: Array3<f32>, o: Orientation) -> Array3<f32> {
-    use ndarray::s;
-    let v = img.view();
-    let oriented = match o {
-        Orientation::Normal | Orientation::Unknown => return img,
-        Orientation::HorizontalFlip => v.slice_move(s![.., ..;-1, ..]),
-        Orientation::Rotate180 => v.slice_move(s![..;-1, ..;-1, ..]),
-        Orientation::VerticalFlip => v.slice_move(s![..;-1, .., ..]),
-        Orientation::Transpose => v.permuted_axes([1, 0, 2]),
-        Orientation::Rotate90 => v.permuted_axes([1, 0, 2]).slice_move(s![.., ..;-1, ..]),
-        Orientation::Transverse => v.permuted_axes([1, 0, 2]).slice_move(s![..;-1, ..;-1, ..]),
-        Orientation::Rotate270 => v.permuted_axes([1, 0, 2]).slice_move(s![..;-1, .., ..]),
+    let exif = match o {
+        Orientation::Normal | Orientation::Unknown => 1_u16,
+        Orientation::HorizontalFlip => 2,
+        Orientation::Rotate180 => 3,
+        Orientation::VerticalFlip => 4,
+        Orientation::Transpose => 5,
+        Orientation::Rotate90 => 6,
+        Orientation::Transverse => 7,
+        Orientation::Rotate270 => 8,
     };
-    oriented.as_standard_layout().to_owned()
+    let core = phaios_core::geometry::Orientation::from_exif(exif)
+        .expect("exif codes 1..=8 by construction");
+    phaios_core::geometry::orient(img.view(), core).expect("orient is infallible")
 }
 
 /// Decode and develop a RAW file to linear (H, W, 3) f32.

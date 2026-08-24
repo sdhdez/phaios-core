@@ -369,6 +369,31 @@ fn film_grain(
     Ok(GpuImage { inner: result })
 }
 
+/// Crop on the GPU. Mirrors ``phaios_core.crop``; bit-exact (a pure
+/// index copy).
+#[pyfunction]
+fn crop(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: pyo3::PyRef<'_, crate::geometry::CropParams>,
+) -> PyResult<GpuImage> {
+    let params_owned = *params;
+    let result = py.detach(|| cuda::kernels::crop_device(&img.inner, &params_owned))?;
+    Ok(GpuImage { inner: result })
+}
+
+/// Dihedral orientation on the GPU. Mirrors ``phaios_core.orient``;
+/// bit-exact (a pure index permutation).
+#[pyfunction]
+fn orient(
+    py: Python<'_>,
+    img: &GpuImage,
+    orientation: crate::geometry::Orientation,
+) -> PyResult<GpuImage> {
+    let result = py.detach(|| cuda::kernels::orient_device(&img.inner, orientation))?;
+    Ok(GpuImage { inner: result })
+}
+
 /// Register the `gpu` submodule on `phaios_core`.
 pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     let gpu = PyModule::new(py, "gpu")?;
@@ -389,6 +414,8 @@ pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult
     gpu.add_function(wrap_pyfunction!(zone_system, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(split_toning, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(film_grain, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(crop, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(orient, &gpu)?)?;
     parent.add_submodule(&gpu)?;
     // Without this, `import phaios_core.gpu` / `from phaios_core.gpu
     // import ...` fail: add_submodule creates an attribute, not an

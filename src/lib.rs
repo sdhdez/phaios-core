@@ -19,6 +19,7 @@ pub mod encode;
 pub mod error;
 pub mod exposure;
 pub mod film_grain;
+pub mod geometry;
 mod integral;
 pub mod local_contrast;
 pub mod split_toning;
@@ -66,6 +67,78 @@ pub fn exposure_py(
 ) -> PyResult<Py<PyArray3<f32>>> {
     let view = img.as_array();
     let result = py.detach(move || exposure::exposure(view, stops))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
+// ── Geometry bindings ────────────────────────────────────────────────────────
+
+/// Crop to a rectangle.
+///
+/// A pure index copy — no pixel value is touched, so the result is
+/// bit-identical on every backend. Geometry runs first in the pipeline:
+/// the vignette centres on the frame it is given (which must be the
+/// cropped frame) and film grain keys its noise to pixel coordinates
+/// (which must be the final grid).
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)`` for any channel count, dtype
+///     ``float32``, any memory layout.
+/// params : CropParams
+///     The rectangle: ``x``, ``y`` top-left corner, ``width``,
+///     ``height``. Must lie entirely within the frame.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(height, width, C)``, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If the rectangle exceeds the frame.
+#[pyfunction]
+pub fn crop(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: pyo3::PyRef<'_, geometry::CropParams>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let params_owned = *params;
+    let result = py.detach(move || geometry::crop(view, &params_owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
+/// Apply one of the eight dihedral orientations (Exif tag 0x0112).
+///
+/// A pure index permutation — bit-identical on every backend. Rotations
+/// are clockwise; the transposing variants swap width and height.
+/// Orientation precedes crop in the pipeline, so crop rectangles are
+/// expressed in the upright frame.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)`` for any channel count, dtype
+///     ``float32``, any memory layout.
+/// orientation : Orientation
+///     ``Orientation.Normal`` … ``Orientation.Rotate270``; the enum
+///     values are the Exif orientation codes 1..=8.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, C)`` or ``(W, H, C)``, dtype ``float32``,
+///     C-contiguous.
+#[pyfunction]
+pub fn orient(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    orientation: geometry::Orientation,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let result = py.detach(move || geometry::orient(view, orientation))?;
     Ok(result.into_pyarray(py).unbind())
 }
 
@@ -495,6 +568,8 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<bw::ColorFilter>()?;
 
     // Param structs
+    m.add_class::<geometry::CropParams>()?;
+    m.add_class::<geometry::Orientation>()?;
     m.add_class::<bw::HslWeightedParams>()?;
     m.add_class::<tone::ZoneParams>()?;
     m.add_class::<tone::ToneCurveParams>()?;
@@ -502,6 +577,10 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<film_grain::GrainParams>()?;
     m.add_class::<split_toning::SplitToningParams>()?;
     m.add_class::<vignette::VignetteParams>()?;
+
+    // Geometry
+    m.add_function(wrap_pyfunction!(crop, m)?)?;
+    m.add_function(wrap_pyfunction!(orient, m)?)?;
 
     // Exposure
     m.add_function(wrap_pyfunction!(exposure_py, m)?)?;

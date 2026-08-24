@@ -65,6 +65,56 @@ def test_import():
     assert ph is not None
 
 
+# ── Geometry ──────────────────────────────────────────────────────────────────
+
+
+def test_crop_shape_and_values(rgb_f32):
+    out = ph.crop(rgb_f32, ph.CropParams(4, 2, 32, 16))
+    assert_valid_output(out, (16, 32, 3))
+    np.testing.assert_array_equal(out, rgb_f32[2:18, 4:36])
+
+
+def test_crop_rejects_out_of_frame(rgb_f32):
+    with pytest.raises(ValueError):
+        ph.crop(rgb_f32, ph.CropParams(0, 0, W + 1, H))
+
+
+def test_crop_params_round_trip():
+    p = ph.CropParams(1, 2, 3, 4)
+    assert (p.x, p.y, p.width, p.height) == (1, 2, 3, 4)
+    assert p == ph.CropParams(1, 2, 3, 4)
+    assert p != ph.CropParams(0, 2, 3, 4)
+
+
+def test_orient_all_eight(rgb_f32):
+    """Exif enum values, dimension swaps, and inverse round trips."""
+    variants = [
+        ph.Orientation.Normal,
+        ph.Orientation.FlipHorizontal,
+        ph.Orientation.Rotate180,
+        ph.Orientation.FlipVertical,
+        ph.Orientation.Transpose,
+        ph.Orientation.Rotate90,
+        ph.Orientation.Transverse,
+        ph.Orientation.Rotate270,
+    ]
+    for exif_value, o in enumerate(variants, start=1):
+        assert o == exif_value  # eq_int: the discriminants ARE the Exif codes
+        out = ph.orient(rgb_f32, o)
+        transposed = exif_value >= 5
+        assert out.shape == ((W, H, 3) if transposed else (H, W, 3))
+        assert out.flags["C_CONTIGUOUS"]
+    # Quarter turns invert each other.
+    back = ph.orient(ph.orient(rgb_f32, ph.Orientation.Rotate90), ph.Orientation.Rotate270)
+    np.testing.assert_array_equal(back, rgb_f32)
+
+
+def test_orient_matches_numpy_rot90(rgb_f32):
+    """Pin the direction against numpy: Rotate90 CW == np.rot90(k=-1)."""
+    out = ph.orient(rgb_f32, ph.Orientation.Rotate90)
+    np.testing.assert_array_equal(out, np.rot90(rgb_f32, k=-1, axes=(0, 1)))
+
+
 # ── Exposure ──────────────────────────────────────────────────────────────────
 
 

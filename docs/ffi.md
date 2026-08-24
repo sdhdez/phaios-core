@@ -29,6 +29,8 @@ pipeline:
 
 | Kernel | In | Out | Notes |
 |---|---|---|---|
+| `crop` | any | same C, smaller H/W | pure index copy; **geometry runs first** |
+| `orient` | any | same C, H/W may swap | pure index permutation; before `crop` |
 | `exposure` | any | same | a scalar multiply; valid before or after the B&W stage |
 | `luminance_bw` | 3 | 1 | |
 | `channel_mixer_bw` | 3 | 1 | |

@@ -189,6 +189,60 @@ fn zone_v_plus_one_stop() {
     );
 }
 
+// ── Geometry tests ────────────────────────────────────────────────────────────
+
+use phaios_core::geometry::{CropParams, Orientation, crop, orient};
+
+/// The full dihedral group: every orientation composed with its inverse
+/// is the identity, and the four quarter-turn compositions close the
+/// group. This is the property that makes sidecar-recorded orientation
+/// reproducible.
+#[test]
+fn geometry_orientations_form_the_dihedral_group() {
+    let img = ndarray::Array3::from_shape_fn((9, 13, 3), |(y, x, c)| (y * 39 + x * 3 + c) as f32);
+    for value in 1..=8_u16 {
+        let o = Orientation::from_exif(value).unwrap();
+        let back = orient(orient(img.view(), o).unwrap().view(), o.inverse()).unwrap();
+        assert_eq!(back, img, "{o:?}");
+    }
+    // Two quarter turns are a half turn.
+    let two = orient(
+        orient(img.view(), Orientation::Rotate90).unwrap().view(),
+        Orientation::Rotate90,
+    )
+    .unwrap();
+    assert_eq!(two, orient(img.view(), Orientation::Rotate180).unwrap());
+}
+
+/// Crop then vignette must equal vignette centred on the crop — i.e.
+/// geometry-first ordering is what the vignette centre means.
+#[test]
+fn crop_defines_the_vignette_centre() {
+    let img = ndarray::Array3::from_elem((64, 64, 1), 1.0_f32);
+    let params = CropParams::new(0, 0, 32, 64); // left half
+    let vg = phaios_core::vignette::VignetteParams::new(0.8, 1.0, 0.0);
+
+    let cropped_then_vignetted =
+        phaios_core::vignette::vignette(crop(img.view(), &params).unwrap().view(), &vg).unwrap();
+    // The brightest point must be the centre of the CROP (16, 32), not
+    // the centre of the original frame (32, 32) clipped to the half.
+    let mut best = (0usize, 0usize);
+    let mut best_v = 0.0_f32;
+    for y in 0..64 {
+        for x in 0..32 {
+            let v = cropped_then_vignetted[[y, x, 0]];
+            if v > best_v {
+                best_v = v;
+                best = (y, x);
+            }
+        }
+    }
+    assert!(
+        (best.0 as i64 - 32).abs() <= 1 && (best.1 as i64 - 16).abs() <= 1,
+        "vignette centre is at {best:?}, expected ~(32, 16) — the crop's centre"
+    );
+}
+
 // ── Parametric tone curve tests ───────────────────────────────────────────────
 
 use phaios_core::tone::{ToneCurveParams, tone_curve};

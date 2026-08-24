@@ -546,6 +546,54 @@ fn film_grain_gpu_properties_hold_exactly() {
     }
 }
 
+// ── geometry: bit-exact by construction ──────────────────────────────────────
+
+/// Crop and all eight orientations are pure index permutations and must
+/// agree with the CPU to the bit, including on a resident chain where
+/// geometry runs first (its pipeline position).
+#[test]
+fn geometry_is_bit_exact() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(257, 389, 3);
+
+    for params in [
+        phaios_core::geometry::CropParams::new(0, 0, 389, 257),
+        phaios_core::geometry::CropParams::new(10, 20, 300, 200),
+        phaios_core::geometry::CropParams::new(388, 256, 1, 1),
+        phaios_core::geometry::CropParams::new(5, 5, 0, 0),
+    ] {
+        let cpu = phaios_core::geometry::crop(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::crop(&ctx, img.view(), &params).unwrap();
+        assert_eq!(cpu, gpu, "crop diverged at {params:?}");
+    }
+
+    for value in 1..=8_u16 {
+        let o = phaios_core::geometry::Orientation::from_exif(value).unwrap();
+        let cpu = phaios_core::geometry::orient(img.view(), o).unwrap();
+        let gpu = cuda::kernels::orient(&ctx, img.view(), o).unwrap();
+        assert_eq!(cpu, gpu, "orient diverged at {o:?}");
+    }
+
+    // Resident chain: orient → crop → luminance → vignette, one upload.
+    let cp = phaios_core::geometry::CropParams::new(8, 16, 200, 150);
+    let vg = phaios_core::vignette::VignetteParams::new(0.4, 0.8, 0.1);
+    let o = phaios_core::geometry::Orientation::Rotate90;
+
+    let c = phaios_core::geometry::orient(img.view(), o).unwrap();
+    let c = phaios_core::geometry::crop(c.view(), &cp).unwrap();
+    let c = phaios_core::bw::luminance_bw(c.view(), Default::default()).unwrap();
+    let cpu = phaios_core::vignette::vignette(c.view(), &vg).unwrap();
+
+    let d = ctx.upload(img.view()).unwrap();
+    let d = cuda::kernels::orient_device(&d, o).unwrap();
+    let d = cuda::kernels::crop_device(&d, &cp).unwrap();
+    let d = cuda::kernels::luminance_bw_device(&d, Default::default()).unwrap();
+    let d = cuda::kernels::vignette_device(&d, &vg).unwrap();
+    let gpu = ctx.download(&d).unwrap();
+
+    assert_eq!(cpu, gpu, "geometry-first resident chain diverged");
+}
+
 // ── the resident pipeline ────────────────────────────────────────────────────
 
 /// The full nine-stage v0.2 pipeline, resident end to end — one upload,
