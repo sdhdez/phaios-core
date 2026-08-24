@@ -142,6 +142,78 @@ pub fn orient(
     Ok(result.into_pyarray(py).unbind())
 }
 
+/// Resample to a new size with a separable polynomial filter.
+///
+/// ``ResizeFilter.Area`` computes exact fractional pixel coverage — the
+/// correct choice for downscaling; ``ResizeFilter.CatmullRom`` (Keys
+/// 1981) is the photographic default for upscaling. Bit-exact across
+/// backends. A same-size resize is the exact identity.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)``, dtype ``float32``, any layout.
+/// params : ResizeParams
+///     Target width, height and the filter.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(height, width, C)``, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If a target dimension is zero or the input is empty.
+#[pyfunction]
+pub fn resize(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: pyo3::PyRef<'_, geometry::ResizeParams>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let params_owned = *params;
+    let result = py.detach(move || geometry::resize(view, &params_owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
+/// Rotate by a small angle (±45°, positive clockwise) and crop to the
+/// largest inscribed rectangle.
+///
+/// 16-tap Catmull-Rom resampling; the only transcendentals (sin/cos of
+/// the one angle) are computed on the host, so the kernel is bit-exact
+/// across backends. ``degrees=0`` is the exact identity. Compose with
+/// ``orient`` for quarter turns.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)``, dtype ``float32``, any layout.
+/// params : StraightenParams
+///     The angle in degrees.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     The inscribed rectangle, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If the angle is not finite, exceeds ±45°, or leaves no whole
+///     pixel inscribed.
+#[pyfunction]
+pub fn straighten(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: pyo3::PyRef<'_, geometry::StraightenParams>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let params_owned = *params;
+    let result = py.detach(move || geometry::straighten(view, &params_owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── B&W bindings ─────────────────────────────────────────────────────────────
 
 /// Convert a linear RGB image to greyscale using standard luminance weights.
@@ -570,6 +642,9 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Param structs
     m.add_class::<geometry::CropParams>()?;
     m.add_class::<geometry::Orientation>()?;
+    m.add_class::<geometry::ResizeFilter>()?;
+    m.add_class::<geometry::ResizeParams>()?;
+    m.add_class::<geometry::StraightenParams>()?;
     m.add_class::<bw::HslWeightedParams>()?;
     m.add_class::<tone::ZoneParams>()?;
     m.add_class::<tone::ToneCurveParams>()?;
@@ -581,6 +656,8 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Geometry
     m.add_function(wrap_pyfunction!(crop, m)?)?;
     m.add_function(wrap_pyfunction!(orient, m)?)?;
+    m.add_function(wrap_pyfunction!(resize, m)?)?;
+    m.add_function(wrap_pyfunction!(straighten, m)?)?;
 
     // Exposure
     m.add_function(wrap_pyfunction!(exposure_py, m)?)?;

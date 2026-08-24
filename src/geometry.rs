@@ -20,6 +20,20 @@
 //!
 //! Reference for the orientation encoding: JEITA CP-3451 (Exif 2.3),
 //! tag 0x0112 — the enum discriminants are the Exif values 1..=8.
+//!
+//! [`resize`] and [`straighten`] resample, but with **polynomial
+//! filters only** (area coverage, triangle, Catmull-Rom) and the one
+//! transcendental — `sin`/`cos` of the straighten angle — evaluated
+//! once on the host and passed to both backends as identical scalars.
+//! Every per-pixel operation is a correctly-rounded mul/add/div/floor
+//! in a fixed accumulation order, so both kernels are **bit-exact
+//! across backends**, like `crop` and `orient`.
+//!
+//! Resampling references: the pixel-centre alignment convention and
+//! Catmull-Rom kernel follow Keys, "Cubic convolution interpolation
+//! for digital image processing", *IEEE Trans. ASSP* 29(6), 1981
+//! (a = −0.5); the area filter computes exact fractional pixel
+//! coverage, equivalent to integrating a box over the source grid.
 
 use ndarray::{Array3, ArrayView3, s};
 use pyo3::{pyclass, pymethods};
@@ -116,7 +130,9 @@ impl Orientation {
 
 // ── Crop parameters ───────────────────────────────────────────────────────────
 
-/// A crop rectangle, in pixels of the (already oriented) input frame.
+/// A crop rectangle, in pixels of the frame it is applied to — after
+/// `orient` and `straighten` in the standard geometry order, i.e. the
+/// upright, levelled frame.
 ///
 /// `x`, `y` locate the top-left corner; the rectangle must lie entirely
 /// within the image.
@@ -262,6 +278,437 @@ pub fn orient(img: ArrayView3<f32>, orientation: Orientation) -> Result<Array3<f
     Ok(out)
 }
 
+// ── Resize ───────────────────────────────────────────────────────────────────
+
+/// Resampling filter for [`resize`].
+#[pyclass(eq, eq_int, from_py_object)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum ResizeFilter {
+    /// Exact fractional pixel coverage — the correct filter for
+    /// **downscaling** (true area averaging at any ratio). When
+    /// upscaling it degenerates to a half-pixel box: one source tap for
+    /// most outputs, the average of the two neighbours at exact
+    /// half-pixel ties. Pick [`ResizeFilter::CatmullRom`] for
+    /// upscaling instead.
+    #[default]
+    Area = 0,
+    /// Triangle filter (bilinear). Cheap, slightly soft.
+    Bilinear = 1,
+    /// Catmull-Rom cubic (Keys 1981, a = −0.5) — the photographic
+    /// default for **upscaling**: sharper than bilinear without the
+    /// haloes of stronger sharpening kernels.
+    CatmullRom = 2,
+}
+
+/// Parameters for [`resize`].
+///
+/// ```python
+/// params = phaios_core.ResizeParams(2048, 1365, phaios_core.ResizeFilter.Area)
+/// ```
+#[pyclass(from_py_object)]
+#[derive(Clone, Copy, Debug)]
+pub struct ResizeParams {
+    /// Target width in pixels.
+    #[pyo3(get, set)]
+    pub width: u32,
+    /// Target height in pixels.
+    #[pyo3(get, set)]
+    pub height: u32,
+    /// The resampling filter.
+    #[pyo3(get, set)]
+    pub filter: ResizeFilter,
+}
+
+#[pymethods]
+impl ResizeParams {
+    /// Create new ``ResizeParams``.
+    #[new]
+    #[pyo3(signature = (width, height, filter = ResizeFilter::Area))]
+    pub fn new(width: u32, height: u32, filter: ResizeFilter) -> Self {
+        Self {
+            width,
+            height,
+            filter,
+        }
+    }
+
+    /// Two ``ResizeParams`` are equal when all fields match.
+    pub fn __eq__(&self, other: &Self) -> bool {
+        self.width == other.width && self.height == other.height && self.filter == other.filter
+    }
+
+    /// Return a debug representation.
+    pub fn __repr__(&self) -> String {
+        format!(
+            "ResizeParams(width={}, height={}, filter={:?})",
+            self.width, self.height, self.filter
+        )
+    }
+}
+
+/// The filter profile at distance `t` (in *output-scaled* source
+/// pixels). One definition; the CUDA kernel transcribes it operation
+/// for operation, and the conformance suite holds the two to
+/// `assert_eq!`.
+#[inline]
+pub(crate) fn filter_eval(filter: ResizeFilter, t: f32) -> f32 {
+    let t = t.abs();
+    match filter {
+        // Area is handled by exact coverage in `axis_weights`, not here;
+        // this arm is the box profile used when upscaling.
+        ResizeFilter::Area => {
+            if t <= 0.5 {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        ResizeFilter::Bilinear => (1.0 - t).max(0.0),
+        ResizeFilter::CatmullRom => {
+            if t <= 1.0 {
+                ((1.5 * t - 2.5) * t) * t + 1.0
+            } else if t < 2.0 {
+                ((-0.5 * t + 2.5) * t - 4.0) * t + 2.0
+            } else {
+                0.0
+            }
+        }
+    }
+}
+
+/// Filter radius in source pixels for a given axis scale
+/// (`scale = in_len / out_len`); minification widens the support.
+#[inline]
+pub(crate) fn filter_support(filter: ResizeFilter, scale: f32) -> f32 {
+    let base = match filter {
+        ResizeFilter::Area => 0.5,
+        ResizeFilter::Bilinear => 1.0,
+        ResizeFilter::CatmullRom => 2.0,
+    };
+    base * scale.max(1.0)
+}
+
+/// The tap range and weight function for output index `i` on one axis.
+///
+/// Centre alignment: source centre `c = (i + 0.5)·scale − 0.5`. For
+/// [`ResizeFilter::Area`] when minifying, the weight of source pixel
+/// `k` is its exact overlap with the output pixel's source footprint
+/// `[c − scale/2, c + scale/2]`; otherwise it is the filter profile at
+/// `(k − c) / max(scale, 1)`. Weights are accumulated and normalised
+/// left to right — the fixed order both backends share.
+#[inline]
+pub(crate) fn axis_taps(scale: f32, i: usize) -> (f32, f32) {
+    let c = (i as f32 + 0.5) * scale - 0.5;
+    (c, scale.max(1.0))
+}
+
+/// Resample to a new size with a separable filter.
+///
+/// Two passes (horizontal, then vertical), each accumulating its taps
+/// left-to-right/top-to-bottom and normalising by the weight sum, so
+/// the result is bit-reproducible and — the filters being polynomial —
+/// **bit-exact across backends**. Tap coordinates are clamped to the
+/// frame (replicate borders), consistent with the crate's other
+/// windowed kernels.
+///
+/// A constant image is preserved to ~1 ULP (the weighted sum and the
+/// weight sum round separately before the normalising division), and a
+/// same-size resize with any filter is the **exact** identity (centre
+/// alignment puts a unit weight on the source pixel).
+///
+/// Order-sensitive: the **last** geometry stage (after `orient`,
+/// `straighten` and `crop`) or export preparation — resampling after
+/// grain would change the grain's size on screen.
+///
+/// Input shape: `(H, W, C)`, any channel count, any layout.
+/// Output shape: `(height, width, C)`, C-contiguous.
+///
+/// # Errors
+/// [`PhaiosError::Parameter`] if either target dimension is zero.
+#[must_use = "kernel returns a new array; ignoring it wastes work"]
+pub fn resize(img: ArrayView3<f32>, params: &ResizeParams) -> Result<Array3<f32>, PhaiosError> {
+    validate_resize(img.shape(), params)?;
+    let (in_h, in_w, c) = img.dim();
+    let (out_w, out_h) = (params.width as usize, params.height as usize);
+
+    // Horizontal pass: (in_h, in_w, c) -> (in_h, out_w, c).
+    let scale_x = in_w as f32 / out_w as f32;
+    let mut mid = Array3::<f32>::zeros((in_h, out_w, c));
+    resample_axis1(img, mid.view_mut(), scale_x, params.filter);
+
+    // Vertical pass: transpose H<->W views so the same routine walks
+    // the other axis with identical arithmetic.
+    let scale_y = in_h as f32 / out_h as f32;
+    let mut out = Array3::<f32>::zeros((out_h, out_w, c));
+    resample_axis1(
+        mid.view().permuted_axes([1, 0, 2]),
+        out.view_mut().permuted_axes([1, 0, 2]),
+        scale_y,
+        params.filter,
+    );
+    Ok(out)
+}
+
+/// Validate resize parameters and input shape. Shared verbatim by the
+/// CPU kernel and the CUDA kernel so both backends reject exactly the
+/// same inputs with exactly the same messages.
+pub(crate) fn validate_resize(shape: &[usize], params: &ResizeParams) -> Result<(), PhaiosError> {
+    if params.width == 0 || params.height == 0 {
+        return Err(PhaiosError::Parameter(format!(
+            "resize target {}x{} has a zero dimension",
+            params.width, params.height
+        )));
+    }
+    if shape[0] == 0 || shape[1] == 0 {
+        return Err(PhaiosError::Parameter(format!(
+            "cannot resize an empty {}x{} image",
+            shape[1], shape[0]
+        )));
+    }
+    Ok(())
+}
+
+/// Resample along axis 1 of `src` into `dst` (axis 0 and 2 unchanged).
+///
+/// The per-output-pixel tap loop is the reference the CUDA kernel
+/// mirrors: same centre, same weights, same left-to-right accumulation.
+fn resample_axis1(
+    src: ArrayView3<f32>,
+    mut dst: ndarray::ArrayViewMut3<f32>,
+    scale: f32,
+    filter: ResizeFilter,
+) {
+    let (rows, in_len, c) = src.dim();
+    let out_len = dst.dim().1;
+    let support = filter_support(filter, scale);
+    let area_minify = filter == ResizeFilter::Area && scale > 1.0;
+
+    ndarray::Zip::indexed(dst.rows_mut()).par_for_each(|(row, i), mut out_px| {
+        let (centre, denom) = axis_taps(scale, i);
+        let k0 = (centre - support).floor() as i64;
+        let k1 = (centre + support).ceil() as i64;
+
+        for ch in 0..c {
+            out_px[ch] = 0.0;
+        }
+        let mut wsum = 0.0_f32;
+        for k in k0..=k1 {
+            let w = if area_minify {
+                // Exact fractional coverage of source pixel k by the
+                // output footprint [centre - scale/2, centre + scale/2].
+                let lo = (k as f32 - 0.5).max(centre - scale * 0.5);
+                let hi = (k as f32 + 0.5).min(centre + scale * 0.5);
+                (hi - lo).max(0.0)
+            } else {
+                filter_eval(filter, (k as f32 - centre) / denom)
+            };
+            if w != 0.0 {
+                let kc = k.clamp(0, in_len as i64 - 1) as usize;
+                for ch in 0..c {
+                    out_px[ch] += w * src[[row, kc, ch]];
+                }
+                wsum += w;
+            }
+        }
+        if wsum != 0.0 {
+            for ch in 0..c {
+                out_px[ch] /= wsum;
+            }
+        }
+    });
+    let _ = rows;
+    let _ = out_len;
+}
+
+// ── Straighten ───────────────────────────────────────────────────────────────
+
+/// Parameters for [`straighten`].
+///
+/// ```python
+/// params = phaios_core.StraightenParams(degrees=-1.8)  # level a tilted horizon
+/// ```
+#[pyclass(from_py_object)]
+#[derive(Clone, Copy, Debug)]
+pub struct StraightenParams {
+    /// Rotation in degrees, **positive clockwise**, limited to ±45°
+    /// (compose with [`orient`] for quarter turns).
+    #[pyo3(get, set)]
+    pub degrees: f32,
+}
+
+#[pymethods]
+impl StraightenParams {
+    /// Create new ``StraightenParams``.
+    #[new]
+    pub fn new(degrees: f32) -> Self {
+        Self { degrees }
+    }
+
+    /// Two ``StraightenParams`` are equal when the angle bits match.
+    pub fn __eq__(&self, other: &Self) -> bool {
+        self.degrees.to_bits() == other.degrees.to_bits()
+    }
+
+    /// Return a debug representation.
+    pub fn __repr__(&self) -> String {
+        format!("StraightenParams(degrees={})", self.degrees)
+    }
+}
+
+/// Everything the straighten kernels need, computed **once on the
+/// host** and shared verbatim by both backends: the output dimensions
+/// (largest axis-aligned rectangle inscribed in the rotated frame, by
+/// the standard max-area construction) and the f32 sin/cos — the only
+/// transcendentals in the whole operation.
+///
+/// # Errors
+/// [`PhaiosError::Parameter`] if `degrees` is not finite, exceeds ±45°,
+/// or leaves no whole pixel inscribed.
+pub(crate) fn straighten_geometry(
+    in_h: usize,
+    in_w: usize,
+    degrees: f32,
+) -> Result<(usize, usize, f32, f32), PhaiosError> {
+    if !degrees.is_finite() || degrees.abs() > 45.0 {
+        return Err(PhaiosError::Parameter(format!(
+            "degrees is {degrees}, expected a finite angle in -45..=45 (compose with orient() for quarter turns)"
+        )));
+    }
+    let radians = (degrees as f64).to_radians();
+    let (sin_a, cos_a) = (radians.sin().abs(), radians.cos().abs());
+
+    // Largest axis-aligned rectangle inscribed in the rotated w x h
+    // rectangle (max-area construction; aspect may change slightly).
+    let (w, h) = (in_w as f64, in_h as f64);
+    let (out_w, out_h) = if in_h == 0 || in_w == 0 {
+        (0.0, 0.0)
+    } else {
+        let (short, long) = if w <= h { (w, h) } else { (h, w) };
+        if short <= 2.0 * sin_a * cos_a * long {
+            // Half-constrained: two inscribed corners touch the short
+            // sides' midlines. The LONG axis of the result follows the
+            // long axis of the input: landscape wr = x/sin_a (wide),
+            // portrait hr = x/sin_a (tall). The review workflow caught
+            // this tuple swapped — producing portrait crops from
+            // landscape frames — a bug invisible to cross-backend
+            // conformance because both backends share this function.
+            let half = 0.5 * short;
+            if w <= h {
+                (half / cos_a, half / sin_a)
+            } else {
+                (half / sin_a, half / cos_a)
+            }
+        } else {
+            let cos_2a = cos_a * cos_a - sin_a * sin_a;
+            (
+                (w * cos_a - h * sin_a) / cos_2a,
+                (h * cos_a - w * sin_a) / cos_2a,
+            )
+        }
+    };
+    let (out_w, out_h) = (out_w.floor() as usize, out_h.floor() as usize);
+    if out_w == 0 || out_h == 0 {
+        return Err(PhaiosError::Parameter(format!(
+            "straighten by {degrees} deg leaves no whole pixel of the {in_w}x{in_h} frame"
+        )));
+    }
+
+    let r = (degrees as f64).to_radians();
+    Ok((out_h, out_w, r.sin() as f32, r.cos() as f32))
+}
+
+/// Rotate by a small angle and crop to the largest inscribed rectangle.
+///
+/// Positive degrees rotate the image **clockwise** (consistent with
+/// [`Orientation::Rotate90`]); ±45° is the limit — compose with
+/// [`orient`] for anything larger. The output is the largest
+/// axis-aligned rectangle inscribed in the rotated frame (max-area
+/// construction), so every output pixel's *sample point* lies inside
+/// the source. The cubic's ±2-pixel support can still reach
+/// frame-edge pixels near the inscribed boundary, where taps clamp to
+/// the border (replicate) — standard resampling practice, confined to
+/// the outermost ~2-pixel band of the result.
+///
+/// Order-sensitive: between `orient` and `crop`, so crop rectangles
+/// are expressed in the levelled frame.
+///
+/// Resampling is 16-tap Catmull-Rom (Keys 1981, a = −0.5), evaluated
+/// in a fixed 4×4 order. With sin/cos computed once on the host, every
+/// per-pixel operation is polynomial, so the kernel is **bit-exact
+/// across backends**.
+///
+/// `degrees == 0` is the exact identity (the cubic collapses to a unit
+/// tap on the source pixel).
+///
+/// Input shape: `(H, W, C)`, any channel count, any layout.
+/// Output shape: the inscribed rectangle, C-contiguous.
+///
+/// # Errors
+/// [`PhaiosError::Parameter`] per [`straighten_geometry`].
+#[must_use = "kernel returns a new array; ignoring it wastes work"]
+pub fn straighten(
+    img: ArrayView3<f32>,
+    params: &StraightenParams,
+) -> Result<Array3<f32>, PhaiosError> {
+    let (in_h, in_w, c) = img.dim();
+    let (out_h, out_w, sin_a, cos_a) = straighten_geometry(in_h, in_w, params.degrees)?;
+
+    let mut out = Array3::<f32>::zeros((out_h, out_w, c));
+    let (cx_out, cy_out) = (out_w as f32 * 0.5, out_h as f32 * 0.5);
+    let (cx_in, cy_in) = (in_w as f32 * 0.5, in_h as f32 * 0.5);
+
+    ndarray::Zip::indexed(out.rows_mut()).par_for_each(|(oy, ox), mut px| {
+        // Inverse mapping: the output pixel centre, rotated back into
+        // the source frame. Clockwise image rotation means the sampling
+        // grid rotates counter-clockwise.
+        let dx = ox as f32 + 0.5 - cx_out;
+        let dy = oy as f32 + 0.5 - cy_out;
+        let sx = cos_a * dx + sin_a * dy + cx_in - 0.5;
+        let sy = -sin_a * dx + cos_a * dy + cy_in - 0.5;
+
+        let fx = sx.floor();
+        let fy = sy.floor();
+        let tx = sx - fx;
+        let ty = sy - fy;
+        let ix = fx as i64;
+        let iy = fy as i64;
+
+        // Catmull-Rom weights for the four taps on each axis, evaluated
+        // in fixed order; both backends share this exact sequence.
+        let wx = catmull_weights(tx);
+        let wy = catmull_weights(ty);
+
+        for ch in 0..c {
+            let mut acc = 0.0_f32;
+            for (j, wyj) in wy.iter().enumerate() {
+                let yj = (iy - 1 + j as i64).clamp(0, in_h as i64 - 1) as usize;
+                let mut row_acc = 0.0_f32;
+                for (i, wxi) in wx.iter().enumerate() {
+                    let xi = (ix - 1 + i as i64).clamp(0, in_w as i64 - 1) as usize;
+                    row_acc += wxi * img[[yj, xi, ch]];
+                }
+                acc += wyj * row_acc;
+            }
+            px[ch] = acc;
+        }
+    });
+    Ok(out)
+}
+
+/// The four Catmull-Rom tap weights for fractional position `t` ∈ [0, 1).
+///
+/// Weights sum to exactly the polynomial identity (1 at t = 0), and the
+/// evaluation order is part of the cross-backend contract.
+#[inline]
+pub(crate) fn catmull_weights(t: f32) -> [f32; 4] {
+    [
+        filter_eval(ResizeFilter::CatmullRom, t + 1.0),
+        filter_eval(ResizeFilter::CatmullRom, t),
+        filter_eval(ResizeFilter::CatmullRom, 1.0 - t),
+        filter_eval(ResizeFilter::CatmullRom, 2.0 - t),
+    ]
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -391,6 +838,253 @@ mod tests {
         assert!(Orientation::from_exif(9).is_none());
     }
 
+    // ── resize ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn resize_same_size_is_identity_for_every_filter() {
+        // Centre alignment puts c = i exactly, so the filters collapse
+        // to a unit tap: bit-exact identity, not approximate.
+        let img = numbered(7, 9, 3);
+        for filter in [
+            ResizeFilter::Area,
+            ResizeFilter::Bilinear,
+            ResizeFilter::CatmullRom,
+        ] {
+            let out = resize(img.view(), &ResizeParams::new(9, 7, filter)).unwrap();
+            assert_eq!(out, img, "{filter:?} same-size resize must be identity");
+        }
+    }
+
+    #[test]
+    fn resize_constant_image_stays_constant_to_a_ulp() {
+        // The weighted sum and weight sum round separately before the
+        // normalising division, so a flat image is preserved to ~1 ULP
+        // (not the bit — the same wobble on every backend).
+        let img = Array3::from_elem((37, 53, 1), 0.42_f32);
+        for filter in [
+            ResizeFilter::Area,
+            ResizeFilter::Bilinear,
+            ResizeFilter::CatmullRom,
+        ] {
+            for (w, h) in [(17_u32, 11_u32), (105, 71)] {
+                let out = resize(img.view(), &ResizeParams::new(w, h, filter)).unwrap();
+                for &v in out.iter() {
+                    assert!(
+                        (v - 0.42).abs() < 1e-6,
+                        "{filter:?} {w}x{h} broke a constant image: {v}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn area_downscale_by_two_is_the_block_mean() {
+        let img = numbered(4, 4, 1);
+        let out = resize(img.view(), &ResizeParams::new(2, 2, ResizeFilter::Area)).unwrap();
+        for y in 0..2 {
+            for x in 0..2 {
+                let mean = (img[[2 * y, 2 * x, 0]]
+                    + img[[2 * y, 2 * x + 1, 0]]
+                    + img[[2 * y + 1, 2 * x, 0]]
+                    + img[[2 * y + 1, 2 * x + 1, 0]])
+                    / 4.0;
+                assert!(
+                    (out[[y, x, 0]] - mean).abs() < 1e-5,
+                    "2x2 block mean mismatch at ({y}, {x})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resize_preserves_mean_when_downscaling() {
+        let img =
+            Array3::from_shape_fn((64, 96, 1), |(y, x, _)| ((y * 96 + x) % 251) as f32 / 251.0);
+        let out = resize(img.view(), &ResizeParams::new(31, 21, ResizeFilter::Area)).unwrap();
+        let mean_in = img.iter().sum::<f32>() / img.len() as f32;
+        let mean_out = out.iter().sum::<f32>() / out.len() as f32;
+        assert!(
+            (mean_in - mean_out).abs() < 5e-3,
+            "area downscale should preserve the mean: {mean_in} vs {mean_out}"
+        );
+    }
+
+    #[test]
+    fn catmull_upscale_interpolates_a_linear_ramp_exactly_inside() {
+        // Cubic convolution reproduces polynomials up to degree 3 —
+        // a linear ramp upscales to a linear ramp (interior pixels).
+        let img = Array3::from_shape_fn((1, 8, 1), |(_, x, _)| x as f32);
+        let out = resize(
+            img.view(),
+            &ResizeParams::new(16, 1, ResizeFilter::CatmullRom),
+        )
+        .unwrap();
+        for x in 3..13 {
+            let expected = (x as f32 + 0.5) * 0.5 - 0.5;
+            assert!(
+                (out[[0, x, 0]] - expected).abs() < 1e-4,
+                "ramp broken at {x}: {} vs {expected}",
+                out[[0, x, 0]]
+            );
+        }
+    }
+
+    #[test]
+    fn resize_rejects_zero_targets_and_empty_input() {
+        let img = numbered(4, 4, 1);
+        for (w, h) in [(0_u32, 4_u32), (4, 0)] {
+            assert!(matches!(
+                resize(img.view(), &ResizeParams::new(w, h, ResizeFilter::Area)).unwrap_err(),
+                PhaiosError::Parameter(_)
+            ));
+        }
+        // The empty-input rejection lives in the SHARED validate, so both
+        // backends refuse identically (the review caught it duplicated).
+        let empty = Array3::<f32>::zeros((0, 4, 1));
+        assert!(matches!(
+            resize(empty.view(), &ResizeParams::new(4, 4, ResizeFilter::Area)).unwrap_err(),
+            PhaiosError::Parameter(_)
+        ));
+    }
+
+    // ── straighten ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn straighten_zero_degrees_is_identity() {
+        let img = numbered(9, 13, 3);
+        let out = straighten(img.view(), &StraightenParams::new(0.0)).unwrap();
+        assert_eq!(out, img, "0 degrees must be the exact identity");
+    }
+
+    #[test]
+    fn straighten_constant_image_stays_constant() {
+        // Catmull-Rom weights sum to 1, so a flat image survives the
+        // resampling exactly wherever all taps are interior.
+        let img = Array3::from_elem((64, 96, 1), 0.6_f32);
+        let out = straighten(img.view(), &StraightenParams::new(7.3)).unwrap();
+        let (h, w, _) = out.dim();
+        assert!(h < 64 && w < 96, "inscribed crop must shrink the frame");
+        for &v in out.iter() {
+            assert!((v - 0.6).abs() < 1e-5, "flat image broken: {v}");
+        }
+    }
+
+    #[test]
+    fn straighten_direction_is_clockwise() {
+        // A bright column right of centre must move DOWN under positive
+        // (clockwise) rotation — pin the direction, not just the shape.
+        let mut img = Array3::<f32>::zeros((101, 101, 1));
+        for y in 0..101 {
+            img[[y, 85, 0]] = 1.0;
+        }
+        let out = straighten(img.view(), &StraightenParams::new(10.0)).unwrap();
+        let (h, w, _) = out.dim();
+        // Find the brightest pixel in the top and bottom quarters.
+        let brightest_x = |rows: std::ops::Range<usize>| -> f32 {
+            let mut best = (0.0_f32, 0_usize);
+            for y in rows {
+                for x in 0..w {
+                    if out[[y, x, 0]] > best.0 {
+                        best = (out[[y, x, 0]], x);
+                    }
+                }
+            }
+            best.1 as f32
+        };
+        let top_x = brightest_x(0..h / 4);
+        let bottom_x = brightest_x(3 * h / 4..h);
+        assert!(
+            top_x > bottom_x + 2.0,
+            "clockwise rotation should tilt a right-of-centre column \
+             top-rightward: top x {top_x}, bottom x {bottom_x}"
+        );
+    }
+
+    #[test]
+    fn straighten_interior_is_free_of_border_influence() {
+        // Mark the border with a sentinel. The cubic support may reach
+        // it in the outermost ~2-pixel band (documented); the INTERIOR
+        // must be entirely free of it.
+        let mut img = Array3::from_elem((80, 120, 1), 0.5_f32);
+        for x in 0..120 {
+            img[[0, x, 0]] = 100.0;
+            img[[79, x, 0]] = 100.0;
+        }
+        for y in 0..80 {
+            img[[y, 0, 0]] = 100.0;
+            img[[y, 119, 0]] = 100.0;
+        }
+        let out = straighten(img.view(), &StraightenParams::new(5.0)).unwrap();
+        let (h, w, _) = out.dim();
+        let mut max_interior = 0.0_f32;
+        for y in 3..h - 3 {
+            for x in 3..w - 3 {
+                max_interior = max_interior.max(out[[y, x, 0]]);
+            }
+        }
+        assert!(
+            max_interior < 10.0,
+            "border sentinel leaked into the interior: max {max_interior}"
+        );
+    }
+
+    #[test]
+    fn straighten_inscribed_rect_is_valid_in_both_branches() {
+        // The half-constrained branch (large angle relative to aspect)
+        // had its (wr, hr) tuple swapped — caught by review, invisible
+        // to cross-backend tests since both backends share the host
+        // geometry. Validity check: the four corners of the inscribed
+        // rectangle, rotated forward, must lie inside the source frame,
+        // for every branch and both orientations.
+        for (h, w) in [(257_usize, 389_usize), (389, 257), (100, 1000), (1000, 100)] {
+            for degrees in [2.0_f32, 10.0, 30.0, 44.0, -30.0] {
+                let (oh, ow, sin_a, cos_a) = straighten_geometry(h, w, degrees).unwrap();
+                assert!(oh <= h && ow <= w, "{h}x{w} @ {degrees}: grew");
+                // Landscape stays landscape, portrait stays portrait.
+                if w > 2 * h {
+                    assert!(ow > oh, "{h}x{w} @ {degrees}: aspect flipped");
+                }
+                if h > 2 * w {
+                    assert!(oh > ow, "{h}x{w} @ {degrees}: aspect flipped");
+                }
+                // Forward-map the output corners into the source frame.
+                let (cx_o, cy_o) = (ow as f32 * 0.5, oh as f32 * 0.5);
+                let (cx_i, cy_i) = (w as f32 * 0.5, h as f32 * 0.5);
+                for (ox, oy) in [
+                    (0.0, 0.0),
+                    (ow as f32, 0.0),
+                    (0.0, oh as f32),
+                    (ow as f32, oh as f32),
+                ] {
+                    let dx = ox - cx_o;
+                    let dy = oy - cy_o;
+                    let sx = cos_a * dx + sin_a * dy + cx_i;
+                    let sy = -sin_a * dx + cos_a * dy + cy_i;
+                    assert!(
+                        (-0.51..=w as f32 + 0.51).contains(&sx)
+                            && (-0.51..=h as f32 + 0.51).contains(&sy),
+                        "{h}x{w} @ {degrees}: corner ({ox}, {oy}) maps to \
+                         ({sx}, {sy}) outside the frame"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn straighten_rejects_out_of_domain_angles() {
+        let img = numbered(8, 8, 1);
+        for bad in [46.0_f32, -50.0, f32::NAN, f32::INFINITY] {
+            assert!(matches!(
+                straighten(img.view(), &StraightenParams::new(bad)).unwrap_err(),
+                PhaiosError::Parameter(_)
+            ));
+        }
+        // 45 degrees exactly is legal.
+        assert!(straighten(img.view(), &StraightenParams::new(45.0)).is_ok());
+    }
+
     #[test]
     fn accepts_any_layout() {
         let img = numbered(8, 6, 3);
@@ -405,5 +1099,15 @@ mod tests {
         let b = orient(strided.to_owned().view(), Orientation::Rotate90).unwrap();
         assert_eq!(a, b);
         assert!(a.is_standard_layout());
+
+        let rp = ResizeParams::new(5, 3, ResizeFilter::CatmullRom);
+        let a = resize(strided, &rp).unwrap();
+        let b = resize(strided.to_owned().view(), &rp).unwrap();
+        assert_eq!(a, b, "resize must be layout-agnostic");
+
+        let sp = StraightenParams::new(6.0);
+        let a = straighten(strided, &sp).unwrap();
+        let b = straighten(strided.to_owned().view(), &sp).unwrap();
+        assert_eq!(a, b, "straighten must be layout-agnostic");
     }
 }

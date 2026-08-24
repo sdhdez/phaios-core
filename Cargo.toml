@@ -142,6 +142,10 @@ name = "13_geometry"
 path = "examples/13_geometry.rs"
 
 [[example]]
+name = "14_resample"
+path = "examples/14_resample.rs"
+
+[[example]]
 name = "13_gpu_exposure"
 path = "examples/13_gpu_exposure.rs"
 required-features = ["cuda"]

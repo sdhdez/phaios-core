@@ -394,6 +394,30 @@ fn orient(
     Ok(GpuImage { inner: result })
 }
 
+/// Resize on the GPU. Mirrors ``phaios_core.resize``; bit-exact.
+#[pyfunction]
+fn resize(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: pyo3::PyRef<'_, crate::geometry::ResizeParams>,
+) -> PyResult<GpuImage> {
+    let params_owned = *params;
+    let result = py.detach(|| cuda::kernels::resize_device(&img.inner, &params_owned))?;
+    Ok(GpuImage { inner: result })
+}
+
+/// Straighten on the GPU. Mirrors ``phaios_core.straighten``; bit-exact.
+#[pyfunction]
+fn straighten(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: pyo3::PyRef<'_, crate::geometry::StraightenParams>,
+) -> PyResult<GpuImage> {
+    let params_owned = *params;
+    let result = py.detach(|| cuda::kernels::straighten_device(&img.inner, &params_owned))?;
+    Ok(GpuImage { inner: result })
+}
+
 /// Register the `gpu` submodule on `phaios_core`.
 pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     let gpu = PyModule::new(py, "gpu")?;
@@ -416,6 +440,8 @@ pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult
     gpu.add_function(wrap_pyfunction!(film_grain, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(crop, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(orient, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(resize, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(straighten, &gpu)?)?;
     parent.add_submodule(&gpu)?;
     // Without this, `import phaios_core.gpu` / `from phaios_core.gpu
     // import ...` fail: add_submodule creates an attribute, not an

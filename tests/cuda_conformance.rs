@@ -594,6 +594,35 @@ fn geometry_is_bit_exact() {
     assert_eq!(cpu, gpu, "geometry-first resident chain diverged");
 }
 
+/// resize and straighten are polynomial resampling with host-computed
+/// transcendentals, engineered to match the CPU tap-for-tap: bit-exact.
+#[test]
+fn resampling_is_bit_exact() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(257, 389, 3);
+
+    use phaios_core::geometry::{ResizeFilter, ResizeParams, StraightenParams};
+    for filter in [
+        ResizeFilter::Area,
+        ResizeFilter::Bilinear,
+        ResizeFilter::CatmullRom,
+    ] {
+        for (w, h) in [(389_u32, 257_u32), (200, 130), (777, 500), (97, 311)] {
+            let params = ResizeParams::new(w, h, filter);
+            let cpu = phaios_core::geometry::resize(img.view(), &params).unwrap();
+            let gpu = cuda::kernels::resize(&ctx, img.view(), &params).unwrap();
+            assert_eq!(cpu, gpu, "resize diverged: {filter:?} {w}x{h}");
+        }
+    }
+
+    for degrees in [0.0_f32, 1.5, -7.3, 30.0, -45.0] {
+        let params = StraightenParams::new(degrees);
+        let cpu = phaios_core::geometry::straighten(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::straighten(&ctx, img.view(), &params).unwrap();
+        assert_eq!(cpu, gpu, "straighten diverged at {degrees} deg");
+    }
+}
+
 // ── the resident pipeline ────────────────────────────────────────────────────
 
 /// The full nine-stage v0.2 pipeline, resident end to end — one upload,

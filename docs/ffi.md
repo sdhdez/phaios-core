@@ -31,6 +31,8 @@ pipeline:
 |---|---|---|---|
 | `crop` | any | same C, smaller H/W | pure index copy; **geometry runs first** |
 | `orient` | any | same C, H/W may swap | pure index permutation; before `crop` |
+| `straighten` | any | same C, inscribed H/W | Catmull-Rom resampling; after `orient`, before `crop` |
+| `resize` | any | same C, target H/W | separable polynomial resampling; last geometry stage or export prep |
 | `exposure` | any | same | a scalar multiply; valid before or after the B&W stage |
 | `luminance_bw` | 3 | 1 | |
 | `channel_mixer_bw` | 3 | 1 | |
@@ -51,7 +53,11 @@ toning is enabled.
 
 **Size.** H and W are unconstrained. Zero-size arrays are accepted and
 return an empty array of the same shape; treating "no pixels" as an
-error would push a special case onto every caller.
+error would push a special case onto every caller. **Exception:** the
+resampling kernels `resize` and `straighten` reject an empty *input*
+with `ValueError` — there is no meaningful sample to draw from, and
+inventing zeros would violate their resampling contract. (`crop` may
+still *produce* an empty array from a zero-size rectangle.)
 
 ---
 
@@ -264,8 +270,11 @@ What is promised across backends:
 - Kernels free of transcendentals are **bit-exact** between CPU and
   CUDA: `exposure`, `luminance_bw`, `channel_mixer_bw`,
   `color_filter_bw`, `vignette`, `tone_curve` at `power == 1`, every
-  identity fast path, and `film_grain`'s integer hash (asserted over
-  2²⁰ coordinates). This is achievable because the PTX is compiled with
+  identity fast path, `film_grain`'s integer hash (asserted over
+  2²⁰ coordinates), the geometry kernels `crop` and `orient` (pure
+  index permutations), and the resampling kernels `resize` and
+  `straighten` (polynomial filters; straighten's sin/cos is computed
+  once on the host and shared). This is achievable because the PTX is compiled with
   `-fmad=false` — Rust does not contract `a*b+c` into FMA, and with the
   device told the same, every remaining operation is correctly rounded
   on both sides.

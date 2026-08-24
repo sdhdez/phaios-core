@@ -115,6 +115,45 @@ def test_orient_matches_numpy_rot90(rgb_f32):
     np.testing.assert_array_equal(out, np.rot90(rgb_f32, k=-1, axes=(0, 1)))
 
 
+def test_resize_shape_and_identity(rgb_f32):
+    out = ph.resize(rgb_f32, ph.ResizeParams(32, 16))
+    assert_valid_output(out, (16, 32, 3))
+    same = ph.resize(rgb_f32, ph.ResizeParams(W, H, ph.ResizeFilter.CatmullRom))
+    np.testing.assert_array_equal(same, rgb_f32)  # exact identity
+
+
+def test_resize_area_matches_numpy_block_mean(rgb_f32):
+    out = ph.resize(rgb_f32, ph.ResizeParams(W // 2, H // 2, ph.ResizeFilter.Area))
+    ref = rgb_f32.reshape(H // 2, 2, W // 2, 2, 3).mean(axis=(1, 3))
+    np.testing.assert_allclose(out, ref, atol=1e-5)
+
+
+def test_resize_rejects_zero(rgb_f32):
+    with pytest.raises(ValueError):
+        ph.resize(rgb_f32, ph.ResizeParams(0, 16))
+
+
+def test_straighten_zero_is_identity(rgb_f32):
+    np.testing.assert_array_equal(ph.straighten(rgb_f32, ph.StraightenParams(0.0)), rgb_f32)
+
+
+def test_straighten_crops_and_validates(rgb_f32):
+    out = ph.straighten(rgb_f32, ph.StraightenParams(5.0))
+    assert out.shape[0] < H and out.shape[1] < W
+    assert out.flags["C_CONTIGUOUS"]
+    with pytest.raises(ValueError):
+        ph.straighten(rgb_f32, ph.StraightenParams(46.0))
+
+
+def test_resize_straighten_params_round_trip():
+    r = ph.ResizeParams(100, 50, ph.ResizeFilter.Bilinear)
+    assert (r.width, r.height, r.filter) == (100, 50, ph.ResizeFilter.Bilinear)
+    assert r == ph.ResizeParams(100, 50, ph.ResizeFilter.Bilinear)
+    st = ph.StraightenParams(-2.5)
+    assert st.degrees == pytest.approx(-2.5)
+    assert st == ph.StraightenParams(-2.5)
+
+
 # ── Exposure ──────────────────────────────────────────────────────────────────
 
 
@@ -650,6 +689,16 @@ def test_all_kernels_accept_any_layout(label, rgb_f32, grey_f32):
     ):
         assert out.shape == grey.shape
         assert out.flags["C_CONTIGUOUS"], "output must be C-contiguous"
+
+
+def test_resampling_is_layout_agnostic(rgb_f32):
+    """resize and straighten join the layout matrix (review finding)."""
+    view = rgb_f32[::2, ::3]
+    copy = np.ascontiguousarray(view)
+    rp = ph.ResizeParams(17, 11, ph.ResizeFilter.CatmullRom)
+    np.testing.assert_array_equal(ph.resize(view, rp), ph.resize(copy, rp))
+    sp = ph.StraightenParams(4.0)
+    np.testing.assert_array_equal(ph.straighten(view, sp), ph.straighten(copy, sp))
 
 
 def test_strided_matches_contiguous_copy(grey_f32):

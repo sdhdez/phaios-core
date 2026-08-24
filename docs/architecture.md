@@ -913,3 +913,39 @@ in the test suite.
 exposure and the look pipeline. See the order table in §1 — the
 vignette centre and the grain coordinate grid make this load-bearing,
 not stylistic.
+
+### Resampling: `resize` and `straighten`
+
+Both resample with **polynomial filters only**, and the one
+transcendental — sin/cos of the straighten angle — is evaluated once on
+the host and passed to both backends as identical f32 scalars. Every
+per-pixel operation is then a correctly rounded mul/add/div/floor in a
+fixed accumulation order, so both kernels are **bit-exact across
+backends**, verified by `assert_eq!` in the conformance suite over
+twelve resize configurations and five angles.
+
+`resize(img, ResizeParams{width, height, filter})` is separable
+(horizontal pass, then vertical over the transposed view — identical
+arithmetic per axis). Centre alignment `c = (i + 0.5)·scale − 0.5`
+makes a same-size resize the *exact* identity. Filters:
+
+| Filter | Use | Definition |
+|---|---|---|
+| `Area` | downscale | exact fractional pixel coverage — true area averaging at any ratio (degenerates to nearest when upscaling) |
+| `Bilinear` | cheap | triangle, radius 1 (scaled under minification) |
+| `CatmullRom` | upscale | Keys 1981 cubic, a = −0.5, radius 2 — reproduces cubics, so a linear ramp upscales exactly |
+
+A constant image survives to ~1 ULP (weighted sum and weight sum round
+separately before the normalising division); tap coordinates clamp to
+the frame (replicate borders).
+
+`straighten(img, StraightenParams{degrees})` rotates by up to ±45°
+(positive clockwise, matching `Rotate90`; compose with `orient` beyond
+that) and crops to the **largest axis-aligned rectangle inscribed** in
+the rotated frame (the standard max-area two-case construction,
+computed in f64 on the host). Sampling is 16-tap Catmull-Rom in a fixed
+4×4 order; `degrees = 0` is the exact identity. The cubic's ±2-pixel
+support can reach frame-edge pixels in the outermost ~2-pixel band of
+the result, where taps clamp (replicate) — standard practice,
+documented rather than hidden. Geometry order within the group:
+`orient` → `straighten` → `crop` → `resize`.

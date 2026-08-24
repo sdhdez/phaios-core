@@ -19,7 +19,10 @@ use phaios_core::bw::{
 use phaios_core::encode::encode_srgb;
 use phaios_core::exposure::exposure;
 use phaios_core::film_grain::{GrainParams, film_grain};
-use phaios_core::geometry::{CropParams, Orientation, crop, orient};
+use phaios_core::geometry::{
+    CropParams, Orientation, ResizeFilter, ResizeParams, StraightenParams, crop, orient, resize,
+    straighten,
+};
 use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
 use phaios_core::split_toning::{SplitToningParams, split_toning};
 use phaios_core::tone::{ToneCurveParams, ZoneParams, tone_curve, zone_system};
@@ -60,6 +63,14 @@ fn bench_geometry(c: &mut Criterion) {
     });
     c.bench_function("orient/24MP/rotate90", |b| {
         b.iter(|| orient(black_box(img.view()), black_box(Orientation::Rotate90)).unwrap())
+    });
+    let down = ResizeParams::new(2048, 1536, ResizeFilter::Area);
+    c.bench_function("resize/24MP/to-2048-area", |b| {
+        b.iter(|| resize(black_box(img.view()), black_box(&down)).unwrap())
+    });
+    let angle = StraightenParams::new(2.0);
+    c.bench_function("straighten/24MP/2deg", |b| {
+        b.iter(|| straighten(black_box(img.view()), black_box(&angle)).unwrap())
     });
 }
 

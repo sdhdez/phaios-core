@@ -243,6 +243,46 @@ fn crop_defines_the_vignette_centre() {
     );
 }
 
+use phaios_core::geometry::{ResizeFilter, ResizeParams, StraightenParams, resize, straighten};
+
+/// Downscaling must preserve total light (energy): the area filter is a
+/// weighted average, so the mean survives — the property that makes
+/// preview renders photometrically faithful to exports.
+#[test]
+fn resize_preserves_the_mean() {
+    let img = ndarray::Array3::from_shape_fn((96, 64, 1), |(y, x, _)| {
+        ((y * 64 + x) % 199) as f32 / 199.0
+    });
+    let out = resize(img.view(), &ResizeParams::new(23, 41, ResizeFilter::Area)).unwrap();
+    let mean = |a: &ndarray::Array3<f32>| a.iter().sum::<f32>() / a.len() as f32;
+    assert!((mean(&img) - mean(&out)).abs() < 5e-3);
+}
+
+/// Straightening by +θ then −θ returns the surviving region close to
+/// the original (two resamplings soften, but must not shift): the
+/// centre pixel neighbourhood correlates strongly with the source.
+#[test]
+fn straighten_round_trip_stays_registered() {
+    let img =
+        ndarray::Array3::from_shape_fn((128, 128, 1), |(y, x, _)| (((x / 8) + (y / 8)) % 2) as f32);
+    let there = straighten(img.view(), &StraightenParams::new(10.0)).unwrap();
+    let back = straighten(there.view(), &StraightenParams::new(-10.0)).unwrap();
+    let (bh, bw, _) = back.dim();
+    // Compare the central quarter against the same region of the source.
+    let (oy, ox) = ((128 - bh) / 2, (128 - bw) / 2);
+    let mut worst = 0.0_f32;
+    for y in bh / 4..3 * bh / 4 {
+        for x in bw / 4..3 * bw / 4 {
+            let d = (back[[y, x, 0]] - img[[y + oy, x + ox, 0]]).abs();
+            worst = worst.max(d);
+        }
+    }
+    assert!(
+        worst < 0.6,
+        "round-trip straighten lost registration: worst {worst}"
+    );
+}
+
 // ── Parametric tone curve tests ───────────────────────────────────────────────
 
 use phaios_core::tone::{ToneCurveParams, tone_curve};

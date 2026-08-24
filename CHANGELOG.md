@@ -8,6 +8,26 @@ The Rust crate and the Python wheel always carry the same version.
 
 ## [Unreleased] — 0.2.0-dev
 
+### Added — resampling geometry (resize, straighten)
+
+`resize(img, ResizeParams)` — separable resampling with three
+polynomial filters: `Area` (exact fractional coverage, the correct
+downscale filter at any ratio), `Bilinear`, and `CatmullRom` (Keys
+1981, the photographic upscale default). Centre-aligned, so a same-size
+resize is the exact identity; replicate borders; a constant image
+survives to ~1 ULP.
+
+`straighten(img, StraightenParams)` — rotation up to ±45° (positive
+clockwise) with 16-tap Catmull-Rom sampling, cropped to the largest
+inscribed axis-aligned rectangle (max-area construction). `degrees = 0`
+is the exact identity; the outermost ~2-pixel band may include
+replicate-clamped frame-edge samples (the cubic's support), documented.
+
+Both are **bit-exact across CPU and CUDA** — the filters are
+polynomial and the straighten sin/cos is computed once on the host —
+asserted with `assert_eq!` by the conformance suite. Geometry order:
+`orient` → `straighten` → `crop` → `resize`.
+
 ### Added — exact geometry (crop, orientation)
 
 `crop(img, CropParams)` and `orient(img, Orientation)` — the first

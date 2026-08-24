@@ -8,7 +8,7 @@ use ndarray::{Array3, ArrayView3};
 use super::{be, grid_1d};
 use crate::cuda::context::{Context, DeviceImage};
 use crate::error::PhaiosError;
-use crate::geometry::{CropParams, Orientation};
+use crate::geometry::{CropParams, Orientation, ResizeFilter, ResizeParams, StraightenParams};
 
 /// PTX for the geometry kernels, compiled at `compute_80`.
 const PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/geometry.ptx"));
@@ -93,6 +93,148 @@ pub fn orient_device(
     // stay in bounds for every output index the kernel accepts.
     unsafe { launch.launch(grid_1d(n)) }.map_err(be("kernel launch failed"))?;
     Ok(out)
+}
+
+/// Resample to a new size, device-resident. Mirrors
+/// [`crate::geometry::resize`]; **bit-exact** — the filters are
+/// polynomial and the device kernel transcribes the CPU tap loop
+/// operation for operation.
+///
+/// # Errors
+/// Same [`PhaiosError::Parameter`] as the CPU kernel; plus
+/// [`PhaiosError::Backend`] on device failure.
+#[must_use = "kernel returns a new image; ignoring it wastes work"]
+pub fn resize_device(img: &DeviceImage, params: &ResizeParams) -> Result<DeviceImage, PhaiosError> {
+    let (in_h, in_w, c) = img.shape();
+    crate::geometry::validate_resize(&[in_h, in_w, c], params)?;
+    let (out_w, out_h) = (params.width as usize, params.height as usize);
+    // grid_1d takes a u32 element count; a caller-controlled target
+    // large enough to overflow it would silently launch too few blocks
+    // and return uninitialised memory (review finding). Today the
+    // preceding allocation would fail on any real card first, but the
+    // guard makes the failure explicit and permanent.
+    for n in [in_h * out_w * c, out_h * out_w * c] {
+        if n > u32::MAX as usize {
+            return Err(PhaiosError::Parameter(format!(
+                "resize target {}x{} exceeds the CUDA backend's element                  limit",
+                params.width, params.height
+            )));
+        }
+    }
+    let ctx = img.context().clone();
+    let filter = params.filter as i32;
+
+    let func = ctx.function("resample_kernel", PTX)?;
+    let pass = |input: &cudarc::driver::CudaSlice<f32>,
+                output: &mut cudarc::driver::CudaSlice<f32>,
+                rows: usize,
+                in_len: usize,
+                out_len: usize,
+                axis: i32|
+     -> Result<(), PhaiosError> {
+        // Same host arithmetic the CPU kernel uses for scale/support.
+        let scale = in_len as f32 / out_len as f32;
+        let support = crate::geometry::filter_support(params.filter, scale);
+        let area_minify = i32::from(params.filter == ResizeFilter::Area && scale > 1.0);
+        let (rows_i, in_i, out_i, c_i) = (rows as i32, in_len as i32, out_len as i32, c as i32);
+        let n = rows * out_len * c;
+        let mut launch = ctx.stream.launch_builder(&func);
+        launch
+            .arg(input)
+            .arg(output)
+            .arg(&rows_i)
+            .arg(&in_i)
+            .arg(&out_i)
+            .arg(&c_i)
+            .arg(&scale)
+            .arg(&support)
+            .arg(&filter)
+            .arg(&area_minify)
+            .arg(&axis);
+        // Safety: signature matches the .cu; buffers sized rows·len·c;
+        // tap indices clamp; the kernel bounds-checks the output.
+        unsafe { launch.launch(grid_1d(n)) }.map_err(be("resample launch failed"))?;
+        Ok(())
+    };
+
+    // Horizontal: (in_h, in_w, c) -> (in_h, out_w, c).
+    let mut mid: cudarc::driver::CudaSlice<f32> =
+        unsafe { ctx.stream.alloc((in_h * out_w * c).max(1)) }
+            .map_err(be("device allocation failed"))?;
+    pass(&img.buf, &mut mid, in_h, in_w, out_w, 0)?;
+
+    // Vertical: (in_h, out_w, c) -> (out_h, out_w, c); rows = out_w is
+    // both the column count and the row pitch of the C-contiguous mid.
+    let mut out = ctx.alloc_image((out_h, out_w, c))?;
+    pass(&mid, &mut out.buf, out_w, in_h, out_h, 1)?;
+    Ok(out)
+}
+
+/// Rotate by a small angle and crop to the inscribed rectangle,
+/// device-resident. Mirrors [`crate::geometry::straighten`];
+/// **bit-exact** — sin/cos come from the same host computation
+/// ([`crate::geometry::straighten_geometry`]) and the 16-tap
+/// Catmull-Rom accumulates in the CPU's exact order.
+///
+/// # Errors
+/// Same [`PhaiosError::Parameter`] as the CPU kernel; plus
+/// [`PhaiosError::Backend`] on device failure.
+#[must_use = "kernel returns a new image; ignoring it wastes work"]
+pub fn straighten_device(
+    img: &DeviceImage,
+    params: &StraightenParams,
+) -> Result<DeviceImage, PhaiosError> {
+    let (in_h, in_w, c) = img.shape();
+    let (out_h, out_w, sin_a, cos_a) =
+        crate::geometry::straighten_geometry(in_h, in_w, params.degrees)?;
+
+    let ctx = img.context().clone();
+    let mut out = ctx.alloc_image((out_h, out_w, c))?;
+    let n = out_h * out_w * c;
+    if n == 0 {
+        return Ok(out);
+    }
+    let (ih, iw, c_i) = (in_h as i32, in_w as i32, c as i32);
+    let (oh, ow) = (out_h as i32, out_w as i32);
+    let func = ctx.function("straighten_kernel", PTX)?;
+    let mut launch = ctx.stream.launch_builder(&func);
+    launch
+        .arg(&img.buf)
+        .arg(&mut out.buf)
+        .arg(&ih)
+        .arg(&iw)
+        .arg(&c_i)
+        .arg(&oh)
+        .arg(&ow)
+        .arg(&sin_a)
+        .arg(&cos_a);
+    // Safety: signature matches the .cu; taps clamp to the frame; the
+    // kernel bounds-checks the output.
+    unsafe { launch.launch(grid_1d(n)) }.map_err(be("straighten launch failed"))?;
+    Ok(out)
+}
+
+/// Per-call offload form of [`resize_device`].
+#[must_use = "kernel returns a new array; ignoring it wastes work"]
+pub fn resize(
+    ctx: &Context,
+    img: ArrayView3<f32>,
+    params: &ResizeParams,
+) -> Result<Array3<f32>, PhaiosError> {
+    crate::geometry::validate_resize(img.shape(), params)?;
+    let device = ctx.upload(img)?;
+    ctx.download(&resize_device(&device, params)?)
+}
+
+/// Per-call offload form of [`straighten_device`].
+#[must_use = "kernel returns a new array; ignoring it wastes work"]
+pub fn straighten(
+    ctx: &Context,
+    img: ArrayView3<f32>,
+    params: &StraightenParams,
+) -> Result<Array3<f32>, PhaiosError> {
+    let device = ctx.upload(img)?;
+    ctx.download(&straighten_device(&device, params)?)
 }
 
 /// Per-call offload form of [`crop_device`].
