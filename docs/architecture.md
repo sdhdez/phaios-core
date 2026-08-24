@@ -14,6 +14,11 @@ Consumer delivers:
         │
         ▼
   ┌─────────────┐
+  │  geometry   │  orient → straighten → crop → resize   src/geometry.rs
+  └─────────────┘  (all bit-exact across backends)
+        │
+        ▼
+  ┌─────────────┐
   │  exposure   │  × 2^stops                             src/exposure.rs
   └─────────────┘
         │  (H, W, 3)
@@ -848,6 +853,10 @@ pseudo-random values. Not CI gates — informational only.
 
 | Kernel | Measured mean | Benchmark id | Notes |
 |--------|--------------|--------------|-------|
+| `crop` | **7.7 ms** | `crop/24MP/centre-half` | pure copy of the half-area rectangle |
+| `orient` | **112.7 ms** | `orient/24MP/rotate90` | known-slow: the transposing copy is cache-hostile and currently single-threaded; quarter-turn-heavy pipelines should batch it with straighten |
+| `resize` | **32.6 ms** | `resize/24MP/to-2048-area` | separable area filter to a 2048-wide export |
+| `straighten` | **47.1 ms** | `straighten/24MP/2deg` | 16-tap Catmull-Rom per pixel |
 | `exposure` | **29.3 ms** | `exposure/24MP/+1EV` | 3 channels in *and* out — 300 MB of traffic, twice the B&W kernels' |
 | `luminance_bw` | **14.8 ms** | `luminance_bw/24MP/BT709` | Memory-bandwidth bound |
 | `channel_mixer_bw` | **15.0 ms** | `channel_mixer_bw/24MP` | Same bandwidth pattern |

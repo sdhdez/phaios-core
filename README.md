@@ -23,6 +23,10 @@ freshly allocated C-contiguous array.
 
 | Kernel | Description | Since |
 |--------|-------------|-------|
+| `orient` | The eight Exif dihedral transforms (rotations, flips) | v0.2 |
+| `straighten` | Small-angle rotation (±45°) with inscribed-rectangle crop | v0.2 |
+| `crop` | Exact rectangle extraction | v0.2 |
+| `resize` | Separable resampling: area / bilinear / Catmull-Rom | v0.2 |
 | `exposure` | Exposure compensation in EV stops | v0.2 |
 | `luminance_bw` | Standard B&W conversion: BT.601, BT.709 (default), BT.2020 | v0.1 |
 | `channel_mixer_bw` | Arbitrary RGB weights in −2..+2 (infrared-like effects) | v0.1 |
