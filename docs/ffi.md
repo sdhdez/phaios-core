@@ -55,15 +55,38 @@ four (`exposure`, `vignette`, `tone_curve`, `encode_srgb`) run either
 side of `split_toning`, so a pipeline need not branch on whether toning
 is enabled.
 
-**Non-finite pixel values.** Kernels validate their *parameters*, never
-their pixels: NaN and ±∞ pass through the maths rather than raising. What
-they produce is not specified value-by-value, but it is guaranteed to be
-the *same* on every backend — the CPU and CUDA implementations agree
-bit-for-bit (or NaN-for-NaN) on non-finite input, asserted by
-`non_finite_pixels_agree_across_backends` in `tests/cuda_conformance.rs`.
-Consumers decoding real RAW data will never see these; the guarantee
-exists so that a pathological pixel cannot make two backends disagree
-about an entire image.
+**Pixel values must be finite.** This is a precondition, not a validated
+input: kernels check their *parameters* and never scan their pixels — a
+finiteness pass over a 24 MP frame would cost more than most kernels do.
+NaN and ±∞ therefore propagate through the maths rather than raising, and
+**with a non-finite sample present the result is unspecified and the
+backends may disagree without bound.** The determinism contract in §6
+holds for finite input only.
+
+Two things are worth knowing about how the disagreement behaves, because
+they are structural rather than incidental:
+
+- *Element-wise and geometry kernels* stay in agreement anyway. Their
+  arithmetic is per-pixel, so a poisoned sample poisons exactly its own
+  output on both backends. `non_finite_pixels_agree_across_backends` in
+  `tests/cuda_conformance.rs` pins this for `hsl_bw`, which is the
+  trickiest of them (an all-infinite pixel makes `delta = ∞ − ∞ = NaN`,
+  and NaN fails every comparison — so the neutral guard must be written
+  as a positive test, or one backend falls through it).
+- *`local_contrast` does not, and cannot cheaply.* The CPU computes its
+  box filters from global f64 summed-area tables, so one non-finite
+  sample enters every prefix at or after its position and `∞ − ∞ = NaN`
+  spreads to the whole image; the CUDA kernel uses separable box passes,
+  which confine the damage to a `(4r+1)²` neighbourhood. Measured on a
+  96×96 frame at r = 4 with a single ∞ pixel: 9216 non-finite outputs on
+  the CPU against 81 on the GPU, with every finite GPU pixel bit-correct.
+  Making these agree would mean giving up either the CPU's O(1)-per-pixel
+  SAT or the GPU's locality, and neither is worth buying agreement on
+  input the contract already excludes.
+
+A consumer that cannot rule out non-finite samples — a dead sensor pixel,
+a 0/0 white-balance division, an EXR carrying ∞ — should replace them
+before the pipeline, not rely on a kernel to absorb them.
 
 **Size.** H and W are unconstrained. Zero-size arrays are accepted and
 return an empty array of the same shape; treating "no pixels" as an

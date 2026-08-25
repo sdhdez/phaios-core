@@ -61,7 +61,16 @@ pub fn film_grain_device(
 
     let n = h * w;
     let (inner, outer, normalisation) = crate::film_grain::bandpass_geometry(params.size_pixels);
-    let (r_in, r_out) = (inner as i32, outer as i32);
+    // `size_pixels` only has to be finite and positive, so the derived
+    // radii are caller-controlled and unbounded; the .cu takes them as
+    // `int`. Clamp to the image rather than narrowing blindly — a radius
+    // past the frame is already saturating, and the CPU box filter
+    // clamps its taps to the border the same way.
+    let max_r = h.max(w) as i32;
+    let (r_in, r_out) = (
+        (inner.min(usize::try_from(max_r).unwrap_or(usize::MAX)) as i32).min(max_r),
+        (outer.min(usize::try_from(max_r).unwrap_or(usize::MAX)) as i32).min(max_r),
+    );
     let (h_i, w_i) = (h as i32, w as i32);
     let cfg = grid_2d(h, w);
 
@@ -132,6 +141,12 @@ pub fn film_grain(
 #[doc(hidden)]
 pub fn hash_grid(ctx: &Context, seed: u64, h: usize, w: usize) -> Result<Vec<u64>, PhaiosError> {
     let n = h * w;
+    // An empty grid has no hashes. Falling through would allocate the
+    // `.max(1)` element below and download it, returning one arbitrary
+    // value for a grid that has none.
+    if n == 0 {
+        return Ok(Vec::new());
+    }
     let mut d_out: CudaSlice<u64> =
         unsafe { ctx.stream.alloc(n.max(1)) }.map_err(be("device allocation failed"))?;
     let (w_i, n_ll) = (w as i32, n as i64);

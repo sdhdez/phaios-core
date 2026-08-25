@@ -514,6 +514,17 @@ fn resample_axis1(
             for ch in 0..c {
                 out_px[ch] /= wsum;
             }
+        } else {
+            // Unreachable for the three shipped filters: Area and Bilinear
+            // have non-negative weights with a positive centre tap, and
+            // Catmull-Rom's taps sum to the (positive) scale factor. The
+            // branch exists so the two backends cannot drift — the CUDA
+            // kernel writes 0.0 here, and leaving an un-normalised
+            // accumulator instead would be a divergence on the one path
+            // no test can construct.
+            for ch in 0..c {
+                out_px[ch] = 0.0;
+            }
         }
     });
     let _ = rows;

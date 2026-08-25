@@ -757,12 +757,17 @@ fn bad_ordinal_is_a_backend_error() {
     );
 }
 
-/// Non-finite pixels must not split the backends. An all-infinite pixel
-/// makes `delta = inf - inf = NaN`, which fails every comparison; the CPU
-/// guard used to be written as a negative test and fell through into the
-/// hue branch, so CPU returned 0.0 where CUDA returned inf. Found by an
-/// empirical CPU/GPU sweep over degenerate inputs, not by this suite —
-/// which is why the sweep's cases now live here.
+/// Non-finite pixels must not split the backends *for element-wise
+/// kernels*, whose arithmetic is per-pixel and so cannot spread a
+/// poisoned sample. `hsl_bw` is the delicate one: an all-infinite pixel
+/// makes `delta = inf - inf = NaN`, which fails every comparison, so the
+/// CPU guard written as a negative test fell *through* into the hue
+/// branch and returned 0.0 where CUDA returned inf.
+///
+/// Neighbourhood kernels are explicitly out of scope — see
+/// `local_contrast_non_finite_is_documented_as_divergent` below and
+/// docs/ffi.md §1. Found by an empirical CPU/GPU sweep over degenerate
+/// inputs, not by this suite, which is why the sweep's cases live here.
 #[test]
 fn non_finite_pixels_agree_across_backends() {
     let Some(ctx) = try_context() else { return };
@@ -789,4 +794,85 @@ fn non_finite_pixels_agree_across_backends() {
             "hsl_bw diverges on {pixel:?}: cpu={c}, gpu={g}"
         );
     }
+}
+
+/// Downloading an image through a *different* Context on the same device
+/// must return the same bytes as downloading through its own. An audit
+/// claim held that `Context::download` synchronises `self.stream` rather
+/// than the stream that produced the image, making this racy; both
+/// Contexts take `CudaContext::default_stream()` for the same device, so
+/// the streams coincide and the download is ordered. This test exists to
+/// keep that true — if `Context` ever allocates its own stream, it fails.
+#[test]
+fn cross_context_download_is_ordered() {
+    let Some(a) = try_context() else { return };
+    let Some(b) = try_context() else { return };
+
+    // Large and expensive enough that the kernel is still in flight when
+    // the download is issued, if the streams were ever independent.
+    let img = pseudo_random_image(1024, 1024, 1);
+    let device = a.upload(img.view()).unwrap();
+    let params = phaios_core::local_contrast::GuidedFilterParams::new(16, 0.01);
+    let processed = cuda::kernels::local_contrast_device(&device, &params, 0.8).unwrap();
+
+    let via_b = b.download(&processed).unwrap();
+    let via_a = a.download(&processed).unwrap();
+    assert_eq!(via_a, via_b, "cross-context download raced the producer");
+}
+
+/// `local_contrast` is the one kernel whose backends genuinely disagree
+/// on non-finite input, and docs/ffi.md §1 says so in those terms. This
+/// test pins the *shape* of that disagreement rather than papering over
+/// it: the CPU's global summed-area tables spread one non-finite sample
+/// across the whole image, the GPU's separable box passes confine it to a
+/// neighbourhood, and every finite GPU pixel remains bit-correct.
+///
+/// If a future change makes these agree, this test fails and the doc
+/// paragraph should be rewritten — that would be good news, not a
+/// regression.
+#[test]
+fn local_contrast_non_finite_is_documented_as_divergent() {
+    let Some(ctx) = try_context() else { return };
+
+    let (h, w, r) = (96_usize, 96_usize, 4_u32);
+    let mut img = pseudo_random_image(h, w, 1);
+    img[[h / 2, w / 2, 0]] = f32::INFINITY;
+    let params = phaios_core::local_contrast::GuidedFilterParams::new(r, 0.01);
+
+    let cpu = phaios_core::local_contrast::local_contrast(img.view(), &params, 1.0).unwrap();
+    let gpu = cuda::kernels::local_contrast_device(&ctx.upload(img.view()).unwrap(), &params, 1.0)
+        .and_then(|d| ctx.download(&d))
+        .unwrap();
+
+    let cpu_bad = cpu.iter().filter(|v| !v.is_finite()).count();
+    let gpu_bad = gpu.iter().filter(|v| !v.is_finite()).count();
+
+    // The GPU's damage is bounded by the two box passes: (4r+1)^2.
+    let bound = ((4 * r + 1) * (4 * r + 1)) as usize;
+    assert!(
+        gpu_bad <= bound,
+        "GPU contamination should stay within {bound} pixels, saw {gpu_bad}"
+    );
+    assert!(
+        cpu_bad > gpu_bad,
+        "the documented divergence is that the CPU spreads further \
+         (cpu {cpu_bad}, gpu {gpu_bad})"
+    );
+
+    // Where the GPU is finite and the CPU is too, they must still agree.
+    let mut compared = 0_usize;
+    for (c, g) in cpu.iter().zip(gpu.iter()) {
+        if c.is_finite() && g.is_finite() {
+            compared += 1;
+            assert!(
+                // The suite's committed bound (docs/ffi.md section 6).
+                (c - g).abs() <= 1e-4 * c.abs() + 1e-6,
+                "finite pixels must still agree: cpu={c}, gpu={g}"
+            );
+        }
+    }
+    assert!(
+        compared > 0,
+        "nothing was comparable — the test proved nothing"
+    );
 }

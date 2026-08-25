@@ -169,6 +169,13 @@ pub fn vignette_device(
     let ctx = img.context().clone();
     let n = h * w * c;
     let mut out = ctx.alloc_image((h, w, c))?;
+    // A zero-channel image has h, w > 0 and so slips past the fast path
+    // above, then launches with gridDim.x == 0 — a driver error, where the
+    // CPU returns an empty array. Zero-size inputs are contractually valid
+    // (docs/ffi.md §1), so this is a real cross-backend divergence.
+    if n == 0 {
+        return Ok(out);
+    }
     let (h_i, w_i, c_i) = (h as i32, w as i32, c as i32);
     let inner = 1.0 - params.feather;
     let amount = params.amount;

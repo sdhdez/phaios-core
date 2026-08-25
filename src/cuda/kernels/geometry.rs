@@ -151,6 +151,12 @@ pub fn resize_device(img: &DeviceImage, params: &ResizeParams) -> Result<DeviceI
         let area_minify = i32::from(params.filter == ResizeFilter::Area && scale > 1.0);
         let (rows_i, in_i, out_i, c_i) = (rows as i32, in_len as i32, out_len as i32, c as i32);
         let n = rows * out_len * c;
+        // Nothing to write — a zero-channel or zero-extent image. Launching
+        // with gridDim.x == 0 is a driver error, and the CPU returns an
+        // empty array here (docs/ffi.md §1).
+        if n == 0 {
+            return Ok(());
+        }
         let mut launch = ctx.stream.launch_builder(&func);
         launch
             .arg(input)

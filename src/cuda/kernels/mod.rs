@@ -43,7 +43,13 @@ pub(crate) fn be(what: &'static str) -> impl Fn(cudarc::driver::DriverError) -> 
     move |e| PhaiosError::Backend(format!("{what}: {e}"))
 }
 
-/// 1-D launch geometry over `n` elements, 256 threads per block.
+/// 1-D launch geometry over `n` elements.
+///
+/// Block size is whatever `cudarc::driver::LaunchConfig::for_num_elems`
+/// picks (1024 threads at the time of writing) — deliberately not pinned
+/// here, because the determinism contract is independent of launch
+/// geometry: every kernel indexes by absolute element and none reduces
+/// across threads, so a different block size cannot change a result.
 pub(crate) fn grid_1d(n: usize) -> cudarc::driver::LaunchConfig {
     cudarc::driver::LaunchConfig::for_num_elems(n as u32)
 }
