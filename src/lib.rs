@@ -12,6 +12,7 @@
 use numpy::{IntoPyArray, PyArray3, PyReadonlyArray3};
 use pyo3::prelude::*;
 
+mod alloc;
 pub mod bw;
 #[cfg(feature = "cuda")]
 pub mod cuda;

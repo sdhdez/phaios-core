@@ -184,7 +184,7 @@ pub fn vignette(img: ArrayView3<f32>, params: &VignetteParams) -> Result<Array3<
     validate(params)?;
 
     let (h, w, _) = img.dim();
-    let mut out = Array3::<f32>::zeros(img.dim());
+    let mut out = crate::alloc::zeros3::<f32>(img.dim())?;
 
     // amount = 0 is the identity, and it is the default: skip the work.
     if params.amount == 0.0 || h == 0 || w == 0 {

@@ -92,7 +92,7 @@ impl GuidedFilterParams {
 /// Apply the He–Sun–Tang guided filter (self-guided, 2-D).
 ///
 /// Not exposed to Python. Called by [`local_contrast`].
-fn guided_filter(img: ArrayView2<f32>, radius: u32, eps: f32) -> Array2<f32> {
+fn guided_filter(img: ArrayView2<f32>, radius: u32, eps: f32) -> Result<Array2<f32>, PhaiosError> {
     let (h, w) = img.dim();
     let r = radius as usize;
     let eps_f64 = eps as f64;
@@ -100,15 +100,15 @@ fn guided_filter(img: ArrayView2<f32>, radius: u32, eps: f32) -> Array2<f32> {
     // Per-pixel linear-model coefficients for the window centred on that
     // pixel. Held as f32: they are averaged through another SAT, and the
     // f64 precision only matters while accumulating.
-    let mut a_arr = Array2::<f32>::zeros((h, w));
-    let mut b_arr = Array2::<f32>::zeros((h, w));
+    let mut a_arr = crate::alloc::zeros2::<f32>((h, w))?;
+    let mut b_arr = crate::alloc::zeros2::<f32>((h, w))?;
 
     {
-        let sat_l = sat(img, |v| v as f64);
+        let sat_l = sat(img, |v| v as f64)?;
         let sat_l2 = sat(img, |v| {
             let d = v as f64;
             d * d
-        });
+        })?;
 
         ndarray::Zip::indexed(&mut a_arr)
             .and(&mut b_arr)
@@ -140,12 +140,12 @@ fn guided_filter(img: ArrayView2<f32>, radius: u32, eps: f32) -> Array2<f32> {
 
     // Average overlapping windows: SAT of a and b, then per-pixel mean.
     // Each coefficient array is released as soon as its table exists.
-    let sat_a = sat(a_arr.view(), |v| v as f64);
+    let sat_a = sat(a_arr.view(), |v| v as f64)?;
     drop(a_arr);
-    let sat_b = sat(b_arr.view(), |v| v as f64);
+    let sat_b = sat(b_arr.view(), |v| v as f64)?;
     drop(b_arr);
 
-    let mut out = Array2::<f32>::zeros((h, w));
+    let mut out = crate::alloc::zeros2::<f32>((h, w))?;
     ndarray::Zip::indexed(&mut out)
         .and(img)
         .par_for_each(|(y, x), o, &l| {
@@ -156,7 +156,7 @@ fn guided_filter(img: ArrayView2<f32>, radius: u32, eps: f32) -> Array2<f32> {
             *o = (mean_a * l as f64 + mean_b) as f32;
         });
 
-    out
+    Ok(out)
 }
 
 // ── Public kernel ─────────────────────────────────────────────────────────────
@@ -222,8 +222,8 @@ pub fn local_contrast(
     validate(img.shape(), params, strength)?;
     let (h, w, _) = img.dim();
     let img2d = img.index_axis(ndarray::Axis(2), 0);
-    let smooth = guided_filter(img2d, params.radius, params.eps);
-    let mut out = Array3::<f32>::zeros((h, w, 1));
+    let smooth = guided_filter(img2d, params.radius, params.eps)?;
+    let mut out = crate::alloc::zeros3::<f32>((h, w, 1))?;
     ndarray::Zip::from(out.slice_mut(ndarray::s![.., .., 0]))
         .and(&img2d)
         .and(&smooth)
@@ -248,7 +248,7 @@ mod tests {
     fn guided_filter_constant_image() {
         // On a constant image, the guided filter must return the same constant.
         let img2d = ndarray::Array2::from_elem((16, 16), 0.5_f32);
-        let q = guided_filter(img2d.view(), 4, 0.01);
+        let q = guided_filter(img2d.view(), 4, 0.01).unwrap();
         for &v in q.iter() {
             assert!(
                 (v - 0.5).abs() < 1e-4,
@@ -263,7 +263,7 @@ mod tests {
         // a = 0/(0+eps) = 0 (or 0/0 = 0 by convention), b = mean_L = L.
         // Output q = 0·L + L = L. Identity.
         let img2d = ndarray::Array2::from_shape_fn((8, 8), |(y, x)| (y * 8 + x) as f32 / 64.0);
-        let q = guided_filter(img2d.view(), 0, 0.0);
+        let q = guided_filter(img2d.view(), 0, 0.0).unwrap();
         for (&l, &qv) in img2d.iter().zip(q.iter()) {
             assert!(
                 (qv - l).abs() < 1e-5,
@@ -331,7 +331,7 @@ mod tests {
         // bright image is where the cancelling variance subtraction is
         // least well conditioned. A constant must survive it exactly.
         let img2d = ndarray::Array2::from_elem((128, 128), 1.0e7_f32);
-        let q = guided_filter(img2d.view(), 8, 0.01);
+        let q = guided_filter(img2d.view(), 8, 0.01).unwrap();
         for &v in q.iter() {
             assert!(
                 (v - 1.0e7).abs() < 1.0,

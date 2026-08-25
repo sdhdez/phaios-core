@@ -6,7 +6,7 @@
 //! converts to `pyo3::PyErr` via the `From` impl below.
 
 use pyo3::PyErr;
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyMemoryError, PyRuntimeError, PyValueError};
 use thiserror::Error;
 
 /// Errors that can occur in phaios-core kernels.
@@ -37,6 +37,26 @@ pub enum PhaiosError {
     /// bad argument.
     #[error("backend error: {0}")]
     Backend(String),
+
+    /// An output or intermediate array would be too large to allocate.
+    ///
+    /// Raised *before* attempting the allocation, because a failed
+    /// allocation in Rust calls `handle_alloc_error`, which aborts the
+    /// process rather than unwinding — nothing in Python can catch that,
+    /// not even `except BaseException`. Returning an error instead is the
+    /// only way to keep §2's no-panics-across-FFI promise here.
+    ///
+    /// The check cannot be delegated to the allocator: on Linux with the
+    /// default heuristic overcommit, `Vec::try_reserve` succeeded for a
+    /// 111 GiB request on a 60 GiB machine, and the process died later
+    /// under the OOM killer when the kernel wrote to the pages. So the
+    /// limit is an explicit constant — see `crate::alloc`.
+    ///
+    /// Maps to Python `MemoryError`, which is what numpy raises for the
+    /// same request, rather than `ValueError`: the arguments are
+    /// well-formed, there is simply too much of them.
+    #[error("allocation error: {0}")]
+    Allocation(String),
 }
 
 impl From<PhaiosError> for PyErr {
@@ -46,6 +66,7 @@ impl From<PhaiosError> for PyErr {
                 PyValueError::new_err(e.to_string())
             }
             PhaiosError::Backend(_) => PyRuntimeError::new_err(e.to_string()),
+            PhaiosError::Allocation(_) => PyMemoryError::new_err(e.to_string()),
         }
     }
 }

@@ -320,7 +320,7 @@ pub fn split_toning(
     validate(img.shape(), params)?;
 
     let (h, w, _) = img.dim();
-    let mut out = Array3::<f32>::zeros((h, w, 3));
+    let mut out = crate::alloc::zeros3::<f32>((h, w, 3))?;
 
     let [_, shadow_a, shadow_b] = params.shadow_oklab;
     let [_, highlight_a, highlight_b] = params.highlight_oklab;

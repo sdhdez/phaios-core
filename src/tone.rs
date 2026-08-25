@@ -184,7 +184,7 @@ pub fn zone_system(img: ArrayView3<f32>, params: &ZoneParams) -> Result<Array3<f
     offsets.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
 
     let (h, w, _) = img.dim();
-    let mut out = Array3::<f32>::zeros((h, w, 1));
+    let mut out = crate::alloc::zeros3::<f32>((h, w, 1))?;
 
     // No offsets → identity. Hoisted out of the pixel loop.
     if params.is_identity() {
@@ -350,7 +350,7 @@ pub fn tone_curve(
     } = *params;
     let is_identity = slope == 1.0 && offset == 0.0 && power == 1.0;
 
-    let mut out = Array3::<f32>::zeros(img.dim());
+    let mut out = crate::alloc::zeros3::<f32>(img.dim())?;
     if is_identity {
         out.assign(&img);
         return Ok(out);

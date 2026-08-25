@@ -409,3 +409,13 @@ def test_gpu_shadow_rolloff_matches_cpu(ctx, knee, strength):
     params = ph.ShadowRolloffParams(knee, strength)
     got = gpu.shadow_rolloff(ctx.upload(img), params).download()
     np.testing.assert_array_equal(got, ph.shadow_rolloff(img, params))
+
+
+@needs_device
+def test_gpu_upload_refuses_oversized_instead_of_aborting(ctx):
+    """`Context::upload` materialises a host copy of the *logical* shape
+    via as_standard_layout, so it reached the same abort the CPU kernels
+    did. Both surfaces must refuse identically."""
+    huge = np.broadcast_to(np.float32(0.05), (100_000, 100_000, 3))
+    with pytest.raises(MemoryError):
+        ctx.upload(huge)

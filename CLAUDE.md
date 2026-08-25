@@ -85,6 +85,15 @@ belongs in a consumer.
   inherits from `BaseException`, so it slips through a consumer's
   `except Exception:` and kills the calling thread. Never `expect`
   on anything the caller controls — including array layout.
+- **Bounded allocation.** No single array may exceed 8 GiB
+  (`src/alloc.rs`); beyond that kernels return `PhaiosError::Allocation`
+  → Python `MemoryError`. A failed `Vec` allocation *aborts* rather than
+  unwinding, which no `except` can catch, and a zero-stride numpy
+  broadcast reaches that from four bytes of storage. Never call
+  `Array3::zeros` on a caller-derived shape — use `alloc::zeros3`.
+  **Deferred to v0.3:** the limit bounds single allocations only, not a
+  pipeline's peak footprint or cumulative use across calls. See
+  `docs/ffi.md`.
 - **Layout-agnostic inputs.** `PyReadonlyArray3` accepts strided,
   Fortran-order and negative-stride arrays, and a consumer passing
   `img[::2, ::2]` is normal. Use `ndarray::Zip`, which walks any

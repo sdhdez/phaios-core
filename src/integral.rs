@@ -13,6 +13,8 @@
 //! mapping", *SIGGRAPH '84*, pp. 207–212.
 
 use ndarray::parallel::prelude::*;
+
+use crate::error::PhaiosError;
 use ndarray::{Array2, ArrayView2, Axis};
 
 /// Column-block width for the vertical prefix-sum pass.
@@ -38,12 +40,12 @@ pub(crate) const SAT_COL_BLOCK: usize = 512;
 /// Accumulation is f64 throughout: a window statistic is the difference
 /// of two large partial sums, and an f32 table would lose exactly the low
 /// bits that the variance is computed from.
-pub(crate) fn sat<F>(data: ArrayView2<f32>, f: F) -> Array2<f64>
+pub(crate) fn sat<F>(data: ArrayView2<f32>, f: F) -> Result<Array2<f64>, PhaiosError>
 where
     F: Fn(f32) -> f64 + Sync + Send,
 {
-    let (h, _) = data.dim();
-    let mut s = Array2::<f64>::zeros(data.raw_dim());
+    let (h, w) = data.dim();
+    let mut s = crate::alloc::zeros2::<f64>((h, w))?;
 
     ndarray::Zip::from(s.rows_mut())
         .and(data.rows())
@@ -66,7 +68,7 @@ where
             }
         });
 
-    s
+    Ok(s)
 }
 
 /// Query a rectangular window sum from a SAT.
@@ -120,7 +122,7 @@ mod tests {
         let img =
             ndarray::Array2::from_shape_fn((h, w), |(y, x)| ((y * 31 + x * 17) % 97) as f32 / 97.0);
 
-        let table = sat(img.view(), |v| v as f64);
+        let table = sat(img.view(), |v| v as f64).unwrap();
 
         let mut naive = ndarray::Array2::<f64>::zeros((h, w));
         for y in 0..h {
@@ -147,7 +149,7 @@ mod tests {
         // The L² table is built by mapping during accumulation rather than
         // materialising a squared copy of the image.
         let img = ndarray::Array2::from_shape_fn((8, 8), |(y, x)| (y + x) as f32);
-        let squared = sat(img.view(), |v| (v as f64) * (v as f64));
+        let squared = sat(img.view(), |v| (v as f64) * (v as f64)).unwrap();
         let expected: f64 = img.iter().map(|&v| (v as f64) * (v as f64)).sum();
         assert!((squared[[7, 7]] - expected).abs() < 1e-9);
     }
@@ -158,7 +160,7 @@ mod tests {
         // only the pixels that exist, and reports the area it actually
         // summed so the caller's mean stays correct.
         let img = ndarray::Array2::<f32>::ones((5, 5));
-        let table = sat(img.view(), |v| v as f64);
+        let table = sat(img.view(), |v| v as f64).unwrap();
 
         let (sum, area) = window_sum(&table, 0, 0, 2, 5, 5);
         assert_eq!(area, 9.0, "corner window should be 3x3");

@@ -243,7 +243,7 @@ pub fn apply_lut(
         .expect("as_standard_layout guarantees a contiguous C-order array");
 
     let LutParams { min, max } = *params;
-    let mut out = Array3::<f32>::zeros(img.dim());
+    let mut out = crate::alloc::zeros3::<f32>(img.dim())?;
     ndarray::Zip::from(&mut out)
         .and(img)
         .par_for_each(|o, &v| *o = lut_sample(v, table, min, max));

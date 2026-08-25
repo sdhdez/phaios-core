@@ -106,6 +106,47 @@ should carry linear scene-referred data and skip both encoding and
 quantisation. The document is written to outlast the parked question of
 *where* file writing lives, since it constrains the output either way.
 
+### Fixed — an uncatchable abort on zero-stride input
+
+Every kernel sized its output from the *logical* shape of the caller's
+array. A numpy `broadcast_to` view has an unbounded logical shape backed
+by as little as four bytes, so `ph.exposure(np.broadcast_to(x,
+(100000, 100000, 3)), 1.0)` asked for 120 GB — and a failed `Vec`
+allocation in Rust calls `handle_alloc_error`, which **aborts**: it
+raises nothing at all, not even `PanicException`, and kills the
+interpreter. Nothing in Python could catch it, which makes it strictly
+worse than the panic CLAUDE.md §2 forbids and for the same reason.
+
+Found by the review of `shadow_rolloff`, but crate-wide and long
+pre-existing rather than new to that kernel.
+
+All 28 caller-derived allocations in `src/` now go through
+`alloc::zeros3` / `zeros2`, which check a **8 GiB** single-allocation
+budget first and return the new `PhaiosError::Allocation` → Python
+`MemoryError`. The CUDA `Context::upload` path is bounded too: its
+`as_standard_layout` staging copy reached the same abort. Two internal
+helpers (`integral::sat`, `local_contrast::guided_filter`) became
+fallible so the error propagates rather than being swallowed.
+
+The limit is a constant on purpose. It cannot be delegated to the
+allocator — measured on Linux with default heuristic overcommit,
+`Vec::try_reserve_exact` *succeeded* for a 111 GiB request on a 60 GiB
+machine and the process died later under the OOM killer — and it must
+not be derived from free memory, which would make the same call succeed
+or fail on ambient machine state, exactly what §2's purity rule forbids.
+For scale, 8 GiB is about 28x a 24 MP RGB frame.
+
+`tests/ffi.py`'s layout matrix gained a **zero-stride** variant. Its
+absence is why this went unnoticed: every other variant (strided,
+Fortran, reversed) has the storage its shape implies.
+
+**Known and deferred to v0.3:** the budget bounds single allocations
+only. A kernel holding several full-resolution intermediates, or a
+caller looping over many frames, can still exhaust memory with every
+individual call inside the limit. Bounding a pipeline's peak needs an
+arena or a budget threaded through the API — a design change, not a
+constant. Documented in `docs/ffi.md`.
+
 ### Added — shadow roll-off, completing the characteristic curve
 
 `shadow_rolloff(img, ShadowRolloffParams)` — the **toe**, and the

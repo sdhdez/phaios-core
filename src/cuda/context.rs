@@ -276,6 +276,11 @@ impl Context {
     /// [`PhaiosError::Backend`] if allocation or the copy fails.
     pub fn upload(&self, img: ndarray::ArrayView3<f32>) -> Result<DeviceImage, PhaiosError> {
         let shape = img.dim();
+        // `as_standard_layout` materialises a host copy of the *logical*
+        // shape, so a zero-stride view reaches the same abort the CPU
+        // kernels used to. Bound it first, with the same limit and the
+        // same error, so the two surfaces refuse identically.
+        crate::alloc::check_shape::<f32>(shape)?;
         let staged = img.as_standard_layout();
         let host = staged
             .as_slice()

@@ -41,7 +41,7 @@
 //! size. Filtering the noise to a band around `size_pixels` gives it
 //! one.
 
-use ndarray::{Array2, Array3, ArrayView3, s};
+use ndarray::{Array3, ArrayView3, s};
 use pyo3::{pyclass, pymethods};
 
 use crate::error::PhaiosError;
@@ -245,7 +245,7 @@ pub fn film_grain(img: ArrayView3<f32>, params: &GrainParams) -> Result<Array3<f
     validate(img.shape(), params)?;
 
     let (h, w, _) = img.dim();
-    let mut out = Array3::<f32>::zeros((h, w, 1));
+    let mut out = crate::alloc::zeros3::<f32>((h, w, 1))?;
 
     if params.intensity == 0.0 || h == 0 || w == 0 {
         out.assign(&img);
@@ -255,13 +255,13 @@ pub fn film_grain(img: ArrayView3<f32>, params: &GrainParams) -> Result<Array3<f
     // White noise, keyed by coordinate: reproducible regardless of how
     // the work is scheduled.
     let seed = params.seed;
-    let mut noise = Array2::<f32>::zeros((h, w));
+    let mut noise = crate::alloc::zeros2::<f32>((h, w))?;
     ndarray::Zip::indexed(&mut noise).par_for_each(|(y, x), n| {
         *n = standard_normal(pixel_hash(seed, x as u64, y as u64));
     });
 
     // Both box filters read the same table.
-    let table = sat(noise.view(), |v| v as f64);
+    let table = sat(noise.view(), |v| v as f64)?;
     drop(noise);
 
     // The two window radii must never coincide: equal radii make the

@@ -698,6 +698,10 @@ def _layout_variants(arr):
     yield "strided_cols", arr[:, ::2]
     yield "fortran", np.asfortranarray(arr)
     yield "reversed", arr[::-1]
+    # Zero-stride. Absent from this matrix until the v0.2 audit, which is
+    # exactly why an oversized broadcast could abort the interpreter
+    # unnoticed: every other variant has the storage its shape implies.
+    yield "broadcast", np.broadcast_to(arr[:1], arr.shape)
 
 
 @pytest.mark.parametrize("label", [v[0] for v in _layout_variants(np.zeros((4, 4, 1), np.float32))])
@@ -1175,3 +1179,62 @@ def test_characteristic_curve_composes_from_three_kernels():
     assert at(0.01) < at(0.4) * 0.6, "the toe holds less contrast than the midtones"
     assert at(2.0) < at(0.4) * 0.6, "and so does the shoulder"
     assert at(0.4) > 1.0, "the straight section carries the contrast it was given"
+
+
+# ── Oversized allocations must raise, never abort ────────────────────────────
+
+
+OVERSIZED = (100_000, 100_000, 3)  # 4 bytes of storage, 120 GB logical
+
+
+@pytest.mark.parametrize(
+    "name,call",
+    [
+        ("exposure", lambda a: ph.exposure(a, 1.0)),
+        ("encode_srgb", ph.encode_srgb),
+        ("tone_curve", lambda a: ph.tone_curve(a, ph.ToneCurveParams(1.1, 0.0, 1.0))),
+        ("vignette", lambda a: ph.vignette(a, ph.VignetteParams(0.4, 0.7))),
+        ("highlight_rolloff", lambda a: ph.highlight_rolloff(a, ph.RolloffParams(0.8, 2.0))),
+        ("shadow_rolloff", lambda a: ph.shadow_rolloff(a, ph.ShadowRolloffParams(0.2, 0.5))),
+        ("luminance_bw", ph.luminance_bw),
+        ("channel_mixer_bw", lambda a: ph.channel_mixer_bw(a, 0.3, 0.6, 0.1)),
+        ("hsl_bw", lambda a: ph.hsl_bw(a, ph.HslWeightedParams([0.1] * 8))),
+        ("apply_lut", lambda a: ph.apply_lut(a, np.linspace(0, 1, 16).astype(np.float32))),
+        ("quantize_u8", ph.quantize_u8),
+        ("film_grain", lambda a: ph.film_grain(a[:, :, :1], ph.GrainParams(0.2, 2.0, 1))),
+        ("local_contrast", lambda a: ph.local_contrast(a[:, :, :1], ph.GuidedFilterParams(2, 0.01), 0.5)),
+        ("split_toning", lambda a: ph.split_toning(a[:, :, :1], ph.SplitToningParams([0]*3, [0]*3))),
+    ],
+)
+def test_oversized_output_raises_instead_of_aborting(name, call):
+    """A zero-stride numpy view has an unbounded logical shape backed by
+    almost no memory. Allocating it directly calls Rust's
+    handle_alloc_error, which *aborts* — raising nothing at all, not even
+    PanicException, and killing the interpreter. Nothing in Python could
+    catch that, so the kernels must refuse up front.
+
+    If this regresses, the test process dies rather than failing, which is
+    itself the signal.
+    """
+    huge = np.broadcast_to(np.float32(0.05), OVERSIZED)
+    with pytest.raises(MemoryError):
+        call(huge)
+
+
+def test_oversized_error_is_memoryerror_not_valueerror():
+    """MemoryError, as numpy raises for the same request — the arguments
+    are well-formed, there is simply too much of them."""
+    huge = np.broadcast_to(np.float32(0.05), OVERSIZED)
+    with pytest.raises(MemoryError) as e:
+        ph.exposure(huge, 1.0)
+    assert "above the" in str(e.value)
+    # MemoryError is not a ValueError, so a consumer catching bad
+    # arguments does not accidentally swallow this.
+    assert not isinstance(e.value, ValueError)
+
+
+def test_a_real_frame_is_never_refused():
+    """The limit must be nowhere near a photograph. 24 MP RGB is the
+    crate's benchmark size."""
+    frame = np.zeros((4323, 5764, 3), np.float32)
+    assert ph.exposure(frame, 0.5).shape == frame.shape

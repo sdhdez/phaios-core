@@ -177,13 +177,15 @@ fn quantize_into<T, F>(
     params: &QuantizeParams,
     max_code: f32,
     convert: F,
-) -> Array3<T>
+) -> Result<Array3<T>, PhaiosError>
 where
-    T: Clone + num_traits_zero::Zero + Send + Sync,
+    T: Clone + Default + Send + Sync,
     F: Fn(f32) -> T + Sync + Send,
 {
     let (h, w, c) = img.dim();
-    let mut out = Array3::<T>::from_elem((h, w, c), T::zero());
+    // Bounded, like every other output allocation: the shape comes from
+    // the caller and a zero-stride view makes it unbounded.
+    let mut out = crate::alloc::zeros3::<T>((h, w, c))?;
     let dithered = params.dither == Dither::Tpdf;
     let seed = params.seed;
 
@@ -205,27 +207,7 @@ where
             *o = convert(quantize_sample(v, d, max_code));
         });
 
-    out
-}
-
-/// Minimal local stand-in for `num_traits::Zero`, to avoid a dependency
-/// for two impls.
-mod num_traits_zero {
-    /// Types that have an additive identity.
-    pub trait Zero {
-        /// The additive identity.
-        fn zero() -> Self;
-    }
-    impl Zero for u8 {
-        fn zero() -> Self {
-            0
-        }
-    }
-    impl Zero for u16 {
-        fn zero() -> Self {
-            0
-        }
-    }
+    Ok(out)
 }
 
 /// Quantise display-referred `f32` to 8-bit codes.
@@ -254,7 +236,7 @@ pub fn quantize_u8(
     img: ArrayView3<f32>,
     params: &QuantizeParams,
 ) -> Result<Array3<u8>, PhaiosError> {
-    Ok(quantize_into(img, params, 255.0, |v| v as u8))
+    quantize_into(img, params, 255.0, |v| v as u8)
 }
 
 /// Quantise display-referred `f32` to 16-bit codes.
@@ -277,7 +259,7 @@ pub fn quantize_u16(
     img: ArrayView3<f32>,
     params: &QuantizeParams,
 ) -> Result<Array3<u16>, PhaiosError> {
-    Ok(quantize_into(img, params, 65535.0, |v| v as u16))
+    quantize_into(img, params, 65535.0, |v| v as u16)
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────

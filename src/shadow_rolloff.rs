@@ -257,7 +257,7 @@ pub fn shadow_rolloff(
     validate(params)?;
 
     let ShadowRolloffParams { knee, strength } = *params;
-    let mut out = Array3::<f32>::zeros(img.dim());
+    let mut out = crate::alloc::zeros3::<f32>(img.dim())?;
 
     ndarray::Zip::from(&mut out)
         .and(img)

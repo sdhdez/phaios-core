@@ -156,7 +156,7 @@ pub fn luminance_bw(
     validate_rgb(img)?;
     let (h, w, _) = img.dim();
     let lw = standard.weights();
-    let mut out = Array3::<f32>::zeros((h, w, 1));
+    let mut out = crate::alloc::zeros3::<f32>((h, w, 1))?;
     ndarray::Zip::from(out.slice_mut(s![.., .., 0]))
         .and(img.slice(s![.., .., 0]))
         .and(img.slice(s![.., .., 1]))
@@ -185,7 +185,7 @@ pub fn channel_mixer_bw(
     validate_rgb(img)?;
     let (h, w, _) = img.dim();
     let [wr, wg, wb] = weights;
-    let mut out = Array3::<f32>::zeros((h, w, 1));
+    let mut out = crate::alloc::zeros3::<f32>((h, w, 1))?;
     ndarray::Zip::from(out.slice_mut(s![.., .., 0]))
         .and(img.slice(s![.., .., 0]))
         .and(img.slice(s![.., .., 1]))
@@ -219,7 +219,7 @@ pub fn color_filter_bw(
     let t = filter.transmission();
     let lw = standard.weights();
     let cw = [t[0] * lw[0], t[1] * lw[1], t[2] * lw[2]];
-    let mut out = Array3::<f32>::zeros((h, w, 1));
+    let mut out = crate::alloc::zeros3::<f32>((h, w, 1))?;
     ndarray::Zip::from(out.slice_mut(s![.., .., 0]))
         .and(img.slice(s![.., .., 0]))
         .and(img.slice(s![.., .., 1]))
@@ -438,7 +438,7 @@ pub fn hsl_bw(
     let weights = params.hue_weights;
     let two_sigma_sq = 2.0 * params.sigma_deg * params.sigma_deg;
 
-    let mut out = Array3::<f32>::zeros((h, w, 1));
+    let mut out = crate::alloc::zeros3::<f32>((h, w, 1))?;
     ndarray::Zip::from(out.slice_mut(s![.., .., 0]))
         .and(img.slice(s![.., .., 0]))
         .and(img.slice(s![.., .., 1]))

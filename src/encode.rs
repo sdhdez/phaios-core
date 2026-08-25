@@ -64,7 +64,7 @@ fn encode_pixel(x: f32) -> f32 {
 /// validate the channel count.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn encode_srgb(img: ArrayView3<f32>) -> Result<Array3<f32>, PhaiosError> {
-    let mut out = Array3::<f32>::zeros(img.dim());
+    let mut out = crate::alloc::zeros3::<f32>(img.dim())?;
     ndarray::Zip::from(&mut out).and(img).par_for_each(|o, &v| {
         *o = encode_pixel(v);
     });

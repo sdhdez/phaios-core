@@ -228,7 +228,7 @@ pub fn crop(img: ArrayView3<f32>, params: &CropParams) -> Result<Array3<f32>, Ph
     let (w, h) = (params.width as usize, params.height as usize);
     let c = img.dim().2;
 
-    let mut out = Array3::<f32>::zeros((h, w, c));
+    let mut out = crate::alloc::zeros3::<f32>((h, w, c))?;
     if h > 0 && w > 0 {
         out.assign(&img.slice(s![y..y + h, x..x + w, ..]));
     }
@@ -257,7 +257,7 @@ pub fn orient(img: ArrayView3<f32>, orientation: Orientation) -> Result<Array3<f
     let (transpose, flip_y, flip_x) = orientation.flags();
 
     let (oh, ow) = if transpose { (w, h) } else { (h, w) };
-    let mut out = Array3::<f32>::zeros((oh, ow, c));
+    let mut out = crate::alloc::zeros3::<f32>((oh, ow, c))?;
     if oh == 0 || ow == 0 {
         return Ok(out);
     }
@@ -433,13 +433,13 @@ pub fn resize(img: ArrayView3<f32>, params: &ResizeParams) -> Result<Array3<f32>
 
     // Horizontal pass: (in_h, in_w, c) -> (in_h, out_w, c).
     let scale_x = in_w as f32 / out_w as f32;
-    let mut mid = Array3::<f32>::zeros((in_h, out_w, c));
+    let mut mid = crate::alloc::zeros3::<f32>((in_h, out_w, c))?;
     resample_axis1(img, mid.view_mut(), scale_x, params.filter);
 
     // Vertical pass: transpose H<->W views so the same routine walks
     // the other axis with identical arithmetic.
     let scale_y = in_h as f32 / out_h as f32;
-    let mut out = Array3::<f32>::zeros((out_h, out_w, c));
+    let mut out = crate::alloc::zeros3::<f32>((out_h, out_w, c))?;
     resample_axis1(
         mid.view().permuted_axes([1, 0, 2]),
         out.view_mut().permuted_axes([1, 0, 2]),
@@ -665,7 +665,7 @@ pub fn straighten(
     let (in_h, in_w, c) = img.dim();
     let (out_h, out_w, sin_a, cos_a) = straighten_geometry(in_h, in_w, params.degrees)?;
 
-    let mut out = Array3::<f32>::zeros((out_h, out_w, c));
+    let mut out = crate::alloc::zeros3::<f32>((out_h, out_w, c))?;
     let (cx_out, cy_out) = (out_w as f32 * 0.5, out_h as f32 * 0.5);
     let (cx_in, cy_in) = (in_w as f32 * 0.5, in_h as f32 * 0.5);
 

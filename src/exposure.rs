@@ -61,7 +61,7 @@ pub fn exposure(img: ArrayView3<f32>, stops: f32) -> Result<Array3<f32>, PhaiosE
 
     // One multiply per pixel: 2^stops is constant across the image.
     let gain = 2.0_f32.powf(stops);
-    let mut out = Array3::<f32>::zeros(img.dim());
+    let mut out = crate::alloc::zeros3::<f32>(img.dim())?;
     ndarray::Zip::from(&mut out).and(img).par_for_each(|o, &v| {
         *o = v * gain;
     });

@@ -213,6 +213,8 @@ impl Histogram {
     /// per bin.
     #[must_use]
     pub fn cdf(&self) -> Array2<f32> {
+        // Bounded already: `validate_shape` caps channels x bins before
+        // any Histogram can exist, so this cannot be the runaway case.
         let mut out = Array2::<f32>::zeros((self.channels, self.bins));
         for ch in 0..self.channels {
             let in_range: u64 = self.counts.row(ch).iter().sum();
@@ -250,6 +252,7 @@ impl Histogram {
     #[must_use]
     pub fn equalisation_lut(&self) -> Array2<f32> {
         let cdf = self.cdf();
+        // Bounded by `validate_shape`, as in `cdf`.
         let mut out = Array2::<f32>::zeros((self.channels, self.bins + 1));
         for ch in 0..self.channels {
             for bin in 0..self.bins {
@@ -528,6 +531,10 @@ pub(crate) fn assemble(
     max: f32,
 ) -> Histogram {
     let stride = bins + 3;
+    // Not routed through `alloc`: `validate_shape` has already capped
+    // channels x bins at the accumulator budget before any Histogram can
+    // exist, so this allocation is bounded more tightly than the crate
+    // limit would bound it.
     let mut counts = Array2::<u64>::zeros((channels, bins));
     let mut below = vec![0_u64; channels];
     let mut above = vec![0_u64; channels];

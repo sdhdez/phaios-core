@@ -97,6 +97,54 @@ call rather than something a caller has to inspect. They are terminal —
 on the GPU surface they return a numpy array rather than a `GpuImage`,
 because a quantised buffer has nowhere further to go on the device.
 
+**Allocation is bounded, and refuses rather than aborts.** No single
+array a kernel allocates may exceed **8 GiB**; beyond that the call
+raises Python `MemoryError` — the same exception numpy raises for the
+same request — instead of attempting it.
+
+The reason is a hard one. A failed `Vec` allocation in Rust calls
+`handle_alloc_error`, which **aborts** rather than unwinding: it raises
+nothing at all, not even `PanicException`, and takes the interpreter with
+it, so a consumer cannot catch it with `except Exception`, `except
+BaseException`, or anything else. That is strictly worse than the panic
+§2 forbids, and it is reachable from ordinary input — a numpy
+`broadcast_to` view has an unbounded logical shape backed by as little as
+four bytes, and every kernel sizes its output from that logical shape.
+
+The limit cannot be delegated to the allocator. Measured on Linux with
+the default heuristic overcommit on a 60 GiB machine,
+`Vec::try_reserve_exact` **succeeded** for a 111 GiB request; the process
+died later under the OOM killer when the kernel wrote to the pages. Nor
+can it be derived from free memory: that would make the same call succeed
+or fail depending on ambient machine state, which is exactly what §2's
+purity rule forbids. So it is a constant, and it is documented here
+rather than left to be discovered.
+
+For scale: a 24 MP three-channel `f32` frame is 285 MiB, so the limit is
+about twenty-eight times the crate's benchmark size and allows roughly a
+700 MP RGB image. A legitimate output above it *is* refused; that is a
+real limit, and the better failure.
+
+**What this does not bound (v0.2).** Only *single* allocations. Three
+things remain a caller's responsibility, and are recorded here as known
+gaps rather than solved ones:
+
+- **Peak pipeline footprint.** A kernel may hold several
+  full-resolution intermediates at once — `local_contrast` builds f64
+  summed-area tables — and a chain of kernels holds more. Each
+  allocation may pass the check while the total exhausts memory.
+- **Cumulative use across calls.** Nothing tracks what a caller has
+  already allocated, so a loop over many frames can exhaust memory with
+  every individual call inside the limit.
+- **Device memory.** The CUDA path bounds its *host* staging copy but
+  relies on the driver returning an out-of-memory error for device
+  allocations, which it does — `PhaiosError::Backend`, catchable — so
+  this one is a difference in error type rather than a hole.
+
+Bounding a whole pipeline's peak is a design question, not a constant:
+it needs either an allocation arena the caller owns or a declared budget
+threaded through the API. Deferred past v0.2 deliberately.
+
 **Pixel values must be finite.** This is a precondition, not a validated
 input: kernels check their *parameters* and never scan their pixels — a
 finiteness pass over a 24 MP frame would cost more than most kernels do.
@@ -258,6 +306,7 @@ Variant-to-exception mapping:
 | `Shape(_)` | `ValueError` | wrong channel count or dimensionality |
 | `Parameter(_)` | `ValueError` | a parameter outside its domain — zone index not in 0..=10, negative `eps`, any non-finite float |
 | `Backend(_)` | `RuntimeError` | no CUDA device, driver missing, compute capability below 8.0, or a device operation failed — an environment condition, not a bad argument |
+| `Allocation(_)` | `MemoryError` | an array would exceed the 8 GiB single-allocation limit, or its shape overflows a count. Not a `ValueError`: the arguments are well-formed, there is simply too much of them — and it is what numpy raises for the same request |
 
 Add new variants as needed; always map to the most specific Python
 exception class.
