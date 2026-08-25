@@ -76,7 +76,7 @@ one download: **24 MP export 468 → 48 ms (9.8×); 2 MP preview
   bit-identical within a backend unconditionally; across backends,
   transcendental-free kernels are bit-exact (PTX built with
   `-fmad=false`) and the rest hold committed bounds asserted by
-  `tests/cuda_conformance.rs` — 30 tests, skipped cleanly without a
+  `tests/cuda_conformance.rs` — 33 tests, skipped cleanly without a
   device, `PHAIOS_REQUIRE_GPU=1` to forbid skipping.
   `film_grain`'s splitmix64 hash is asserted bit-identical over 2²⁰
   coordinates. The cross-backend framing corrects a fiction in the old
