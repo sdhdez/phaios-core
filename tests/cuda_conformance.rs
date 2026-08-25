@@ -923,3 +923,79 @@ fn highlight_rolloff_edge_values_agree() {
         );
     }
 }
+
+/// Quantisation is bit-exact, dithered or not. The dither is exact
+/// 64-bit integer arithmetic (splitmix64, already asserted over 2²⁰
+/// coordinates by the grain suite) and the rounding is `floor(v + 0.5)`
+/// — an exact operation composed with a correctly-rounded one, rather
+/// than a library rounding routine that could differ between host and
+/// device. No tolerance.
+#[test]
+fn quantize_is_bit_exact() {
+    use phaios_core::quantize::{Dither, QuantizeParams, quantize_u8, quantize_u16};
+
+    let Some(ctx) = try_context() else { return };
+    // Values spanning and exceeding [0, 1] so the clamp branches run too.
+    let img = pseudo_random_image(257, 389, 3).mapv(|v| v * 1.4 - 0.2);
+
+    for (dither, seed) in [
+        (Dither::Off, 0_u64),
+        (Dither::Off, 12345), // seed must be ignored here
+        (Dither::Tpdf, 20260825),
+        (Dither::Tpdf, 1),
+        (Dither::Tpdf, u64::MAX),
+    ] {
+        let params = QuantizeParams::new(dither, seed);
+        assert_eq!(
+            quantize_u8(img.view(), &params).unwrap(),
+            cuda::kernels::quantize_u8(&ctx, img.view(), &params).unwrap(),
+            "quantize_u8 {dither:?} seed={seed}"
+        );
+        assert_eq!(
+            quantize_u16(img.view(), &params).unwrap(),
+            cuda::kernels::quantize_u16(&ctx, img.view(), &params).unwrap(),
+            "quantize_u16 {dither:?} seed={seed}"
+        );
+    }
+}
+
+/// The dither key mixes the channel index, so the flat-index arithmetic
+/// on the device has to recover (x, y, channel) exactly as the CPU's
+/// `Zip::indexed` reports it. A single-channel image cannot catch a
+/// mistake there; a three-channel one at a non-square size can.
+#[test]
+fn quantize_channel_keying_agrees() {
+    use phaios_core::quantize::{Dither, QuantizeParams, quantize_u8};
+
+    let Some(ctx) = try_context() else { return };
+    for (h, w, c) in [(1, 1, 1), (1, 7, 3), (7, 1, 3), (5, 3, 1), (13, 17, 3)] {
+        let img = pseudo_random_image(h, w, c);
+        let params = QuantizeParams::new(Dither::Tpdf, 4242);
+        assert_eq!(
+            quantize_u8(img.view(), &params).unwrap(),
+            cuda::kernels::quantize_u8(&ctx, img.view(), &params).unwrap(),
+            "shape ({h}, {w}, {c})"
+        );
+    }
+}
+
+/// Non-finite and out-of-range samples must land on the same codes.
+#[test]
+fn quantize_edge_values_agree() {
+    use phaios_core::quantize::{Dither, QuantizeParams, quantize_u16};
+
+    let Some(ctx) = try_context() else { return };
+    let img = ndarray::array![[
+        [-1.0_f32, 0.0, 1.0],
+        [1.5, 1e30, -1e30],
+        [f32::INFINITY, f32::NEG_INFINITY, f32::NAN],
+    ]];
+    for dither in [Dither::Off, Dither::Tpdf] {
+        let params = QuantizeParams::new(dither, 8);
+        assert_eq!(
+            quantize_u16(img.view(), &params).unwrap(),
+            cuda::kernels::quantize_u16(&ctx, img.view(), &params).unwrap(),
+            "edge values, {dither:?}"
+        );
+    }
+}

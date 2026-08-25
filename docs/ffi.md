@@ -46,6 +46,8 @@ pipeline:
 | `tone_curve` | any | same | element-wise |
 | `highlight_rolloff` | any | same | element-wise; last linear stage, immediately before `encode_srgb` |
 | `encode_srgb` | any | same | element-wise |
+| `quantize_u8` | any | same, **`uint8`** | terminal; display-referred input |
+| `quantize_u16` | any | same, **`uint16`** | terminal; display-referred input |
 
 A kernel given the wrong channel count raises `ValueError`. The nine
 that accept "any" do so for two distinct reasons. The four geometry
@@ -55,6 +57,19 @@ first, before the pipeline has decided anything about colour. The other
 five (`exposure`, `vignette`, `tone_curve`, `highlight_rolloff` and
 `encode_srgb`) run either side of `split_toning`, so a pipeline need not
 branch on whether toning is enabled.
+
+See [`export.md`](export.md) for what a consumer must do with these
+codes — greyscale photometric, profile, depth and dither are specified
+there, not left to the file layer.
+
+**Integer output.** `quantize_u8` and `quantize_u16` are the only
+kernels that do not return `float32`: they return `uint8` and `uint16`
+respectively, still `(H, W, C)` and still freshly allocated and
+C-contiguous. Two monomorphic functions rather than one function with a
+bit-depth argument, so the returned dtype is a static property of the
+call rather than something a caller has to inspect. They are terminal —
+on the GPU surface they return a numpy array rather than a `GpuImage`,
+because a quantised buffer has nowhere further to go on the device.
 
 **Pixel values must be finite.** This is a precondition, not a validated
 input: kernels check their *parameters* and never scan their pixels — a
@@ -316,7 +331,11 @@ What is promised across backends:
   once on the host and shared), and `highlight_rolloff` (a quadratic
   solve — IEEE-754-2008 §5.4.1 requires `sqrt` to be correctly rounded
   just as it does the four arithmetic operations, so a curve built from
-  those five alone carries across). This is achievable because the PTX is compiled with
+  those five alone carries across), and `quantize_u8` / `quantize_u16`
+  (exact integer hashing for the dither, and `floor(v + 0.5)` for the
+  rounding — an exact operation composed with a correctly-rounded one,
+  rather than a library rounding routine that host and device could
+  implement differently). This is achievable because the PTX is compiled with
   `-fmad=false` — Rust does not contract `a*b+c` into FMA, and with the
   device told the same, every remaining operation is correctly rounded
   on both sides.

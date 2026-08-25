@@ -82,6 +82,7 @@ difference.
 | `13_geometry.rs` | `crop`, `orient` | All eight Exif orientations; crop-then-vignette vs vignette-then-crop |
 | `14_resample.rs` | `resize`, `straighten` | Three filters at two ratios; inscribed-crop dimensions printed |
 | `16_highlight_rolloff.rs` | `highlight_rolloff` | Clip vs shoulder on a +2 EV push; how many of 8 highlights survive each |
+| `17_quantize.rs` | `quantize_u8`, `quantize_u16` | Where banding comes from: a ramp spanning two 8-bit codes, plain vs dithered |
 | `15_gpu_exposure.rs` | CUDA backend | Needs `--features cuda`; bit-exactness and the resident-image pattern |
 
 Several examples print measurements as well as writing files — the

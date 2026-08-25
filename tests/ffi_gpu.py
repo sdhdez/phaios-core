@@ -335,3 +335,28 @@ def test_gpu_highlight_rolloff_matches_cpu(ctx, knee, white):
     params = ph.RolloffParams(knee, white)
     got = gpu.highlight_rolloff(ctx.upload(img), params).download()
     np.testing.assert_array_equal(got, ph.highlight_rolloff(img, params))
+
+
+@needs_device
+@pytest.mark.parametrize("seed", [0, 20260825, 2**64 - 1])
+def test_gpu_quantize_matches_cpu(ctx, seed):
+    """Terminal kernels: they return numpy arrays, not GpuImages."""
+    rng = np.random.default_rng(31)
+    img = (rng.random((23, 31, 3)).astype(np.float32) * 1.4) - 0.2
+    for dither in (ph.Dither.Tpdf,):
+        params = ph.QuantizeParams(dither, seed)
+        resident = ctx.upload(img)
+        got8 = gpu.quantize_u8(resident, params)
+        got16 = gpu.quantize_u16(resident, params)
+        assert got8.dtype == np.uint8 and got16.dtype == np.uint16
+        np.testing.assert_array_equal(got8, ph.quantize_u8(img, params))
+        np.testing.assert_array_equal(got16, ph.quantize_u16(img, params))
+
+
+@needs_device
+def test_gpu_quantize_default_params(ctx):
+    rng = np.random.default_rng(32)
+    img = rng.random((9, 11, 1)).astype(np.float32)
+    resident = ctx.upload(img)
+    np.testing.assert_array_equal(gpu.quantize_u8(resident), ph.quantize_u8(img))
+    np.testing.assert_array_equal(gpu.quantize_u16(resident), ph.quantize_u16(img))

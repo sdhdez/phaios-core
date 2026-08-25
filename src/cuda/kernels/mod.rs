@@ -18,6 +18,7 @@ mod geometry;
 mod grain;
 mod hsl;
 mod local_contrast;
+mod quantize;
 mod split_toning;
 mod zone;
 
@@ -33,6 +34,7 @@ pub use geometry::{
 pub use grain::{film_grain, film_grain_device, hash_grid};
 pub use hsl::{hsl_bw, hsl_bw_device};
 pub use local_contrast::{local_contrast, local_contrast_device};
+pub use quantize::{quantize_u8, quantize_u8_device, quantize_u16, quantize_u16_device};
 pub use split_toning::{split_toning, split_toning_device};
 pub use zone::{zone_system, zone_system_device};
 

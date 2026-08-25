@@ -25,6 +25,7 @@ use phaios_core::geometry::{
 };
 use phaios_core::highlight_rolloff::{RolloffParams, highlight_rolloff};
 use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
+use phaios_core::quantize::{Dither, QuantizeParams, quantize_u8, quantize_u16};
 use phaios_core::split_toning::{SplitToningParams, split_toning};
 use phaios_core::tone::{ToneCurveParams, ZoneParams, tone_curve, zone_system};
 use phaios_core::vignette::{VignetteParams, vignette};
@@ -156,6 +157,22 @@ fn bench_highlight_rolloff(c: &mut Criterion) {
     });
 }
 
+fn bench_quantize(c: &mut Criterion) {
+    // Display-referred input, as the kernel expects.
+    let grey = pseudo_random_image(H, W, 1);
+    let plain = QuantizeParams::default();
+    let dithered = QuantizeParams::new(Dither::Tpdf, 20260825);
+    c.bench_function("quantize/24MP/u8-plain", |b| {
+        b.iter(|| quantize_u8(black_box(grey.view()), black_box(&plain)).unwrap())
+    });
+    c.bench_function("quantize/24MP/u8-dithered", |b| {
+        b.iter(|| quantize_u8(black_box(grey.view()), black_box(&dithered)).unwrap())
+    });
+    c.bench_function("quantize/24MP/u16-dithered", |b| {
+        b.iter(|| quantize_u16(black_box(grey.view()), black_box(&dithered)).unwrap())
+    });
+}
+
 fn bench_local_contrast(c: &mut Criterion) {
     let grey = pseudo_random_image(H, W, 1);
     let params = GuidedFilterParams::new(8, 0.01);
@@ -213,6 +230,7 @@ criterion_group!(
     bench_zone_system,
     bench_tone_curve,
     bench_highlight_rolloff,
+    bench_quantize,
     bench_local_contrast,
     bench_film_grain,
     bench_split_toning,

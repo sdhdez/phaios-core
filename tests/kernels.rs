@@ -591,3 +591,97 @@ fn rolloff_is_thread_count_independent() {
     let b = highlight_rolloff(img.view(), &params).unwrap();
     assert_eq!(a, b);
 }
+
+// ── Quantisation tests ───────────────────────────────────────────────────────
+
+use phaios_core::quantize::{Dither, QuantizeParams, quantize_u8, quantize_u16};
+
+/// The property the kernel exists for: on a ramp too shallow to resolve
+/// at the target depth, plain rounding produces flat plateaux — bands —
+/// while dither disperses the step into a mixture that still carries the
+/// gradient. A test that only checked dtype and shape would pass on a
+/// kernel that ignored the dither setting entirely.
+#[test]
+fn dither_converts_banding_into_noise() {
+    // 512 pixels spanning barely two 8-bit codes.
+    let img =
+        ndarray::Array3::from_shape_fn((1, 512, 1), |(_, x, _)| (60.0 + x as f32 / 511.0) / 255.0);
+
+    let plain = quantize_u8(img.view(), &QuantizeParams::default()).unwrap();
+    let dithered = quantize_u8(img.view(), &QuantizeParams::new(Dither::Tpdf, 2026)).unwrap();
+
+    let transitions = |a: &ndarray::Array3<u8>| {
+        a.iter()
+            .zip(a.iter().skip(1))
+            .filter(|(x, y)| x != y)
+            .count()
+    };
+
+    assert!(
+        transitions(&plain) <= 1,
+        "undithered, the ramp should be one hard step: {} transitions",
+        transitions(&plain)
+    );
+    assert!(
+        transitions(&dithered) > 50,
+        "dithered, the step should be dispersed: {} transitions",
+        transitions(&dithered)
+    );
+
+    // And it must not have changed the picture's brightness while doing
+    // it — triangular dither is zero-mean.
+    let mean =
+        |a: &ndarray::Array3<u8>| a.iter().map(|v| f64::from(*v)).sum::<f64>() / a.len() as f64;
+    assert!(
+        (mean(&dithered) - mean(&plain)).abs() < 0.6,
+        "dither shifted the mean: {} vs {}",
+        mean(&dithered),
+        mean(&plain)
+    );
+}
+
+/// Sixteen bits must resolve what eight cannot — otherwise the two
+/// entry points are not doing different work.
+#[test]
+fn sixteen_bits_resolves_what_eight_cannot() {
+    let img =
+        ndarray::Array3::from_shape_fn((1, 64, 1), |(_, x, _)| (60.0 + x as f32 / 63.0) / 255.0);
+    let p = QuantizeParams::default();
+
+    let distinct = |v: Vec<u32>| {
+        let mut v = v;
+        v.sort_unstable();
+        v.dedup();
+        v.len()
+    };
+    let n8 = distinct(
+        quantize_u8(img.view(), &p)
+            .unwrap()
+            .iter()
+            .map(|c| u32::from(*c))
+            .collect(),
+    );
+    let n16 = distinct(
+        quantize_u16(img.view(), &p)
+            .unwrap()
+            .iter()
+            .map(|c| u32::from(*c))
+            .collect(),
+    );
+    assert!(n8 <= 2, "8-bit should collapse this ramp, got {n8} codes");
+    assert!(n16 > 50, "16-bit should resolve it, got {n16} codes");
+}
+
+/// Determinism: the seed is the whole contract, so the same seed must
+/// give the same bytes and a different one must not.
+#[test]
+fn quantize_dither_is_reproducible_from_the_seed() {
+    let img = ndarray::Array3::from_shape_fn((37, 53, 3), |(y, x, c)| {
+        ((y * 53 + x + c) % 255) as f32 / 255.0
+    });
+    let a = quantize_u8(img.view(), &QuantizeParams::new(Dither::Tpdf, 77)).unwrap();
+    let b = quantize_u8(img.view(), &QuantizeParams::new(Dither::Tpdf, 77)).unwrap();
+    let c = quantize_u8(img.view(), &QuantizeParams::new(Dither::Tpdf, 78)).unwrap();
+    assert_eq!(a, b, "same seed, same bytes");
+    assert_ne!(a, c, "different seed, different pattern");
+}

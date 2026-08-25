@@ -273,6 +273,39 @@ fn highlight_rolloff(
     Ok(GpuImage { inner: result })
 }
 
+/// Quantise a device image to 8-bit codes, returning a numpy array.
+///
+/// Terminal: quantisation is where the device-resident chain ends, so
+/// this returns host data rather than another ``GpuImage``. Mirrors
+/// ``phaios_core.quantize_u8``; bit-exact.
+#[pyfunction]
+#[pyo3(signature = (img, params = None))]
+fn quantize_u8(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: Option<crate::quantize::QuantizeParams>,
+) -> PyResult<Py<PyArray3<u8>>> {
+    let owned = params.unwrap_or_default();
+    let result = py.detach(|| cuda::kernels::quantize_u8_device(&img.inner, &owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
+/// Quantise a device image to 16-bit codes, returning a numpy array.
+///
+/// Terminal, like ``quantize_u8``. Mirrors ``phaios_core.quantize_u16``;
+/// bit-exact.
+#[pyfunction]
+#[pyo3(signature = (img, params = None))]
+fn quantize_u16(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: Option<crate::quantize::QuantizeParams>,
+) -> PyResult<Py<PyArray3<u16>>> {
+    let owned = params.unwrap_or_default();
+    let result = py.detach(|| cuda::kernels::quantize_u16_device(&img.inner, &owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 /// Radial vignette on the GPU. Mirrors ``phaios_core.vignette``;
 /// bit-exact against the CPU.
 #[pyfunction]
@@ -479,6 +512,8 @@ pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult
     gpu.add_function(wrap_pyfunction!(tone_curve, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(vignette, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(highlight_rolloff, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(quantize_u8, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(quantize_u16, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(luminance_bw, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(channel_mixer_bw, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(color_filter_bw, &gpu)?)?;

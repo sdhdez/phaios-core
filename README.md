@@ -43,7 +43,9 @@ freshly allocated C-contiguous array.
 | `split_toning` | Shadow/highlight tinting in OKLab — returns `(H, W, 3)` | v0.2 |
 | `vignette` | Radial darkening or lightening, resolution-independent | v0.2 |
 | `tone_curve` | Parametric slope/offset/power curve (ASC CDL) | v0.2 |
-| `encode_srgb` | IEC 61966-2-1 sRGB transfer encoding (terminal stage) | v0.1 |
+| `highlight_rolloff` | Bézier highlight shoulder; defaults to a hard clip | v0.2 |
+| `encode_srgb` | IEC 61966-2-1 sRGB transfer encoding | v0.1 |
+| `quantize_u8` / `quantize_u16` | Dithered integer conversion (terminal) | v0.2 |
 
 ### GPU backend (optional)
 
@@ -142,8 +144,14 @@ x = ph.split_toning(x, ph.SplitToningParams([0.0, -0.02, -0.04],   # cool shadow
 x = ph.vignette(x, ph.VignetteParams(amount=0.35, feather=0.8))
 x = ph.tone_curve(x, ph.ToneCurveParams(slope=1.1, power=0.9))
 
-# 6. sRGB encode — always last, and the only stage that clamps nothing
-output = ph.encode_srgb(np.clip(x, 0.0, 1.0))
+# 6. Finish. The roll-off replaces the clip a caller used to write by
+#    hand: its default is a hard clip, so this is explicit, not new.
+x = ph.highlight_rolloff(x, ph.RolloffParams(knee=0.75, white_point=4.0))
+x = ph.encode_srgb(x)
+
+# 7. Terminal: continuous -> integer codes. 16-bit is the archival
+#    default; 8-bit should be dithered. See docs/export.md.
+output = ph.quantize_u16(x)
 ```
 
 Each stage is optional and each is a pure function; skip any of them and
@@ -168,6 +176,10 @@ Corresponding source is available at the repository URL above
   full mathematical derivations, algorithm citations.
 - [docs/ffi.md](docs/ffi.md) — Python↔Rust boundary contract,
   array layout, zero-copy rules, error handling.
+- [docs/export.md](docs/export.md) — the export contract: what a
+  finished phaios image is, normatively. Grey means grey (single-channel
+  photometric, greyscale ICC), 16-bit archival default, dither rules,
+  and the terminal stage sequence.
 
 ---
 

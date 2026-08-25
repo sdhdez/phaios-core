@@ -20,7 +20,8 @@ encoding.
 B&W (8 hue bands), procedural film grain (explicit seed, no RNG
 dependency), split-toning in OKLab, radial vignette, parametric tone
 curve (ASC CDL); highlight roll-off (the explicit clip-vs-shoulder
-decision, defaulting to a hard clip); the four geometry kernels — `crop`, `orient` (the eight
+decision, defaulting to a hard clip); dithered quantisation to u8/u16
+(the first kernels returning integers); the four geometry kernels — `crop`, `orient` (the eight
 Exif transforms), `straighten` (±45° with an inscribed-rectangle crop)
 and `resize` (area / bilinear / Catmull-Rom); and an **optional CUDA
 backend** behind `--features cuda`, exposing every kernel a second time
@@ -120,8 +121,10 @@ RAW (consumer's problem)
   → vignette                                       ← kernel
   → parametric tone curve                          ← kernel
   → highlight roll-off                             ← kernel (last linear)
-  → sRGB encode                                    ← kernel (terminal)
-  → display-referred f32 RGB                       ← output, consumer writes file
+  → sRGB encode                                    ← kernel
+  → quantize (u8 / u16)                            ← kernel (terminal)
+  → integer codes                                  ← output, consumer writes
+                                                     the file per docs/export.md
 ```
 
 The channel count collapses at the B&W stage and returns at
@@ -145,7 +148,8 @@ Full derivations and citations live in `docs/architecture.md`.
 
 ## 4. The Python ↔ Rust boundary
 
-See `docs/ffi.md` for the full contract. Summary:
+See `docs/ffi.md` for the full contract, and `docs/export.md` for what
+a finished image must look like when it reaches a file. Summary:
 
 - Inputs: `PyReadonlyArray3<f32>`, shape `(H, W, C)` with C ∈ {1, 3},
   in any memory layout.

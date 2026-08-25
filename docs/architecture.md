@@ -926,7 +926,71 @@ which defeats the purpose.
 
 ---
 
-## 14. Performance (v0.2-dev)
+## 14. Quantisation and dither
+
+The last thing that happens to an image is that it stops being
+continuous. Everything upstream is `f32`; a file holds integers, and
+something has to pick them.
+
+Doing it with a bare `round` is what produces **banding**. The reason is
+worth stating precisely, because it explains why the fix works: the
+quantisation error of a smooth gradient is itself smooth. Where the
+signal crosses a code boundary the error resets, and the eye — very good
+at detecting edges, and best of all in neutral greys — reads those
+resets as contour lines. The error is not too large; it is too
+*correlated*.
+
+### Dither
+
+Adding sub-LSB noise before rounding decorrelates it. With a triangular
+probability density spanning ±1 LSB the quantisation error becomes
+independent of the signal and its variance constant — the standard
+result for non-subtractive dither (Lipshitz, Wannamaker and Vanderkooy,
+"Quantization and Dither: A Theoretical Survey", *Journal of the Audio
+Engineering Society* 40(5), 1992, pp. 355–375). The argument is
+signal-theoretic and transfers from audio to images unchanged.
+
+Triangular specifically, not uniform. A uniform (RPDF) deviate
+decorrelates the error's *mean* but leaves its variance modulated by the
+signal, which is audible as noise pumping and visible as noise that
+breathes across a gradient. The triangular deviate is formed as the sum
+of two independent uniforms, giving variance 1/6 over `[-1, 1]` where a
+uniform one would give 1/3 — a factor the unit tests assert directly, so
+that substituting one for the other fails rather than passing quietly.
+
+### Where the randomness comes from
+
+Nowhere. The deviate is `splitmix64` keyed on the pixel's coordinates,
+the channel index and the caller's `seed` — the same hash `film_grain`
+uses, and for the same reason: a position-keyed hash depends on *where*
+a pixel is rather than on the order in which pixels are visited, so the
+result is identical at any thread count and on either backend. The
+channel is mixed into the key so that the three channels of a toned
+image are not perturbed identically, which would tint the noise.
+
+### Rounding
+
+`floor(v + 0.5)`, not `round(v)`. `floor` is exact and the addition is
+correctly rounded, so the composition is reproducible by construction
+rather than by trusting host and device rounding routines to agree.
+Combined with the exact integer dither, this makes the kernels bit-exact
+across backends.
+
+### When to use it
+
+At 16 bits, rarely: the depth is sufficient that banding needs a
+pathological gradient. At 8 bits, almost always — it is the most common
+visible defect in black-and-white export. And not at all if `film_grain`
+has run at any visible intensity, because grain *is* dither; the two
+would simply add noise twice.
+
+Measured on a 256-pixel ramp spanning two 8-bit codes: undithered gives
+one hard transition, dithered gives 105, and the mean shifts by 0.008 of
+a code — triangular dither being zero-mean, it must not change exposure.
+
+---
+
+## 15. Performance (v0.2-dev)
 
 Measured with `cargo bench` (criterion, bench profile) on a synthetic
 4323 × 5765 (≈ 24 MP) `f32` image filled with deterministic
@@ -973,7 +1037,7 @@ input, the three B&W kernels measured 10.1 ms rather than 15 ms.
 
 ---
 
-## 15. Geometry (crop, orientation)
+## 16. Geometry (crop, orientation)
 
 Two exact operations, deliberately in the core rather than in front
 ends: their parameters live in consumers' sidecar files, and if two

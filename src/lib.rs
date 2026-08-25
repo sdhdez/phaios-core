@@ -23,6 +23,7 @@ pub mod geometry;
 pub mod highlight_rolloff;
 mod integral;
 pub mod local_contrast;
+pub mod quantize;
 pub mod split_toning;
 pub mod tone;
 pub mod vignette;
@@ -483,6 +484,83 @@ pub fn highlight_rolloff_fn(
     Ok(result.into_pyarray(py).unbind())
 }
 
+// ── Quantisation bindings ─────────────────────────────────────────────────────
+
+/// Quantise display-referred float data to 8-bit integer codes.
+///
+/// Each sample is scaled to ``0..=255``, optionally perturbed by ±1 LSB
+/// of triangular dither, and rounded. Values outside ``[0, 1]`` clamp to
+/// the end codes; NaN maps to 0.
+///
+/// Eight bits is where dither earns its keep: without it a smooth sky
+/// bands visibly, because the quantisation error of a smooth gradient is
+/// itself smooth and collects into contour lines. Pass
+/// ``Dither.Tpdf`` with a seed unless the image already carries grain,
+/// which dithers it as a side effect.
+///
+/// Order-sensitive: terminal, and the input must already be
+/// display-referred — ``encode_srgb`` has to have run. Quantising linear
+/// data throws away most of the shadow range.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)`` for any channel count, dtype
+///     ``float32``, any memory layout. Expected in ``[0, 1]``.
+/// params : QuantizeParams
+///     Dither strategy and seed. Default: no dither.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, C)``, dtype ``uint8``, C-contiguous.
+#[pyfunction]
+#[pyo3(signature = (img, params = None))]
+pub fn quantize_u8(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: Option<pyo3::PyRef<'_, quantize::QuantizeParams>>,
+) -> PyResult<Py<numpy::PyArray3<u8>>> {
+    let view = img.as_array();
+    let owned = params.map_or_else(quantize::QuantizeParams::default, |p| p.clone());
+    let result = py.detach(move || quantize::quantize_u8(view, &owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
+/// Quantise display-referred float data to 16-bit integer codes.
+///
+/// As ``quantize_u8`` but to ``0..=65535``. This is the archival
+/// default: 16 bits leaves enough headroom that dither is a refinement
+/// rather than a necessity, and enough precision that a consumer can
+/// grade the file further without tearing it.
+///
+/// Order-sensitive: terminal, after ``encode_srgb``.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)`` for any channel count, dtype
+///     ``float32``, any memory layout. Expected in ``[0, 1]``.
+/// params : QuantizeParams
+///     Dither strategy and seed. Default: no dither.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, C)``, dtype ``uint16``, C-contiguous.
+#[pyfunction]
+#[pyo3(signature = (img, params = None))]
+pub fn quantize_u16(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: Option<pyo3::PyRef<'_, quantize::QuantizeParams>>,
+) -> PyResult<Py<numpy::PyArray3<u16>>> {
+    let view = img.as_array();
+    let owned = params.map_or_else(quantize::QuantizeParams::default, |p| p.clone());
+    let result = py.detach(move || quantize::quantize_u16(view, &owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── Local contrast binding ────────────────────────────────────────────────────
 
 /// Enhance local contrast using the He–Sun–Tang guided filter.
@@ -717,6 +795,8 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<split_toning::SplitToningParams>()?;
     m.add_class::<vignette::VignetteParams>()?;
     m.add_class::<highlight_rolloff::RolloffParams>()?;
+    m.add_class::<quantize::Dither>()?;
+    m.add_class::<quantize::QuantizeParams>()?;
 
     // Geometry
     m.add_function(wrap_pyfunction!(crop, m)?)?;
@@ -737,6 +817,8 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(zone_system, m)?)?;
     m.add_function(wrap_pyfunction!(tone_curve, m)?)?;
     m.add_function(wrap_pyfunction!(highlight_rolloff_fn, m)?)?;
+    m.add_function(wrap_pyfunction!(quantize_u8, m)?)?;
+    m.add_function(wrap_pyfunction!(quantize_u16, m)?)?;
 
     // Local contrast
     m.add_function(wrap_pyfunction!(local_contrast_py, m)?)?;

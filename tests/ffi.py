@@ -833,3 +833,77 @@ def test_rolloff_params_repr_and_eq():
     assert a != ph.RolloffParams(0.8, 2.5)
     assert "knee=0.8" in repr(a)
     assert ph.RolloffParams().knee == 1.0
+
+
+# ── quantize ─────────────────────────────────────────────────────────────────
+
+
+def test_quantize_dtypes_and_ranges(grey_f32):
+    u8 = ph.quantize_u8(grey_f32)
+    u16 = ph.quantize_u16(grey_f32)
+    assert u8.dtype == np.uint8 and u16.dtype == np.uint16
+    assert u8.shape == grey_f32.shape and u16.shape == grey_f32.shape
+    assert u8.flags["C_CONTIGUOUS"] and u16.flags["C_CONTIGUOUS"]
+    assert 0 <= u8.min() and u8.max() <= 255
+    assert 0 <= u16.min() and u16.max() <= 65535
+
+
+def test_quantize_params_default_to_no_dither(grey_f32):
+    """Calling without params must equal explicit Dither.None."""
+    np.testing.assert_array_equal(
+        ph.quantize_u8(grey_f32),
+        ph.quantize_u8(grey_f32, ph.QuantizeParams(ph.Dither.Off, 0)),
+    )
+
+
+def test_dither_enum_is_spellable_from_python():
+    """`Dither.None` would be a syntax error — `None` is a keyword. The
+    variant is named `Off` so the Python surface can actually name it."""
+    assert ph.Dither.Off != ph.Dither.Tpdf
+    assert ph.QuantizeParams().dither == ph.Dither.Off
+
+
+def test_quantize_endpoints_and_clamping():
+    probe = np.array([[[-1.0, 0.0, 0.5, 1.0, 2.0, np.nan]]], dtype=np.float32).reshape(1, 6, 1)
+    out = ph.quantize_u8(probe)
+    assert list(out[0, :, 0]) == [0, 0, 128, 255, 255, 0], f"got {list(out[0, :, 0])}"
+
+
+def test_quantize_roundtrips_every_8bit_code():
+    codes = np.arange(256, dtype=np.float32) / 255.0
+    out = ph.quantize_u8(codes.reshape(1, 256, 1))
+    np.testing.assert_array_equal(out[0, :, 0], np.arange(256, dtype=np.uint8))
+
+
+def test_quantize_dither_is_seeded_and_bounded(grey_f32):
+    a = ph.quantize_u8(grey_f32, ph.QuantizeParams(ph.Dither.Tpdf, 5))
+    b = ph.quantize_u8(grey_f32, ph.QuantizeParams(ph.Dither.Tpdf, 5))
+    c = ph.quantize_u8(grey_f32, ph.QuantizeParams(ph.Dither.Tpdf, 6))
+    plain = ph.quantize_u8(grey_f32)
+    np.testing.assert_array_equal(a, b)
+    assert not np.array_equal(a, c)
+    assert np.abs(a.astype(int) - plain.astype(int)).max() <= 1
+
+
+def test_quantize_dither_breaks_banding():
+    ramp = ((60.0 + np.arange(512) / 511.0) / 255.0).astype(np.float32).reshape(1, 512, 1)
+    plain = ph.quantize_u8(ramp)
+    dithered = ph.quantize_u8(ramp, ph.QuantizeParams(ph.Dither.Tpdf, 3))
+    assert len(np.unique(plain)) <= 2
+    assert (np.diff(dithered[0, :, 0].astype(int)) != 0).sum() > 50
+
+
+def test_quantize_accepts_strided_input(rgb_f32):
+    view = rgb_f32[::2, ::3]
+    params = ph.QuantizeParams(ph.Dither.Tpdf, 11)
+    np.testing.assert_array_equal(
+        ph.quantize_u8(view, params), ph.quantize_u8(np.ascontiguousarray(view), params)
+    )
+
+
+def test_quantize_params_repr_and_eq():
+    a = ph.QuantizeParams(ph.Dither.Tpdf, 7)
+    assert a == ph.QuantizeParams(ph.Dither.Tpdf, 7)
+    assert a != ph.QuantizeParams(ph.Dither.Tpdf, 8)
+    assert "seed=7" in repr(a)
+    assert ph.QuantizeParams().seed == 0

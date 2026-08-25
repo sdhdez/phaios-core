@@ -8,6 +8,48 @@ The Rust crate and the Python wheel always carry the same version.
 
 ## [Unreleased] — 0.2.0-dev
 
+### Added — dithered quantisation, and the export contract
+
+`quantize_u8(img, QuantizeParams)` and `quantize_u16(...)` — the
+terminal stage, and the first kernels in the crate that return integers
+(`uint8` / `uint16`) rather than `float32`. Two monomorphic functions
+rather than one with a depth argument, so the returned dtype is a static
+property of the call.
+
+Optional triangular-PDF dither of ±1 LSB, which converts banding into
+fine noise: on a 256-pixel ramp spanning two 8-bit codes, undithered
+gives one hard transition and dithered gives 105, with the mean shifting
+by 0.008 of a code. Triangular specifically, not uniform — a uniform
+deviate decorrelates the error's mean but leaves its variance modulated
+by the signal (Lipshitz, Wannamaker and Vanderkooy, *JAES* 40(5), 1992).
+The unit tests assert the variance is 1/6 rather than 1/3 so the two
+cannot be silently interchanged.
+
+Dither defaults to off, and the deviate comes from `splitmix64` keyed on
+position, channel and an explicit `seed` — the same hash `film_grain`
+uses, and for the same reason: no global RNG, and the same bytes at any
+thread count. `Dither.Off` is named `Off` rather than `None` because
+`Dither.None` is a syntax error in Python.
+
+**Bit-exact across CPU and CUDA:** the dither is exact 64-bit integer
+arithmetic and the rounding is `floor(v + 0.5)` — an exact operation
+composed with a correctly-rounded one, rather than a library rounding
+routine host and device might implement differently.
+
+~5.9 ms undithered and ~10.2 ms dithered on a 24 MP frame (u8);
+~11.3 ms for u16.
+
+New: **`docs/export.md`**, the export contract. It states normatively
+what a finished phaios image is, so the layer that writes files has no
+image decisions left to make: untoned output is single-channel and MUST
+be written with greyscale photometric and a greyscale ICC profile whose
+tone curve matches `encode_srgb` (never three duplicated RGB channels);
+toned output is RGB/sRGB; 16-bit is the archival default; 8-bit MUST be
+dithered unless grain already serves that purpose; float containers
+should carry linear scene-referred data and skip both encoding and
+quantisation. The document is written to outlast the parked question of
+*where* file writing lives, since it constrains the output either way.
+
 ### Added — highlight roll-off
 
 `highlight_rolloff(img, RolloffParams)` — the explicit choice between
