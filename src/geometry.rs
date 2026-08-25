@@ -913,7 +913,8 @@ mod tests {
 
     #[test]
     fn catmull_upscale_interpolates_a_linear_ramp_exactly_inside() {
-        // Cubic convolution reproduces polynomials up to degree 3 —
+        // Keys' a = -0.5 cubic is third-order accurate: it reproduces
+        // polynomials up to degree 2 exactly (a cubic it does not) —
         // a linear ramp upscales to a linear ramp (interior pixels).
         let img = Array3::from_shape_fn((1, 8, 1), |(_, x, _)| x as f32);
         let out = resize(

@@ -219,6 +219,38 @@ def test_color_filter_bw_shape_dtype(rgb_f32):
     assert_valid_output(out, (H, W, 1))
 
 
+# The documented Wratten transmissions (src/bw.rs). Kept here as an
+# independent copy on purpose: a test that imported the table from the
+# code under test would pass however the table changed.
+FILTER_TRANSMISSIONS = {
+    "NoFilter": (1.00, 1.00, 1.00),
+    "Yellow8K2": (1.00, 0.90, 0.30),
+    "Orange21": (1.00, 0.55, 0.10),
+    "Red25A": (1.00, 0.10, 0.02),
+    "Green11X1": (0.20, 1.00, 0.30),
+    "Blue47C5": (0.10, 0.30, 1.00),
+}
+BT709 = (0.2126, 0.7152, 0.0722)
+
+
+@pytest.mark.parametrize("name", sorted(FILTER_TRANSMISSIONS))
+def test_color_filter_bw_transmission_values(name):
+    """Each preset must apply its own transmission table, not merely
+    return the right shape. Five of the six had no value-level coverage
+    anywhere before the v0.2 audit."""
+    transmission = FILTER_TRANSMISSIONS[name]
+    flt = getattr(ph.ColorFilter, name)
+
+    for channel in range(3):
+        pure = np.zeros((1, 1, 3), np.float32)
+        pure[0, 0, channel] = 1.0
+        got = float(ph.color_filter_bw(pure, flt)[0, 0, 0])
+        want = transmission[channel] * BT709[channel]
+        assert abs(got - want) < 1e-6, (
+            f"{name} on pure channel {channel}: got {got}, want {want}"
+        )
+
+
 def test_color_filter_bw_all_presets(rgb_f32):
     for flt in (
         ph.ColorFilter.NoFilter,
@@ -683,12 +715,45 @@ def test_all_kernels_accept_any_layout(label, rgb_f32, grey_f32):
         assert out.flags["C_CONTIGUOUS"], "output must be C-contiguous"
 
     for out in (
+        ph.hsl_bw(rgb, ph.HslWeightedParams([0.2] * 8)),
+    ):
+        assert out.shape == rgb.shape[:2] + (1,)
+        assert out.flags["C_CONTIGUOUS"], "output must be C-contiguous"
+
+    # Same-shape kernels, RGB and luminance alike.
+    for out in (
         ph.zone_system(grey, ph.ZoneParams({5: 0.5})),
         ph.local_contrast(grey, ph.GuidedFilterParams(4, 0.01), 0.5),
         ph.encode_srgb(grey),
+        ph.exposure(grey, 0.5),
+        ph.tone_curve(grey, ph.ToneCurveParams(1.2, 0.0, 1.0)),
+        ph.vignette(grey, ph.VignetteParams(0.4, 0.7)),
+        ph.film_grain(grey, ph.GrainParams(0.2, 2.0, 99)),
+        ph.orient(grey, ph.Orientation.Rotate180),
     ):
         assert out.shape == grey.shape
         assert out.flags["C_CONTIGUOUS"], "output must be C-contiguous"
+
+    # split_toning is the one kernel that grows a channel.
+    toned = ph.split_toning(grey, ph.SplitToningParams([0.0, -0.02, -0.04], [0.0, 0.03, 0.03]))
+    assert toned.shape == grey.shape[:2] + (3,)
+    assert toned.flags["C_CONTIGUOUS"], "output must be C-contiguous"
+
+    # Geometry kernels change the shape by construction, so they assert
+    # the contract rather than shape preservation: no panic, C-contiguous
+    # out, and the dimensions the parameters ask for.
+    gh, gw = grey.shape[:2]
+    cropped = ph.crop(grey, ph.CropParams(0, 0, max(gw // 2, 1), max(gh // 2, 1)))
+    assert cropped.shape == (max(gh // 2, 1), max(gw // 2, 1), 1)
+    assert cropped.flags["C_CONTIGUOUS"]
+
+    resized = ph.resize(grey, ph.ResizeParams(7, 5, ph.ResizeFilter.Area))
+    assert resized.shape == (5, 7, 1)
+    assert resized.flags["C_CONTIGUOUS"]
+
+    straightened = ph.straighten(grey, ph.StraightenParams(3.0))
+    assert straightened.ndim == 3 and straightened.shape[2] == 1
+    assert straightened.flags["C_CONTIGUOUS"]
 
 
 def test_resampling_is_layout_agnostic(rgb_f32):

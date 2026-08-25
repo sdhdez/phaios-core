@@ -287,6 +287,8 @@ fn luminance_bw(
 
 /// Arbitrary-weight channel mixer on the GPU. Mirrors
 /// ``phaios_core.channel_mixer_bw``; bit-exact.
+///
+/// Collapses ``(H, W, 3)`` to ``(H, W, 1)``.
 #[pyfunction]
 fn channel_mixer_bw(
     py: Python<'_>,
@@ -301,6 +303,8 @@ fn channel_mixer_bw(
 
 /// Wratten-style colour-filter conversion on the GPU. Mirrors
 /// ``phaios_core.color_filter_bw``; bit-exact.
+///
+/// Collapses ``(H, W, 3)`` to ``(H, W, 1)``.
 #[pyfunction]
 #[pyo3(signature = (img, filter = crate::bw::ColorFilter::NoFilter, standard = crate::bw::LuminanceStandard::Bt709))]
 fn color_filter_bw(
@@ -316,6 +320,8 @@ fn color_filter_bw(
 
 /// HSL-weighted B&W conversion on the GPU. Mirrors
 /// ``phaios_core.hsl_bw``; agreement bounded by ``expf``.
+///
+/// Collapses ``(H, W, 3)`` to ``(H, W, 1)``.
 #[pyfunction]
 fn hsl_bw(
     py: Python<'_>,
@@ -418,9 +424,36 @@ fn straighten(
     Ok(GpuImage { inner: result })
 }
 
+/// Docstring for the Python-visible `phaios_core.gpu` module.
+const GPU_MODULE_DOC: &str = "\
+CUDA backend for phaios-core (built with `--features cuda`).
+
+Every kernel in the parent module appears here a second time, operating
+on a device-resident ``GpuImage`` instead of a numpy array, so a
+pipeline uploads once and downloads once rather than round-tripping
+per stage::
+
+    ctx = gpu.GpuContext(0)
+    img = gpu.GpuImage(ctx, array)
+    img = gpu.exposure(img, 0.5)
+    img = gpu.luminance_bw(img)
+    out = img.to_numpy()
+
+The context is explicit: there is no global device state, and a context
+the caller drops releases its device memory. Determinism is promised
+per backend — bit-identical within a backend, bounded across — and
+kernels free of transcendentals are bit-exact against the CPU as well.
+See docs/ffi.md section 6.
+
+Call ``available()`` before constructing a context; ``devices()`` lists
+what is present.";
+
 /// Register the `gpu` submodule on `phaios_core`.
 pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     let gpu = PyModule::new(py, "gpu")?;
+    // Without this the submodule's //! documentation never reaches Python
+    // and `help(phaios_core.gpu)` shows nothing.
+    gpu.add("__doc__", GPU_MODULE_DOC)?;
     gpu.add_class::<GpuInfo>()?;
     gpu.add_class::<GpuContext>()?;
     gpu.add_class::<GpuImage>()?;

@@ -46,10 +46,14 @@ pipeline:
 | `tone_curve` | any | same | element-wise |
 | `encode_srgb` | any | same | element-wise |
 
-A kernel given the wrong channel count raises `ValueError`. The four
-that accept "any" do so deliberately: they run either side of
-`split_toning`, and a pipeline should not have to branch on whether
-toning is enabled.
+A kernel given the wrong channel count raises `ValueError`. The eight
+that accept "any" do so for two distinct reasons. The four geometry
+kernels (`crop`, `orient`, `straighten`, `resize`) are channel-agnostic
+by nature — they move pixels without looking inside them, and they run
+first, before the pipeline has decided anything about colour. The other
+four (`exposure`, `vignette`, `tone_curve`, `encode_srgb`) run either
+side of `split_toning`, so a pipeline need not branch on whether toning
+is enabled.
 
 **Size.** H and W are unconstrained. Zero-size arrays are accepted and
 return an empty array of the same shape; treating "no pixels" as an
@@ -201,9 +205,10 @@ rule this leaves:
 - `expect` is acceptable only for invariants the kernel itself
   establishes (a freshly allocated array having the shape it was just
   allocated with), and must be documented on the function.
-- Test the boundary, not just the happy path: `tests/ffi.py` calls every
-  kernel with C-contiguous, row-strided, column-strided, Fortran-order
-  and reversed inputs.
+- Test the boundary, not just the happy path: `tests/ffi.py` runs every
+  public kernel through a five-layout matrix — C-contiguous,
+  row-strided, column-strided, Fortran-order and reversed — because a
+  consumer passing `img[::2, ::2]` is normal usage, not misuse.
 
 ---
 

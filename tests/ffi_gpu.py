@@ -232,3 +232,92 @@ def test_fingerprint_is_stable_across_contexts():
     a = gpu.GpuContext()
     b = gpu.GpuContext()
     assert a.fingerprint == b.fingerprint
+
+
+# ── Bindings with no Python smoke coverage before the v0.2 audit ──────────────
+#
+# Six of the twenty functions registered on phaios_core.gpu were never
+# called from Python: the four geometry kernels and two of the B&W
+# conversions. Their binding code — signature, param conversion, and in
+# orient's case the H/W swap on a resident image — was reachable only
+# through Rust. These tests exercise each once and check it against the
+# CPU kernel, which is the specification.
+
+
+@needs_device
+def test_gpu_crop_matches_cpu(ctx):
+    rng = np.random.default_rng(11)
+    img = rng.random((23, 31, 3)).astype(np.float32)
+    params = ph.CropParams(4, 6, 12, 9)
+    got = gpu.crop(ctx.upload(img), params).download()
+    np.testing.assert_array_equal(got, ph.crop(img, params))
+    assert got.shape == (9, 12, 3)
+
+
+@needs_device
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Normal",
+        "FlipHorizontal",
+        "Rotate180",
+        "FlipVertical",
+        "Transpose",
+        "Rotate90",
+        "Transverse",
+        "Rotate270",
+    ],
+)
+def test_gpu_orient_matches_cpu(ctx, name):
+    """All eight transforms, including the four that swap H and W on the
+    resident image — the case the binding has to get right."""
+    rng = np.random.default_rng(12)
+    img = rng.random((7, 11, 3)).astype(np.float32)
+    orientation = getattr(ph.Orientation, name)
+    got = gpu.orient(ctx.upload(img), orientation).download()
+    want = ph.orient(img, orientation)
+    np.testing.assert_array_equal(got, want)
+    assert got.shape == want.shape
+
+
+@needs_device
+@pytest.mark.parametrize("filter_name", ["Area", "Bilinear", "CatmullRom"])
+def test_gpu_resize_matches_cpu(ctx, filter_name):
+    rng = np.random.default_rng(13)
+    img = rng.random((19, 27, 3)).astype(np.float32)
+    params = ph.ResizeParams(13, 9, getattr(ph.ResizeFilter, filter_name))
+    got = gpu.resize(ctx.upload(img), params).download()
+    np.testing.assert_array_equal(got, ph.resize(img, params))
+    assert got.shape == (9, 13, 3)
+
+
+@needs_device
+def test_gpu_straighten_matches_cpu(ctx):
+    rng = np.random.default_rng(14)
+    img = rng.random((21, 29, 3)).astype(np.float32)
+    params = ph.StraightenParams(7.5)
+    got = gpu.straighten(ctx.upload(img), params).download()
+    np.testing.assert_array_equal(got, ph.straighten(img, params))
+
+
+@needs_device
+def test_gpu_channel_mixer_matches_cpu(ctx):
+    rng = np.random.default_rng(15)
+    img = rng.random((12, 16, 3)).astype(np.float32)
+    got = gpu.channel_mixer_bw(ctx.upload(img), 0.4, -0.3, 1.1).download()
+    np.testing.assert_array_equal(got, ph.channel_mixer_bw(img, 0.4, -0.3, 1.1))
+    assert got.shape == (12, 16, 1)
+
+
+@needs_device
+@pytest.mark.parametrize(
+    "preset",
+    ["NoFilter", "Yellow8K2", "Orange21", "Red25A", "Green11X1", "Blue47C5"],
+)
+def test_gpu_color_filter_matches_cpu(ctx, preset):
+    rng = np.random.default_rng(16)
+    img = rng.random((12, 16, 3)).astype(np.float32)
+    flt = getattr(ph.ColorFilter, preset)
+    got = gpu.color_filter_bw(ctx.upload(img), flt).download()
+    np.testing.assert_array_equal(got, ph.color_filter_bw(img, flt))
+    assert got.shape == (12, 16, 1)

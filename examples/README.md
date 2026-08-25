@@ -13,9 +13,9 @@ viewer on Linux/macOS and is supported by most image tools on Windows.
 # Build and run a single example
 cargo run --example 01_luminance
 
-# Run all examples
-for n in 01 02 03 04 05 06; do
-    cargo run --example ${n}_*
+# Run all examples (the CPU ones; 15_gpu_exposure needs --features cuda)
+for f in examples/[0-9]*.rs; do
+    cargo run --example "$(basename "${f%.rs}")"
 done
 ```
 

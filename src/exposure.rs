@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Exposure compensation.
 //!
-//! Multiplies every value by `2^stops`. This is the first stage of the
-//! pipeline after the consumer delivers scene-referred linear f32 data,
-//! and the only kernel that is meaningful on both RGB and luminance
-//! input.
+//! Multiplies every value by `2^stops`. This opens the *look* pipeline —
+//! the geometry kernels (`orient`, `straighten`, `crop`, `resize`) run
+//! before it, on the delivered scene-referred linear f32 data — and it is
+//! the only kernel meaningful on both RGB and luminance input.
 //!
 //! In linear scene-referred data a stop *is* a factor of two — that is
 //! what makes the operation a single multiply. Applying it after a
@@ -24,18 +24,6 @@ use ndarray::{Array3, ArrayView3};
 
 use crate::error::PhaiosError;
 
-/// Apply exposure compensation of `stops` EV.
-///
-/// Computes `out = in · 2^stops`. Positive values brighten, negative
-/// values darken; `0.0` is the identity.
-///
-/// Input shape: `(H, W, C)` for any channel count, in any memory
-/// layout. Output shape: `(H, W, C)`, freshly allocated and
-/// C-contiguous.
-///
-/// Order-sensitive: this is the *first* pipeline stage, operating on
-/// linear scene-referred data. See the module documentation.
-///
 /// Validate `stops`. Shared verbatim by the CPU kernel below and the
 /// CUDA kernel in [`crate::cuda`], so both backends reject exactly the
 /// same inputs with exactly the same message.
@@ -48,6 +36,23 @@ pub(crate) fn validate(stops: f32) -> Result<(), PhaiosError> {
     Ok(())
 }
 
+/// Apply exposure compensation of `stops` EV.
+///
+/// Computes `out = in · 2^stops`. Positive values brighten, negative
+/// values darken; `0.0` is the identity.
+///
+/// Input shape: `(H, W, C)` for any channel count, in any memory
+/// layout. Output shape: `(H, W, C)`, freshly allocated and
+/// C-contiguous.
+///
+/// Order-sensitive: this opens the look pipeline, operating on linear
+/// scene-referred data — after the geometry kernels, before B&W
+/// conversion. Applying it after a transfer function would not be
+/// exposure. See the module documentation.
+///
+/// Values above 1.0 are preserved, not clipped: highlight headroom is
+/// the caller's to spend downstream.
+///
 /// # Errors
 /// Returns [`PhaiosError::Parameter`] if `stops` is not finite.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]

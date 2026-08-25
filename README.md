@@ -16,6 +16,11 @@ A Rust crate with PyO3 bindings (`phaios_core` Python module). Pure
 functions on `f32` linear scene-referred `(H, W, C)` arrays — no I/O,
 no GUI, no hidden state. Any front-end can build on it.
 
+An **optional CUDA backend** (`--features cuda`) runs every kernel on an
+NVIDIA GPU through a second, device-resident API. It is strictly
+additive: without the feature nothing changes, and no CUDA toolkit is
+needed to build or use the crate.
+
 ### Kernels
 
 In pipeline order. Every kernel takes any array layout and returns a
@@ -40,6 +45,29 @@ freshly allocated C-contiguous array.
 | `tone_curve` | Parametric slope/offset/power curve (ASC CDL) | v0.2 |
 | `encode_srgb` | IEC 61966-2-1 sRGB transfer encoding (terminal stage) | v0.1 |
 
+### GPU backend (optional)
+
+Build with `--features cuda` (needs the CUDA toolkit at build time and a
+driver at run time) and the module gains a `phaios_core.gpu` submodule:
+
+```python
+import numpy as np, phaios_core as ph
+from phaios_core import gpu
+
+ctx = gpu.GpuContext(0)              # explicit — no global device state
+img = gpu.GpuImage(ctx, array)       # upload once
+img = gpu.exposure(img, 0.5)         # chain on-device, no round trips
+img = gpu.luminance_bw(img)
+out = img.to_numpy()                 # download once
+```
+
+Determinism is promised **per backend**: bit-identical output within a
+backend at any thread count or launch geometry, and bounded across them.
+Kernels free of transcendentals — including all four geometry kernels —
+are bit-exact across CPU and GPU as well; `tests/cuda_conformance.rs`
+asserts this with `assert_eq!` and skips cleanly when no device is
+present. See [docs/ffi.md](docs/ffi.md) §6 for the exact contract.
+
 ### Not in scope
 
 Pixel-level local adjustment (masks, U-Point-style edit propagation) and
@@ -54,6 +82,11 @@ anything with a user interface belong to consumers, permanently.
 - **Rust** stable toolchain (`rustup default stable`)
 - **Python** 3.12 or later (3.13 recommended for performance)
 - **maturin** (installed via requirements-dev.txt)
+- *Optional, for `--features cuda`:* the CUDA toolkit (`nvcc`, which
+  compiles the kernels to PTX at build time) and an NVIDIA driver. The
+  driver library is loaded dynamically, so a CUDA-enabled build still
+  runs on a machine without a GPU — it reports no devices rather than
+  failing to load.
 
 ## Quick start
 

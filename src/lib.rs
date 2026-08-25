@@ -221,8 +221,8 @@ pub fn straighten(
 /// Parameters
 /// ----------
 /// img : numpy.ndarray
-///     Input array, shape ``(H, W, 3)``, dtype ``float32``, C-contiguous,
-///     scene-referred linear sRGB values.
+///     Input array, shape ``(H, W, 3)``, dtype ``float32``, any memory
+///     layout, scene-referred linear sRGB values.
 /// standard : LuminanceStandard, optional
 ///     Which ITU-R standard to use. Default: ``LuminanceStandard.Bt709``.
 ///
@@ -252,7 +252,7 @@ pub fn luminance_bw(
 /// Parameters
 /// ----------
 /// img : numpy.ndarray
-///     Input array, shape ``(H, W, 3)``, dtype ``float32``, C-contiguous.
+///     Input array, shape ``(H, W, 3)``, dtype ``float32``, any memory layout.
 /// wr, wg, wb : float
 ///     Per-channel weights. Range −2..+2 is conventional; negative weights
 ///     produce infrared-like inversions. Weights need not sum to one.
@@ -287,7 +287,7 @@ pub fn channel_mixer_bw(
 /// Parameters
 /// ----------
 /// img : numpy.ndarray
-///     Input array, shape ``(H, W, 3)``, dtype ``float32``, C-contiguous.
+///     Input array, shape ``(H, W, 3)``, dtype ``float32``, any memory layout.
 /// filter : ColorFilter, optional
 ///     Wratten-style preset. Default: ``ColorFilter.NoFilter``.
 /// standard : LuminanceStandard, optional
@@ -437,7 +437,7 @@ pub fn tone_curve(
 /// Parameters
 /// ----------
 /// img : numpy.ndarray
-///     Input array, shape ``(H, W, 1)``, dtype ``float32``, C-contiguous.
+///     Input array, shape ``(H, W, 1)``, dtype ``float32``, any memory layout.
 /// params : GuidedFilterParams
 ///     Filter radius and epsilon regularisation term.
 /// strength : float
@@ -635,6 +635,15 @@ pub fn encode_srgb(py: Python<'_>, img: PyReadonlyArray3<f32>) -> PyResult<Py<Py
 /// arrays are `numpy.float32`, C-contiguous, shape `(H, W, C)`.
 #[pymodule]
 fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // The version this extension was compiled from, so a consumer can
+    // introspect what it imported without importlib.metadata (which
+    // reports the installed *distribution*, not necessarily this binary).
+    // This is the raw Cargo/pyproject string, which CI keeps identical
+    // between the two files; note that a pre-release such as "0.2.0-dev"
+    // is normalised by maturin to "0.2.0.dev0" (PEP 440) on the wheel, so
+    // the two spellings differ before a final release and agree after.
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+
     // Enum types
     m.add_class::<bw::LuminanceStandard>()?;
     m.add_class::<bw::ColorFilter>()?;

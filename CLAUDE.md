@@ -19,7 +19,13 @@ encoding.
 **v0.2 (implemented, unreleased):** exposure compensation, HSL-weighted
 B&W (8 hue bands), procedural film grain (explicit seed, no RNG
 dependency), split-toning in OKLab, radial vignette, parametric tone
-curve (ASC CDL).
+curve (ASC CDL); the four geometry kernels — `crop`, `orient` (the eight
+Exif transforms), `straighten` (±45° with an inscribed-rectangle crop)
+and `resize` (area / bilinear / Catmull-Rom); and an **optional CUDA
+backend** behind `--features cuda`, exposing every kernel a second time
+through the `phaios_core.gpu` submodule with a device-resident image
+type. The GPU backend is strictly additive: the CPU build is unchanged
+and needs no CUDA toolkit.
 
 All as pure functions on `f32` `(H, W, C)` arrays: any input layout,
 always a C-contiguous result.
@@ -102,6 +108,8 @@ belongs in a consumer.
 ```
 RAW (consumer's problem)
   → linear scene-referred f32 RGB     (H, W, 3)   ← input to kernels
+  → orient → straighten → crop → resize            ← kernels (geometry,
+                                                     in that order)
   → exposure                                       ← kernel
   → B&W conversion (four methods)     → (H, W, 1) ← kernel
   → zone system                                    ← kernel
@@ -257,9 +265,13 @@ just as happily on a kernel that returns its input.
   decision.
 
 Current core deps (do not exceed without justification): `pyo3`,
-`numpy`, `ndarray`, `rayon`, `thiserror`. v0.2 will add `rand`,
-`rand_distr` for the film grain kernel. `log` was dropped in v0.2-dev:
-it was declared but never used.
+`numpy`, `ndarray`, `rayon`, `thiserror`, plus `cudarc` — **optional**,
+pulled in only by `--features cuda` — for the GPU backend. `log` was
+dropped in v0.2-dev: it was declared but never used. `rand` and
+`rand_distr` were considered for film grain and **rejected**: the
+shipped kernel hashes pixel coordinates with splitmix64, which is
+reproducible across thread counts and portable to the GPU bit-for-bit,
+neither of which a stateful RNG can promise.
 
 Kernels reach rayon through `ndarray::Zip::par_for_each` and
 `ndarray::parallel::prelude`, both enabled by ndarray's `rayon`
@@ -327,7 +339,11 @@ Conventions:
   demonstrates and what to look for in the output.
 
 When adding a new kernel, add a new example for it. CI runs every
-example as part of the test suite.
+example as part of the test suite — except those declaring
+`required-features`, which discovery skips because the hosted runner has
+neither a CUDA toolkit nor a device. `15_gpu_exposure` is the only one
+today, and it is therefore the maintainer's job to run it locally
+before a release.
 
 The interactive counterpart lives in `tools/kernel-viewer/` — a
 standalone GUI (eframe/egui) with live sliders for every kernel, RAW/DNG

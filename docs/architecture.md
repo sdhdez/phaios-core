@@ -339,11 +339,11 @@ Eleven zones (Roman numerals 0..=10):
 
 | Zone | Description | Linear value |
 |------|-------------|-------------|
-| 0 | Maximum black | ≈ 0.003 |
-| I | Near-black detail threshold | ≈ 0.006 |
-| II | First textured shadow | ≈ 0.012 |
-| III | Dark shadow, full texture | ≈ 0.024 |
-| IV | Dark skin, foliage, shadow detail | ≈ 0.048 |
+| 0 | Maximum black | ≈ 0.0056 |
+| I | Near-black detail threshold | ≈ 0.0113 |
+| II | First textured shadow | ≈ 0.0225 |
+| III | Dark shadow, full texture | ≈ 0.045 |
+| IV | Dark skin, foliage, shadow detail | ≈ 0.09 |
 | V | Middle grey, clear sky | **0.18** |
 | VI | Light skin, light concrete | ≈ 0.36 |
 | VII | Light grey, highlights with texture | ≈ 0.72 |
@@ -628,8 +628,11 @@ characteristic scale, so it vanishes when the image is downsampled and
 turns to mush when it is enlarged. Real grain clumps.
 
 The band-pass is a difference of two box filters over the same noise
-field, with radii `floor(size/2)` and `round(size)`, the inner capped
-one below the outer. The energy that survives is concentrated around
+field, with radii `floor(size/2)` and `round(max(size, 1))`, the inner
+capped one below the outer. The `max(size, 1)` matters: `size_pixels`
+only has to be positive, and a sub-half-pixel size would otherwise round
+to an outer radius of 0. Grain finer than a pixel cannot be resolved and
+behaves as one pixel. The energy that survives is concentrated around
 `size_pixels`.
 
 Both filters read one summed-area table (§8), so the cost is independent
@@ -829,8 +832,7 @@ in very dark values and cause quantisation banding when encoding to
 
 ### Implementation note
 
-The kernel is applied element-wise. For vectorised execution, avoid
-branching per element:
+The kernel is applied element-wise, one branch at the threshold:
 
 ```rust
 let encoded = if x <= 0.0031308_f32 {
@@ -840,8 +842,11 @@ let encoded = if x <= 0.0031308_f32 {
 };
 ```
 
-`rayon::par_iter` is appropriate for the pixel loop given that
-`f32::powf` is the dominant cost.
+The branch is worth keeping rather than flattening into a branchless
+blend: it is perfectly predicted over the long runs of same-side pixels
+a photograph produces, and `f32::powf` dominates the cost either way.
+The pixel loop is parallelised with `ndarray::Zip::par_for_each`, which
+walks any input layout — see §2's layout rule.
 
 ---
 
@@ -879,7 +884,7 @@ Machine: AMD Ryzen 9 9950X 16-Core (32 threads), Linux, `cargo bench`
 
 `local_contrast` remains SAT-dominated: four prefix-sum passes each
 touch every pixel once, setting a memory-bandwidth floor of roughly
-200 MB per f64 table. Making those passes parallel (§5) took the kernel
+200 MB per f64 table. Making those passes parallel (§8) took the kernel
 from 452 ms to 178 ms, and peak scratch from 1.3 GB to ~600 MB. Runtime
 is independent of radius, as the O(1) formulation requires: r = 32
 measures the same 178 ms as r = 8.
@@ -942,7 +947,7 @@ makes a same-size resize the *exact* identity. Filters:
 |---|---|---|
 | `Area` | downscale | exact fractional pixel coverage — true area averaging at any ratio (degenerates to nearest when upscaling) |
 | `Bilinear` | cheap | triangle, radius 1 (scaled under minification) |
-| `CatmullRom` | upscale | Keys 1981 cubic, a = −0.5, radius 2 — reproduces cubics, so a linear ramp upscales exactly |
+| `CatmullRom` | upscale | Keys 1981 cubic, a = −0.5, radius 2 — third-order accurate, so it reproduces polynomials up to *quadratic* exactly (a linear ramp upscales exactly; a cubic does not — f(x) = x³ interpolates to t − 3t² + 3t³ between samples) |
 
 A constant image survives to ~1 ULP (weighted sum and weight sum round
 separately before the normalising division); tap coordinates clamp to

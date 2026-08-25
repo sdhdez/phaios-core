@@ -146,12 +146,16 @@ fn hsl_blue_weight_is_selective() {
 /// invisible in a symmetric test.
 #[test]
 fn hsl_band_order_is_red_first_magenta_last() {
+    // Bands 1 and 6 were absent until the v0.2 audit: swapping the orange
+    // and purple centres (or their weight slots) passed the whole suite.
     let cases = [
         (0, rgb(1.0, 0.0, 0.0)), // red, 0°
+        (1, rgb(1.0, 0.5, 0.0)), // orange, 30°
         (2, rgb(1.0, 1.0, 0.0)), // yellow, 60°
         (3, rgb(0.0, 1.0, 0.0)), // green, 120°
         (4, rgb(0.0, 1.0, 1.0)), // aqua, 180°
         (5, rgb(0.0, 0.0, 1.0)), // blue, 240°
+        (6, rgb(0.5, 0.0, 1.0)), // purple, 270°
         (7, rgb(1.0, 0.0, 1.0)), // magenta, 300°
     ];
     for (band, img) in cases {
@@ -466,14 +470,52 @@ fn srgb_monotonic() {
     }
 }
 
-/// Both branches of the sRGB piecewise function must agree at the threshold.
+/// The sRGB transfer is C⁰ at the threshold but **not** C¹: the two
+/// branches meet in value and part in slope (12.920 below, 12.703 above).
+/// Both halves are asserted through the kernel — the previous version of
+/// this test evaluated the two branch formulas and compared them to each
+/// other, so it passed with `encode_srgb` deleted.
 #[test]
-fn srgb_c1_continuous() {
-    let threshold = 0.0031308_f32;
-    let linear = 12.92 * threshold;
-    let power = 1.055 * threshold.powf(1.0 / 2.4) - 0.055;
+fn srgb_is_c0_but_not_c1_at_the_threshold() {
+    let t = 0.0031308_f32;
+    let at = |x: f32| encode_srgb(array![[[x]]].view()).unwrap()[[0, 0, 0]];
+
+    // C⁰: the kernel's value at the threshold satisfies *both* branch
+    // formulas, which is what continuity there means.
+    let linear = 12.92 * t;
+    let power = 1.055 * t.powf(1.0 / 2.4) - 0.055;
+    let v = at(t);
     assert!(
-        (linear - power).abs() < 1e-5,
-        "C¹ discontinuity at threshold: linear={linear:.8}, power={power:.8}"
+        (v - linear).abs() < 1e-6 && (v - power).abs() < 1e-6,
+        "not continuous at the threshold: kernel={v:.9}, linear={linear:.9}, power={power:.9}"
     );
+
+    // Not C¹: one-sided slopes, measured on the kernel, differ by ~1.8%.
+    let h = 1e-5_f32;
+    let slope_below = (at(t) - at(t - h)) / h;
+    let slope_above = (at(t + h) - at(t)) / h;
+    assert!(
+        (slope_below - 12.92).abs() < 0.05,
+        "slope below the threshold should be 12.92, measured {slope_below:.4}"
+    );
+    assert!(
+        slope_above < slope_below * 0.995,
+        "the transfer is not C¹ — the slope must drop across the threshold, \
+         measured {slope_below:.4} below and {slope_above:.4} above"
+    );
+}
+
+/// `channel_mixer_bw` documents negative weights as an infrared-like
+/// inversion, and nothing pinned it: a regression clamping the output to
+/// zero (as `hsl_bw` legitimately does) passed every CPU test.
+#[test]
+fn channel_mixer_negative_weights_subtract() {
+    let img = rgb(0.2, 0.6, 0.4);
+    let out = channel_mixer_bw(img.view(), [1.0, -1.0, 0.5]).unwrap()[[0, 0, 0]];
+    let expect = 0.2 - 0.6 + 0.5 * 0.4;
+    assert!(
+        (out - expect).abs() < 1e-6,
+        "weights must apply verbatim, including negatives: got {out}, want {expect}"
+    );
+    assert!(out < 0.0, "this combination is genuinely negative: {out}");
 }

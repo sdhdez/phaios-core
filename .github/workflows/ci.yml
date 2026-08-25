@@ -40,6 +40,22 @@ jobs:
       - name: cargo test
         run: cargo test
 
+      # CLAUDE.md §2: kernels are pure functions and the CUDA backend holds
+      # no implicit state — the device, stream and module cache live in a
+      # Context the caller constructs and passes. Comment lines are stripped
+      # before matching: context.rs documents the rule by naming the very
+      # constructs it forbids ("There is no singleton, no `OnceLock`...").
+      - name: No implicit state in the CUDA backend
+        run: |
+          HITS=$(grep -rnE 'static mut|OnceLock|OnceCell|lazy_static!|thread_local!' src/cuda/ \
+                 | grep -vE '^[^:]*:[0-9]+: *(//|/\*|\*)' || true)
+          if [ -n "$HITS" ]; then
+            echo "Forbidden implicit state in src/cuda/:"
+            echo "$HITS"
+            exit 1
+          fi
+          echo "src/cuda/ is free of implicit state ✓"
+
       - name: cargo audit
         uses: rustsec/audit-check@v1
         with:
