@@ -55,6 +55,16 @@ four (`exposure`, `vignette`, `tone_curve`, `encode_srgb`) run either
 side of `split_toning`, so a pipeline need not branch on whether toning
 is enabled.
 
+**Non-finite pixel values.** Kernels validate their *parameters*, never
+their pixels: NaN and ±∞ pass through the maths rather than raising. What
+they produce is not specified value-by-value, but it is guaranteed to be
+the *same* on every backend — the CPU and CUDA implementations agree
+bit-for-bit (or NaN-for-NaN) on non-finite input, asserted by
+`non_finite_pixels_agree_across_backends` in `tests/cuda_conformance.rs`.
+Consumers decoding real RAW data will never see these; the guarantee
+exists so that a pathological pixel cannot make two backends disagree
+about an entire image.
+
 **Size.** H and W are unconstrained. Zero-size arrays are accepted and
 return an empty array of the same shape; treating "no pixels" as an
 error would push a special case onto every caller. **Exception:** the

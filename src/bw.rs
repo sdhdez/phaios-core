@@ -333,9 +333,16 @@ fn hue_and_chroma_ratio(r: f32, g: f32, b: f32) -> (f32, f32) {
     let min = r.min(g).min(b);
     let delta = max - min;
 
-    if delta <= 0.0 || max <= 0.0 {
-        // Neutral (or black): hue is undefined, and a zero chroma ratio
-        // means the caller's weights have no effect anyway.
+    // Written as a positive test on purpose. The complement form
+    // (`if delta <= 0.0 || max <= 0.0 { return }`) is equivalent for every
+    // finite input, but a NaN delta — which an all-infinite pixel produces,
+    // since inf - inf is NaN — fails *both* comparisons and so falls
+    // through into the hue branch, poisoning the result. The CUDA kernel
+    // always used the positive form, and the two backends therefore
+    // disagreed on non-finite pixels (audit finding: CPU 0.0, GPU inf).
+    if !(delta > 0.0 && max > 0.0) {
+        // Neutral, black, or non-finite: hue is undefined, and a zero
+        // chroma ratio means the caller's weights have no effect anyway.
         return (0.0, 0.0);
     }
 

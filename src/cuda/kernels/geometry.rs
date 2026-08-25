@@ -108,16 +108,29 @@ pub fn resize_device(img: &DeviceImage, params: &ResizeParams) -> Result<DeviceI
     let (in_h, in_w, c) = img.shape();
     crate::geometry::validate_resize(&[in_h, in_w, c], params)?;
     let (out_w, out_h) = (params.width as usize, params.height as usize);
-    // grid_1d takes a u32 element count; a caller-controlled target
-    // large enough to overflow it would silently launch too few blocks
-    // and return uninitialised memory (review finding). Today the
-    // preceding allocation would fail on any real card first, but the
-    // guard makes the failure explicit and permanent.
+    // Two distinct overflow guards, both on caller-controlled sizes.
+    //
+    // Element counts: grid_1d takes a u32, and a target large enough to
+    // overflow it would silently launch too few blocks and return
+    // uninitialised memory.
     for n in [in_h * out_w * c, out_h * out_w * c] {
         if n > u32::MAX as usize {
             return Err(PhaiosError::Parameter(format!(
-                "resize target {}x{} exceeds the CUDA backend's element                  limit",
+                "resize target {}x{} exceeds the CUDA backend's element limit",
                 params.width, params.height
+            )));
+        }
+    }
+    // Individual extents: resample_kernel takes them as `int`, so a
+    // dimension of 2^31 or more wraps negative on narrowing, the kernel's
+    // element count goes negative, every thread returns early, and the
+    // caller receives an allocated-but-never-written buffer. The element
+    // guard above does not cover this — a 2^31 x 1 target passes it.
+    for extent in [in_h, in_w, out_h, out_w, c] {
+        if extent > i32::MAX as usize {
+            return Err(PhaiosError::Parameter(format!(
+                "resize extent {extent} exceeds the CUDA backend's per-axis limit of {}",
+                i32::MAX
             )));
         }
     }

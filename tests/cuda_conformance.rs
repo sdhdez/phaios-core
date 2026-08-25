@@ -756,3 +756,37 @@ fn bad_ordinal_is_a_backend_error() {
         "expected Backend error, got: {err:?}"
     );
 }
+
+/// Non-finite pixels must not split the backends. An all-infinite pixel
+/// makes `delta = inf - inf = NaN`, which fails every comparison; the CPU
+/// guard used to be written as a negative test and fell through into the
+/// hue branch, so CPU returned 0.0 where CUDA returned inf. Found by an
+/// empirical CPU/GPU sweep over degenerate inputs, not by this suite —
+/// which is why the sweep's cases now live here.
+#[test]
+fn non_finite_pixels_agree_across_backends() {
+    let Some(ctx) = try_context() else { return };
+    let params = phaios_core::bw::HslWeightedParams::new(
+        [0.2; 8],
+        phaios_core::bw::LuminanceStandard::Bt709,
+        30.0,
+    );
+
+    for pixel in [
+        [f32::INFINITY, f32::INFINITY, f32::INFINITY],
+        [f32::INFINITY, 1.0, 1.0],
+        [f32::NAN, f32::NAN, f32::NAN],
+        [f32::NAN, 0.5, 0.25],
+        [f32::NEG_INFINITY, 0.5, 0.25],
+        [f32::INFINITY, f32::NEG_INFINITY, 0.0],
+    ] {
+        let img = ndarray::array![[[pixel[0], pixel[1], pixel[2]]]];
+        let cpu = phaios_core::bw::hsl_bw(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::hsl_bw(&ctx, img.view(), &params).unwrap();
+        let (c, g) = (cpu[[0, 0, 0]], gpu[[0, 0, 0]]);
+        assert!(
+            c.to_bits() == g.to_bits() || (c.is_nan() && g.is_nan()),
+            "hsl_bw diverges on {pixel:?}: cpu={c}, gpu={g}"
+        );
+    }
+}
