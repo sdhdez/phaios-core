@@ -37,3 +37,12 @@ criterion/
 # image assets — CLAUDE.md §1/§8)
 tools/kernel-viewer/target/
 tools/kernel-viewer/testdata/
+
+# Local working documents and editor/tool config. These live in the
+# working tree but are never part of the crate, and must not be picked up
+# by a `git add -A`. Cargo.toml's `exclude` keeps them out of the package
+# as well, in case one is ever tracked deliberately.
+02-phaios-bootstrap.md
+03-phase3-prompt.md
+phase2-design-brief.md
+.claude/
