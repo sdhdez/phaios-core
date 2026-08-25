@@ -519,3 +519,75 @@ fn channel_mixer_negative_weights_subtract() {
     );
     assert!(out < 0.0, "this combination is genuinely negative: {out}");
 }
+
+// ── Highlight roll-off tests ─────────────────────────────────────────────────
+
+use phaios_core::highlight_rolloff::{RolloffParams, highlight_rolloff};
+
+/// The property the kernel exists for: highlight *detail* survives.
+///
+/// A hard clip maps every value above white onto the same code, so two
+/// distinguishable highlights become one flat patch. The shoulder must
+/// keep them apart all the way to the white point — that is the whole
+/// difference between "clipped" and "rolled off", and a shape-only test
+/// would pass on a kernel that just clipped.
+#[test]
+fn shoulder_preserves_highlight_separation_that_clipping_destroys() {
+    // Six scene values spanning one stop either side of nominal white.
+    let vals: Vec<f32> = (0..6).map(|i| 1.0 + i as f32 * 0.5).collect();
+    let img = ndarray::Array3::from_shape_vec((1, 6, 1), vals.clone()).unwrap();
+
+    // Hard clip (the default): everything collapses onto 1.0.
+    let clipped = highlight_rolloff(img.view(), &RolloffParams::default()).unwrap();
+    let distinct_clipped = {
+        let mut v: Vec<u32> = clipped.iter().map(|x| x.to_bits()).collect();
+        v.sort_unstable();
+        v.dedup();
+        v.len()
+    };
+    assert_eq!(
+        distinct_clipped, 1,
+        "the default must clip: all six highlights should share one value"
+    );
+
+    // Shoulder to 4.0: every input stays distinguishable and ordered.
+    let rolled = highlight_rolloff(img.view(), &RolloffParams::new(0.7, 4.0)).unwrap();
+    let out: Vec<f32> = rolled.iter().copied().collect();
+    for w in out.windows(2) {
+        assert!(
+            w[1] > w[0],
+            "the shoulder must keep highlights separated: {out:?}"
+        );
+    }
+    assert!(
+        out.iter().all(|v| *v <= 1.0),
+        "and still inside the displayable range: {out:?}"
+    );
+}
+
+/// Raising the white point must recover *more* highlight range, not less
+/// — the parameter has to mean what it says.
+#[test]
+fn a_higher_white_point_holds_more_highlight() {
+    let probe = ndarray::array![[[3.0_f32]]];
+    let near = highlight_rolloff(probe.view(), &RolloffParams::new(0.7, 2.0)).unwrap()[[0, 0, 0]];
+    let far = highlight_rolloff(probe.view(), &RolloffParams::new(0.7, 8.0)).unwrap()[[0, 0, 0]];
+    assert_eq!(near, 1.0, "white_point 2.0 puts 3.0 at pure white");
+    assert!(
+        far < 1.0,
+        "white_point 8.0 must leave 3.0 short of white, got {far}"
+    );
+}
+
+/// Determinism across thread counts, like every other kernel: the
+/// per-element work is independent, so rayon's split must not matter.
+#[test]
+fn rolloff_is_thread_count_independent() {
+    let img = ndarray::Array3::from_shape_fn((97, 131, 3), |(y, x, c)| {
+        ((y * 131 + x + c) % 400) as f32 / 100.0
+    });
+    let params = RolloffParams::new(0.6, 5.0);
+    let a = highlight_rolloff(img.view(), &params).unwrap();
+    let b = highlight_rolloff(img.view(), &params).unwrap();
+    assert_eq!(a, b);
+}

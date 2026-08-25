@@ -20,6 +20,7 @@ pub mod error;
 pub mod exposure;
 pub mod film_grain;
 pub mod geometry;
+pub mod highlight_rolloff;
 mod integral;
 pub mod local_contrast;
 pub mod split_toning;
@@ -428,6 +429,60 @@ pub fn tone_curve(
     Ok(result.into_pyarray(py).unbind())
 }
 
+// ── Highlight roll-off binding ────────────────────────────────────────────────
+
+/// Roll highlights off into a shoulder instead of clipping them.
+///
+/// Below ``knee`` nothing changes. Between ``knee`` and ``white_point``
+/// the transfer follows a quadratic Bézier that leaves the identity at
+/// slope 1 and reaches exactly 1.0 at ``white_point`` with slope 0, so
+/// neither end produces a visible edge. At and above ``white_point`` the
+/// result is 1.0.
+///
+/// This is the stage that decides what becomes of the highlight headroom
+/// every earlier stage preserved. The default ``RolloffParams()`` is a
+/// hard clip at 1.0, reproducing ``numpy.clip(img, None, 1.0)`` exactly,
+/// so adding the stage changes nothing until it is asked to.
+///
+/// Values below zero are left alone: clamping black is a separate
+/// decision.
+///
+/// Order-sensitive: the last stage on linear scene-referred data,
+/// immediately before ``encode_srgb``.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)`` for any channel count, dtype
+///     ``float32``, any memory layout.
+/// params : RolloffParams
+///     Knee and white point. The default ``(1.0, 1.0)`` is a hard clip.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``knee`` is outside 0..=1, or ``white_point`` is not finite or
+///     is below 1.0.
+// Renamed to avoid clashing with the `highlight_rolloff` module; the
+// Python name is restored by the attribute (CLAUDE.md §4).
+#[pyfunction]
+#[pyo3(name = "highlight_rolloff")]
+pub fn highlight_rolloff_fn(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: pyo3::PyRef<'_, highlight_rolloff::RolloffParams>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let params_owned = params.clone();
+    let result = py.detach(move || highlight_rolloff::highlight_rolloff(view, &params_owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── Local contrast binding ────────────────────────────────────────────────────
 
 /// Enhance local contrast using the He–Sun–Tang guided filter.
@@ -661,6 +716,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<film_grain::GrainParams>()?;
     m.add_class::<split_toning::SplitToningParams>()?;
     m.add_class::<vignette::VignetteParams>()?;
+    m.add_class::<highlight_rolloff::RolloffParams>()?;
 
     // Geometry
     m.add_function(wrap_pyfunction!(crop, m)?)?;
@@ -680,6 +736,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Tone
     m.add_function(wrap_pyfunction!(zone_system, m)?)?;
     m.add_function(wrap_pyfunction!(tone_curve, m)?)?;
+    m.add_function(wrap_pyfunction!(highlight_rolloff_fn, m)?)?;
 
     // Local contrast
     m.add_function(wrap_pyfunction!(local_contrast_py, m)?)?;

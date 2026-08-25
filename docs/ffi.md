@@ -44,16 +44,17 @@ pipeline:
 | `split_toning` | 1 | **3** | the only kernel that adds channels |
 | `vignette` | any | same | one factor per pixel, applied to every channel |
 | `tone_curve` | any | same | element-wise |
+| `highlight_rolloff` | any | same | element-wise; last linear stage, immediately before `encode_srgb` |
 | `encode_srgb` | any | same | element-wise |
 
-A kernel given the wrong channel count raises `ValueError`. The eight
+A kernel given the wrong channel count raises `ValueError`. The nine
 that accept "any" do so for two distinct reasons. The four geometry
 kernels (`crop`, `orient`, `straighten`, `resize`) are channel-agnostic
 by nature — they move pixels without looking inside them, and they run
 first, before the pipeline has decided anything about colour. The other
-four (`exposure`, `vignette`, `tone_curve`, `encode_srgb`) run either
-side of `split_toning`, so a pipeline need not branch on whether toning
-is enabled.
+five (`exposure`, `vignette`, `tone_curve`, `highlight_rolloff` and
+`encode_srgb`) run either side of `split_toning`, so a pipeline need not
+branch on whether toning is enabled.
 
 **Pixel values must be finite.** This is a precondition, not a validated
 input: kernels check their *parameters* and never scan their pixels — a
@@ -310,9 +311,12 @@ What is promised across backends:
   `color_filter_bw`, `vignette`, `tone_curve` at `power == 1`, every
   identity fast path, `film_grain`'s integer hash (asserted over
   2²⁰ coordinates), the geometry kernels `crop` and `orient` (pure
-  index permutations), and the resampling kernels `resize` and
+  index permutations), the resampling kernels `resize` and
   `straighten` (polynomial filters; straighten's sin/cos is computed
-  once on the host and shared). This is achievable because the PTX is compiled with
+  once on the host and shared), and `highlight_rolloff` (a quadratic
+  solve — IEEE-754-2008 §5.4.1 requires `sqrt` to be correctly rounded
+  just as it does the four arithmetic operations, so a curve built from
+  those five alone carries across). This is achievable because the PTX is compiled with
   `-fmad=false` — Rust does not contract `a*b+c` into FMA, and with the
   device told the same, every remaining operation is correctly rounded
   on both sides.

@@ -876,3 +876,50 @@ fn local_contrast_non_finite_is_documented_as_divergent() {
         "nothing was comparable — the test proved nothing"
     );
 }
+
+/// `highlight_rolloff` is bit-exact: the shoulder uses only add,
+/// subtract, multiply, divide and sqrt, every one of which IEEE-754-2008
+/// §5.4.1 requires to be correctly rounded, and `-fmad=false` stops the
+/// compiler contracting any of them into a fused multiply-add. There is
+/// no transcendental, so there is no libm to disagree with. No tolerance.
+#[test]
+fn highlight_rolloff_is_bit_exact() {
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(257, 389, 3);
+
+    for (knee, white) in [
+        (1.0_f32, 1.0_f32), // the default: hard clip
+        (0.8, 2.0),
+        (0.5, 4.0),
+        (0.0, 1.0), // knee at black
+        (0.6, 1.4), // a = W + k - 2 = 0: the degenerate linear solve
+        (0.95, 16.0),
+        (0.0, 64.0), // the whole range in the shoulder
+    ] {
+        let params = phaios_core::highlight_rolloff::RolloffParams::new(knee, white);
+        let cpu = phaios_core::highlight_rolloff::highlight_rolloff(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::highlight_rolloff(&ctx, img.view(), &params).unwrap();
+        assert_eq!(cpu, gpu, "highlight_rolloff knee={knee} white={white}");
+    }
+}
+
+/// Values above the white point and non-finite samples must agree too —
+/// the branches the pseudo-random image (values in [0,1)) never reaches.
+#[test]
+fn highlight_rolloff_edge_values_agree() {
+    let Some(ctx) = try_context() else { return };
+    let img = ndarray::array![[
+        [-1.0_f32, 0.0, 0.5],
+        [1.0, 2.0, 1e30],
+        [f32::INFINITY, f32::NEG_INFINITY, f32::NAN],
+    ]];
+    let params = phaios_core::highlight_rolloff::RolloffParams::new(0.7, 3.0);
+    let cpu = phaios_core::highlight_rolloff::highlight_rolloff(img.view(), &params).unwrap();
+    let gpu = cuda::kernels::highlight_rolloff(&ctx, img.view(), &params).unwrap();
+    for (c, g) in cpu.iter().zip(gpu.iter()) {
+        assert!(
+            c.to_bits() == g.to_bits() || (c.is_nan() && g.is_nan()),
+            "edge value diverges: cpu={c}, gpu={g}"
+        );
+    }
+}

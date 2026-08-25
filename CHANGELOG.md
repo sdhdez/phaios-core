@@ -8,6 +8,37 @@ The Rust crate and the Python wheel always carry the same version.
 
 ## [Unreleased] — 0.2.0-dev
 
+### Added — highlight roll-off
+
+`highlight_rolloff(img, RolloffParams)` — the explicit choice between
+clipping the highlights and rolling them off, a decision every consumer
+was previously making by accident in whichever line called `np.clip`.
+
+Two photographic parameters: `knee`, below which nothing changes, and
+`white_point`, the scene value that becomes pure white. Between them the
+transfer is a quadratic Bézier whose control point is fixed by the two
+continuity requirements rather than tuned — it leaves the identity at
+slope 1 and lands on white at slope 0, so neither the knee nor the
+clipping point produces a visible edge.
+
+The default `RolloffParams()` is `(1.0, 1.0)`, which collapses to
+`min(x, 1.0)` bit-for-bit: adding the stage to an existing pipeline
+changes nothing until a shoulder is asked for. On the synthetic checker
+pushed +2 EV, eight distinguishable highlights survive as one value
+under the default and as eight under `white_point = 8.0`.
+
+**Bit-exact across CPU and CUDA** with no tolerance at all — the curve
+uses only add, subtract, multiply, divide and square root, every one of
+which IEEE-754-2008 §5.4.1 requires to be correctly rounded, so unlike
+the other tone stages there is no libm to disagree with. Asserted with
+`assert_eq!` over seven configurations, including the degenerate
+`white = 2 − knee` case where the quadratic coefficient is exactly zero
+and the solve becomes linear.
+
+Element-wise on any channel count and any layout; ~10.9 ms on a 24 MP
+frame, bandwidth-bound like the other element-wise kernels, and the
+default clip costs the same as the shoulder.
+
 ### Added — resampling geometry (resize, straighten)
 
 `resize(img, ResizeParams)` — separable resampling with three

@@ -23,8 +23,8 @@ mod zone;
 
 pub use elementwise::{
     channel_mixer_bw, channel_mixer_bw_device, color_filter_bw, color_filter_bw_device,
-    encode_srgb, encode_srgb_device, luminance_bw, luminance_bw_device, tone_curve,
-    tone_curve_device, vignette, vignette_device,
+    encode_srgb, encode_srgb_device, highlight_rolloff, highlight_rolloff_device, luminance_bw,
+    luminance_bw_device, tone_curve, tone_curve_device, vignette, vignette_device,
 };
 pub use exposure::{exposure, exposure_device};
 pub use geometry::{

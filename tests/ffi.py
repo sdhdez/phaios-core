@@ -730,6 +730,7 @@ def test_all_kernels_accept_any_layout(label, rgb_f32, grey_f32):
         ph.vignette(grey, ph.VignetteParams(0.4, 0.7)),
         ph.film_grain(grey, ph.GrainParams(0.2, 2.0, 99)),
         ph.orient(grey, ph.Orientation.Rotate180),
+        ph.highlight_rolloff(grey, ph.RolloffParams(0.7, 3.0)),
     ):
         assert out.shape == grey.shape
         assert out.flags["C_CONTIGUOUS"], "output must be C-contiguous"
@@ -780,3 +781,55 @@ def test_strided_matches_contiguous_copy(grey_f32):
     np.testing.assert_array_equal(
         ph.local_contrast(view, gp, 0.7), ph.local_contrast(copy, gp, 0.7)
     )
+
+
+# ── highlight_rolloff ────────────────────────────────────────────────────────
+
+
+def test_rolloff_default_is_exactly_a_hard_clip(rgb_f32):
+    """The default must be byte-identical to np.clip's highlight end, so
+    inserting the stage into an existing pipeline changes nothing."""
+    img = rgb_f32 * 3.0
+    got = ph.highlight_rolloff(img, ph.RolloffParams())
+    want = np.minimum(img, 1.0)
+    np.testing.assert_array_equal(got, want)
+
+
+def test_rolloff_keeps_highlights_separable():
+    vals = np.array([[[1.0], [1.5], [2.0], [3.0]]], dtype=np.float32)
+    clipped = ph.highlight_rolloff(vals, ph.RolloffParams())
+    rolled = ph.highlight_rolloff(vals, ph.RolloffParams(0.7, 4.0))
+    assert len(np.unique(clipped)) == 1, "default clips them together"
+    assert len(np.unique(rolled)) == 4, "the shoulder keeps them apart"
+    assert (rolled <= 1.0).all()
+
+
+def test_rolloff_endpoints_are_exact():
+    knee, white = 0.75, 4.0
+    probe = np.array([[[knee, white]]], dtype=np.float32).reshape(1, 2, 1)
+    out = ph.highlight_rolloff(probe, ph.RolloffParams(knee, white))
+    assert out[0, 0, 0] == np.float32(knee), "f(knee) must be knee"
+    assert out[0, 1, 0] == np.float32(1.0), "f(white) must be exactly 1.0"
+
+
+def test_rolloff_below_knee_is_untouched(grey_f32):
+    small = grey_f32 * 0.5  # everything well below the knee
+    out = ph.highlight_rolloff(small, ph.RolloffParams(0.9, 4.0))
+    np.testing.assert_array_equal(out, small)
+
+
+@pytest.mark.parametrize(
+    "knee,white",
+    [(1.5, 2.0), (-0.1, 2.0), (0.5, 0.5), (0.5, 0.0), (float("nan"), 2.0), (0.5, float("inf"))],
+)
+def test_rolloff_rejects_out_of_domain(rgb_f32, knee, white):
+    with pytest.raises(ValueError):
+        ph.highlight_rolloff(rgb_f32, ph.RolloffParams(knee, white))
+
+
+def test_rolloff_params_repr_and_eq():
+    a, b = ph.RolloffParams(0.8, 2.0), ph.RolloffParams(0.8, 2.0)
+    assert a == b
+    assert a != ph.RolloffParams(0.8, 2.5)
+    assert "knee=0.8" in repr(a)
+    assert ph.RolloffParams().knee == 1.0

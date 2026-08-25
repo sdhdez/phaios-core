@@ -152,6 +152,10 @@ name = "14_resample"
 path = "examples/14_resample.rs"
 
 [[example]]
+name = "16_highlight_rolloff"
+path = "examples/16_highlight_rolloff.rs"
+
+[[example]]
 name = "15_gpu_exposure"
 path = "examples/15_gpu_exposure.rs"
 required-features = ["cuda"]

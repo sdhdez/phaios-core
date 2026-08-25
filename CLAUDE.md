@@ -19,7 +19,8 @@ encoding.
 **v0.2 (implemented, unreleased):** exposure compensation, HSL-weighted
 B&W (8 hue bands), procedural film grain (explicit seed, no RNG
 dependency), split-toning in OKLab, radial vignette, parametric tone
-curve (ASC CDL); the four geometry kernels — `crop`, `orient` (the eight
+curve (ASC CDL); highlight roll-off (the explicit clip-vs-shoulder
+decision, defaulting to a hard clip); the four geometry kernels — `crop`, `orient` (the eight
 Exif transforms), `straighten` (±45° with an inscribed-rectangle crop)
 and `resize` (area / bilinear / Catmull-Rom); and an **optional CUDA
 backend** behind `--features cuda`, exposing every kernel a second time
@@ -118,6 +119,7 @@ RAW (consumer's problem)
   → split-toning                      → (H, W, 3) ← kernel
   → vignette                                       ← kernel
   → parametric tone curve                          ← kernel
+  → highlight roll-off                             ← kernel (last linear)
   → sRGB encode                                    ← kernel (terminal)
   → display-referred f32 RGB                       ← output, consumer writes file
 ```

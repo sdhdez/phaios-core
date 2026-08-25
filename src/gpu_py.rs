@@ -259,6 +259,20 @@ fn tone_curve(
     Ok(GpuImage { inner: result })
 }
 
+/// Highlight roll-off on the GPU. Mirrors
+/// ``phaios_core.highlight_rolloff``; bit-exact.
+///
+/// The default ``RolloffParams()`` is a hard clip at 1.0.
+#[pyfunction]
+fn highlight_rolloff(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: crate::highlight_rolloff::RolloffParams,
+) -> PyResult<GpuImage> {
+    let result = py.detach(|| cuda::kernels::highlight_rolloff_device(&img.inner, &params))?;
+    Ok(GpuImage { inner: result })
+}
+
 /// Radial vignette on the GPU. Mirrors ``phaios_core.vignette``;
 /// bit-exact against the CPU.
 #[pyfunction]
@@ -464,6 +478,7 @@ pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult
     gpu.add_function(wrap_pyfunction!(encode_srgb, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(tone_curve, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(vignette, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(highlight_rolloff, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(luminance_bw, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(channel_mixer_bw, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(color_filter_bw, &gpu)?)?;

@@ -850,7 +850,83 @@ walks any input layout — see §2's layout rule.
 
 ---
 
-## 13. Performance (v0.2-dev)
+## 13. Highlight roll-off
+
+The pipeline preserves values above 1.0 through eleven stages, and then
+historically threw them away in one line of consumer code: `np.clip`.
+That is a defensible choice, but it was never an explicit one, and a
+hard clip is the worst-behaved member of its family — every value above
+white lands on the same code, so a smooth highlight becomes a flat patch
+with a visible border where the image crosses the threshold.
+
+Emulsion does not do that. Silver-halide density approaches its maximum
+along a *shoulder*, compressing highlight detail rather than discarding
+it, and that gradual approach is a large part of why film highlights
+read the way they do (Hunt, *The Reproduction of Colour*, 6th ed.,
+Wiley 2004, §8.3).
+
+### The curve
+
+Two parameters, both photographic: `knee`, below which nothing changes,
+and `white_point`, the scene value that becomes pure white. Between them
+the transfer is a quadratic Bézier with control points
+
+```text
+P₀ = (k, k)      P₁ = (1, 1)      P₂ = (W, 1)
+```
+
+`P₁` is not a free choice. The curve must leave the identity at slope 1
+(or the knee shows as a crease) and arrive at white at slope 0 (or the
+white point shows as an edge). Those two tangent lines are `y = x` and
+`y = 1`, and a quadratic Bézier passes through the intersection of its
+end tangents — which is exactly `(1, 1)`. The construction therefore
+falls out of the two continuity requirements rather than being tuned.
+(Farin, *Curves and Surfaces for CAGD*, 5th ed., Morgan Kaufmann 2002,
+§4.2 and §3.3.)
+
+Expanding the components and solving `x(t) = x`:
+
+```text
+x(t) = (W + k − 2)t² + 2(1 − k)t + k
+y(t) = 1 − (1 − k)(1 − t)²
+```
+
+so `t` comes from one quadratic root and `y` from one square. When
+`W = 2 − k` the quadratic coefficient is exactly zero and the curve
+degenerates to the classic parabolic shoulder; that is a legal
+configuration, not an edge case, and the implementation takes the exact
+linear solve rather than dividing by zero.
+
+Monotonicity requires `W ≥ 1`, which validation enforces: below that the
+x-component's control polygon reverses and the curve would fold.
+
+### Why the default is a hard clip
+
+`knee = 1.0, white_point = 1.0` collapses the control polygon onto the
+single point `(1, 1)`, and the kernel reduces to `min(x, 1)` —
+bit-identical to what callers were already doing. Adding the stage to a
+pipeline is therefore a no-op until a photographer asks for a shoulder.
+
+### Determinism
+
+The evaluation uses addition, subtraction, multiplication, division and
+square root, and nothing else. IEEE-754-2008 §5.4.1 requires all five to
+be correctly rounded, so unlike every other tone stage there is no libm
+involved and no platform variation to bound: the kernel is bit-exact
+across CPU and CUDA, asserted with `assert_eq!` over seven parameter
+configurations including the degenerate one.
+
+### Order
+
+Last stage on linear scene-referred data, immediately before
+`encode_srgb`. Running it after the transfer encoding would compress a
+display quantity rather than a scene one; running it before the tone
+stages would let those stages push values back above 1.0 afterwards,
+which defeats the purpose.
+
+---
+
+## 14. Performance (v0.2-dev)
 
 Measured with `cargo bench` (criterion, bench profile) on a synthetic
 4323 × 5765 (≈ 24 MP) `f32` image filled with deterministic
@@ -897,7 +973,7 @@ input, the three B&W kernels measured 10.1 ms rather than 15 ms.
 
 ---
 
-## 14. Geometry (crop, orientation)
+## 15. Geometry (crop, orientation)
 
 Two exact operations, deliberately in the core rather than in front
 ends: their parameters live in consumers' sidecar files, and if two
@@ -906,7 +982,7 @@ would render different images.
 
 Both are **pure index permutations** — no arithmetic on pixel values —
 so they are bit-identical across every backend unconditionally, unlike
-the transcendental-bearing kernels of §13.
+the transcendental-bearing kernels listed in `docs/ffi.md` §6.
 
 **`crop(img, CropParams{x, y, width, height})`** extracts the
 rectangle; it must lie entirely within the frame (validated with u64

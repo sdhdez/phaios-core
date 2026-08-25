@@ -23,6 +23,7 @@ use phaios_core::geometry::{
     CropParams, Orientation, ResizeFilter, ResizeParams, StraightenParams, crop, orient, resize,
     straighten,
 };
+use phaios_core::highlight_rolloff::{RolloffParams, highlight_rolloff};
 use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
 use phaios_core::split_toning::{SplitToningParams, split_toning};
 use phaios_core::tone::{ToneCurveParams, ZoneParams, tone_curve, zone_system};
@@ -139,6 +140,22 @@ fn bench_tone_curve(c: &mut Criterion) {
     });
 }
 
+fn bench_highlight_rolloff(c: &mut Criterion) {
+    // Values spanning the shoulder, so the quadratic solve is actually
+    // exercised rather than short-circuiting on the below-knee branch.
+    let grey = pseudo_random_image(H, W, 1).mapv(|v| v * 4.0);
+    let params = RolloffParams::new(0.7, 4.0);
+    c.bench_function("highlight_rolloff/24MP/knee0.7-white4", |b| {
+        b.iter(|| highlight_rolloff(black_box(grey.view()), black_box(&params)).unwrap())
+    });
+    // The default is a pure branch: worth measuring what a caller who
+    // leaves it alone actually pays.
+    let clip = RolloffParams::default();
+    c.bench_function("highlight_rolloff/24MP/default-clip", |b| {
+        b.iter(|| highlight_rolloff(black_box(grey.view()), black_box(&clip)).unwrap())
+    });
+}
+
 fn bench_local_contrast(c: &mut Criterion) {
     let grey = pseudo_random_image(H, W, 1);
     let params = GuidedFilterParams::new(8, 0.01);
@@ -195,6 +212,7 @@ criterion_group!(
     bench_hsl_bw,
     bench_zone_system,
     bench_tone_curve,
+    bench_highlight_rolloff,
     bench_local_contrast,
     bench_film_grain,
     bench_split_toning,

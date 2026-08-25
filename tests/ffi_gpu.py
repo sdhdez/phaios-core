@@ -321,3 +321,17 @@ def test_gpu_color_filter_matches_cpu(ctx, preset):
     got = gpu.color_filter_bw(ctx.upload(img), flt).download()
     np.testing.assert_array_equal(got, ph.color_filter_bw(img, flt))
     assert got.shape == (12, 16, 1)
+
+
+@needs_device
+@pytest.mark.parametrize(
+    "knee,white",
+    [(1.0, 1.0), (0.8, 2.0), (0.5, 4.0), (0.6, 1.4), (0.0, 64.0)],
+)
+def test_gpu_highlight_rolloff_matches_cpu(ctx, knee, white):
+    """Bit-exact, including the a == 0 degenerate solve at white = 2 - knee."""
+    rng = np.random.default_rng(21)
+    img = (rng.random((17, 23, 3)).astype(np.float32) * 5.0) - 0.5
+    params = ph.RolloffParams(knee, white)
+    got = gpu.highlight_rolloff(ctx.upload(img), params).download()
+    np.testing.assert_array_equal(got, ph.highlight_rolloff(img, params))
