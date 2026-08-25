@@ -48,19 +48,43 @@ pipeline:
 | `encode_srgb` | any | same | element-wise |
 | `quantize_u8` | any | same, **`uint8`** | terminal; display-referred input |
 | `quantize_u16` | any | same, **`uint16`** | terminal; display-referred input |
+| `apply_lut` | any | same | element-wise through a caller-supplied table |
+| `histogram` | any | **not an image** | a reduction — returns a `Histogram`, see below |
 
-A kernel given the wrong channel count raises `ValueError`. The nine
-that accept "any" do so for two distinct reasons. The four geometry
-kernels (`crop`, `orient`, `straighten`, `resize`) are channel-agnostic
-by nature — they move pixels without looking inside them, and they run
-first, before the pipeline has decided anything about colour. The other
-five (`exposure`, `vignette`, `tone_curve`, `highlight_rolloff` and
-`encode_srgb`) run either side of `split_toning`, so a pipeline need not
-branch on whether toning is enabled.
+A kernel given the wrong channel count raises `ValueError`. The thirteen
+that accept "any" do so for three distinct reasons.
+
+The four **geometry** kernels (`crop`, `orient`, `straighten`, `resize`)
+are channel-agnostic by nature: they move pixels without looking inside
+them, and they run first, before the pipeline has decided anything about
+colour.
+
+The five **tone** kernels (`exposure`, `vignette`, `tone_curve`,
+`highlight_rolloff`, `encode_srgb`) run either side of `split_toning`,
+so a pipeline need not branch on whether toning is enabled.
+
+The remaining four — `apply_lut`, `quantize_u8`, `quantize_u16` and
+`histogram` — are per-sample by construction. The first three map each
+sample independently of its neighbours *and* of its channel; `histogram`
+does not return an image at all, and simply reports one row of counts
+per channel however many there are.
 
 See [`export.md`](export.md) for what a consumer must do with these
 codes — greyscale photometric, profile, depth and dither are specified
 there, not left to the file layer.
+
+**Reductions.** `histogram` is the first function in the crate that does
+not return an image. It returns a `Histogram` object carrying
+`(channels, bins)` counts plus separate `below` / `above` / `non_finite`
+tallies, and it is exposed on both surfaces — on the GPU it returns host
+data, because counts are small and their destination (a display, an
+auto-correction) is on the host.
+
+This widens §1's "pure functions on `(H, W, C)` arrays", deliberately.
+The justification is that the decisions around a histogram — linear or
+display-referred, what range, what counts as clipped — are
+specification-shaped, and two consumers answering them independently will
+show the photographer different histograms of the same file.
 
 **Integer output.** `quantize_u8` and `quantize_u16` are the only
 kernels that do not return `float32`: they return `uint8` and `uint16`
@@ -331,7 +355,12 @@ What is promised across backends:
   once on the host and shared), and `highlight_rolloff` (a quadratic
   solve — IEEE-754-2008 §5.4.1 requires `sqrt` to be correctly rounded
   just as it does the four arithmetic operations, so a curve built from
-  those five alone carries across), and `quantize_u8` / `quantize_u16`
+  those five alone carries across), `apply_lut` (subtract, divide,
+  multiply, truncate and one linear interpolation), `histogram` (whose
+  only float arithmetic is the bin assignment — everything after it is
+  integer counting, and integer addition commutes, so the order in which
+  the device's atomics complete cannot change a total), and
+  `quantize_u8` / `quantize_u16`
   (exact integer hashing for the dither, and `floor(v + 0.5)` for the
   rounding — an exact operation composed with a correctly-rounded one,
   rather than a library rounding routine that host and device could

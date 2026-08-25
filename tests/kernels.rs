@@ -685,3 +685,81 @@ fn quantize_dither_is_reproducible_from_the_seed() {
     assert_eq!(a, b, "same seed, same bytes");
     assert_ne!(a, c, "different seed, different pattern");
 }
+
+// ── Histogram + LUT: the composition that justifies the pair ─────────────────
+
+use phaios_core::histogram::{HistogramParams, histogram};
+use phaios_core::lut::{LutParams, apply_lut};
+
+/// The claim behind adding these two primitives instead of an
+/// `equalise` kernel: histogram → CDF → apply_lut *is* histogram
+/// equalisation, with no third component. If this does not hold, the
+/// factoring was wrong.
+#[test]
+fn histogram_and_lut_compose_into_equalisation() {
+    // A low-contrast image: everything crammed into [0.4, 0.6].
+    let img = ndarray::Array3::<f32>::from_shape_fn((64, 64, 1), |(y, x, _)| {
+        0.4 + ((y * 64 + x) % 256) as f32 / 255.0 * 0.2
+    });
+
+    let params = HistogramParams::new(256, 0.0, 1.0);
+    let before = histogram(img.view(), &params).unwrap();
+
+    // The equalising transfer, aligned to how apply_lut places entries.
+    let table = before.equalisation_lut().row(0).to_owned();
+    let equalised = apply_lut(img.view(), table.view(), &LutParams::default()).unwrap();
+
+    let after = histogram(equalised.view(), &params).unwrap();
+
+    // Equalisation must spread the distribution across the range.
+    let occupied = |h: &phaios_core::histogram::Histogram| {
+        (0..h.bins).filter(|&b| h.counts()[[0, b]] > 0).count()
+    };
+    let span = |h: &phaios_core::histogram::Histogram| {
+        let lo = (0..h.bins).find(|&b| h.counts()[[0, b]] > 0).unwrap();
+        let hi = (0..h.bins).rev().find(|&b| h.counts()[[0, b]] > 0).unwrap();
+        hi - lo
+    };
+
+    assert!(
+        span(&after) > span(&before) * 3,
+        "equalisation should widen the occupied range: {} -> {}",
+        span(&before),
+        span(&after)
+    );
+    assert!(
+        occupied(&after) >= occupied(&before),
+        "and should not lose distinct levels: {} -> {}",
+        occupied(&before),
+        occupied(&after)
+    );
+    assert_eq!(after.total(0), 64 * 64, "no samples invented or lost");
+}
+
+/// An identity LUT built from a *flat* histogram must be a near-identity
+/// transfer — the sanity check that the CDF is oriented correctly and
+/// not, say, inverted.
+#[test]
+fn equalising_an_already_flat_image_changes_little() {
+    let img = ndarray::Array3::<f32>::from_shape_fn((256, 256, 1), |(y, x, _)| {
+        ((y * 256 + x) % 256) as f32 / 255.0
+    });
+    let params = HistogramParams::new(256, 0.0, 1.0);
+    let cdf = histogram(img.view(), &params).unwrap().cdf();
+    let out = apply_lut(
+        img.view(),
+        cdf.row(0).to_owned().view(),
+        &LutParams::default(),
+    )
+    .unwrap();
+
+    let max_shift = img
+        .iter()
+        .zip(out.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_shift < 0.02,
+        "an already-uniform image should barely move, shifted {max_shift}"
+    );
+}

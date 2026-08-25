@@ -12,6 +12,7 @@
 //!
 //! Both validate identically to the CPU kernel they mirror.
 
+mod analysis;
 mod elementwise;
 mod exposure;
 mod geometry;
@@ -22,6 +23,7 @@ mod quantize;
 mod split_toning;
 mod zone;
 
+pub use analysis::{apply_lut, apply_lut_device, histogram, histogram_device};
 pub use elementwise::{
     channel_mixer_bw, channel_mixer_bw_device, color_filter_bw, color_filter_bw_device,
     encode_srgb, encode_srgb_device, highlight_rolloff, highlight_rolloff_device, luminance_bw,

@@ -21,7 +21,9 @@ B&W (8 hue bands), procedural film grain (explicit seed, no RNG
 dependency), split-toning in OKLab, radial vignette, parametric tone
 curve (ASC CDL); highlight roll-off (the explicit clip-vs-shoulder
 decision, defaulting to a hard clip); dithered quantisation to u8/u16
-(the first kernels returning integers); the four geometry kernels — `crop`, `orient` (the eight
+(the first kernels returning integers); `apply_lut` and `histogram` —
+the latter being the crate's first *reduction*, returning statistics
+rather than an image; the four geometry kernels — `crop`, `orient` (the eight
 Exif transforms), `straighten` (±45° with an inscribed-rectangle crop)
 and `resize` (area / bilinear / Catmull-Rom); and an **optional CUDA
 backend** behind `--features cuda`, exposing every kernel a second time

@@ -999,3 +999,151 @@ fn quantize_edge_values_agree() {
         );
     }
 }
+
+/// The histogram is bit-identical across backends, not merely close.
+/// The only arithmetic on pixel values is the bin assignment — subtract,
+/// divide, multiply, truncate, all exact or correctly rounded — and
+/// everything after it is integer counting, whose total cannot depend on
+/// the order in which the device's atomics complete.
+///
+/// Both device paths are exercised: bins small enough to privatise in
+/// shared memory, and the global-atomic fallback above that.
+#[test]
+fn histogram_is_bit_identical() {
+    use phaios_core::histogram::{HistogramParams, histogram};
+
+    let Some(ctx) = try_context() else { return };
+    // Values reaching outside [0, 1] so below/above are non-zero too.
+    let img = pseudo_random_image(257, 389, 3).mapv(|v| v * 1.4 - 0.2);
+
+    for bins in [2_u32, 3, 256, 1024, 12_288, 65_536] {
+        let p = HistogramParams::new(bins, 0.0, 1.0);
+        let cpu = histogram(img.view(), &p).unwrap();
+        let gpu = cuda::kernels::histogram(&ctx, img.view(), &p).unwrap();
+        assert_eq!(cpu.counts(), gpu.counts(), "counts differ at bins={bins}");
+        assert_eq!(cpu.below(), gpu.below(), "below differs at bins={bins}");
+        assert_eq!(cpu.above(), gpu.above(), "above differs at bins={bins}");
+        assert_eq!(
+            cpu.non_finite(),
+            gpu.non_finite(),
+            "non_finite differs at bins={bins}"
+        );
+        assert_eq!(cpu.total(0), gpu.total(0), "totals differ at bins={bins}");
+    }
+}
+
+/// Non-finite and out-of-range samples must be classified identically.
+#[test]
+fn histogram_edge_values_agree() {
+    use phaios_core::histogram::{HistogramParams, histogram};
+
+    let Some(ctx) = try_context() else { return };
+    let img = ndarray::array![[
+        [-1.0_f32, 0.0, 1.0],
+        [1.5, f32::INFINITY, f32::NEG_INFINITY],
+        [f32::NAN, 0.5, 2.0],
+    ]];
+    let p = HistogramParams::default();
+    let cpu = histogram(img.view(), &p).unwrap();
+    let gpu = cuda::kernels::histogram(&ctx, img.view(), &p).unwrap();
+    assert_eq!(cpu.counts(), gpu.counts());
+    assert_eq!(cpu.below(), gpu.below());
+    assert_eq!(cpu.above(), gpu.above());
+    assert_eq!(cpu.non_finite(), gpu.non_finite());
+}
+
+/// `apply_lut` is bit-exact: subtract, divide, multiply, truncate and one
+/// linear interpolation, with `-fmad=false` stopping the interpolation's
+/// multiply-add from being contracted.
+#[test]
+fn apply_lut_is_bit_exact() {
+    use phaios_core::lut::{LutParams, apply_lut};
+
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(257, 389, 3).mapv(|v| v * 1.4 - 0.2);
+
+    for n in [2_usize, 3, 17, 256, 4096, 65_536] {
+        // A curved table, so interpolation actually does something.
+        let lut = ndarray::Array1::from_shape_fn(n, |i| (i as f32 / (n - 1) as f32).powf(0.7));
+        for params in [LutParams::default(), LutParams::new(-0.5, 2.0)] {
+            assert_eq!(
+                apply_lut(img.view(), lut.view(), &params).unwrap(),
+                cuda::kernels::apply_lut(&ctx, img.view(), lut.view(), &params).unwrap(),
+                "lut n={n} domain=({}, {})",
+                params.min,
+                params.max
+            );
+        }
+    }
+}
+
+/// A non-monotone table — solarisation — and NaN propagation, neither of
+/// which the pseudo-random image reaches on its own.
+#[test]
+fn apply_lut_edge_cases_agree() {
+    use phaios_core::lut::{LutParams, apply_lut};
+
+    let Some(ctx) = try_context() else { return };
+    let img = ndarray::array![[
+        [-1.0_f32, 0.0, 0.5],
+        [1.0, 2.0, f32::INFINITY],
+        [f32::NEG_INFINITY, f32::NAN, 0.25],
+    ]];
+    let solarise = ndarray::Array1::from_shape_fn(256, |i| {
+        let t = i as f32 / 255.0;
+        if t < 0.5 { t * 2.0 } else { (1.0 - t) * 2.0 }
+    });
+    // A negative NaN, which is what ordinary f32 arithmetic produces on
+    // x86 — the CPU used to substitute a canonical positive NaN here and
+    // silently disagree with the device.
+    let img = {
+        let mut img = img;
+        img[[0, 2, 1]] = f32::from_bits(0xFFC0_0000);
+        img
+    };
+    let cpu = apply_lut(img.view(), solarise.view(), &LutParams::default()).unwrap();
+    let gpu =
+        cuda::kernels::apply_lut(&ctx, img.view(), solarise.view(), &LutParams::default()).unwrap();
+    for (c, g) in cpu.iter().zip(gpu.iter()) {
+        // Bit-for-bit including the NaN payload: `is_nan() && is_nan()`
+        // would let a sign flip through.
+        assert_eq!(c.to_bits(), g.to_bits(), "diverges: cpu={c}, gpu={g}");
+    }
+
+    // A reversed (negative-stride) table must reach the same answer on
+    // both backends, having panicked on both before the review.
+    let reversed = solarise.slice(ndarray::s![..;-1]);
+    assert!(reversed.as_slice().is_none());
+    let rcpu = apply_lut(img.view(), reversed, &LutParams::default()).unwrap();
+    let rgpu = cuda::kernels::apply_lut(&ctx, img.view(), reversed, &LutParams::default()).unwrap();
+    // Bitwise, because the image carries NaN and `NaN == NaN` is false.
+    for (c, g) in rcpu.iter().zip(rgpu.iter()) {
+        assert_eq!(
+            c.to_bits(),
+            g.to_bits(),
+            "reversed table diverges: {c} vs {g}"
+        );
+    }
+}
+
+/// The two backends must refuse an oversized request identically — the
+/// CPU used to abort the process where the GPU returned an error.
+#[test]
+fn oversized_histogram_requests_are_refused_by_both() {
+    use phaios_core::histogram::{HistogramParams, histogram};
+
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(4, 4, 3);
+    for params in [
+        HistogramParams::new(500_000_000, 0.0, 1.0),
+        HistogramParams::new(u32::MAX, 0.0, 1.0),
+    ] {
+        let cpu = histogram(img.view(), &params).unwrap_err();
+        let gpu = cuda::kernels::histogram(&ctx, img.view(), &params).unwrap_err();
+        assert_eq!(
+            cpu.to_string(),
+            gpu.to_string(),
+            "both backends must reject with the same message"
+        );
+    }
+}

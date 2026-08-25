@@ -24,7 +24,9 @@ use phaios_core::geometry::{
     straighten,
 };
 use phaios_core::highlight_rolloff::{RolloffParams, highlight_rolloff};
+use phaios_core::histogram::{HistogramParams, histogram};
 use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
+use phaios_core::lut::{LutParams, apply_lut};
 use phaios_core::quantize::{Dither, QuantizeParams, quantize_u8, quantize_u16};
 use phaios_core::split_toning::{SplitToningParams, split_toning};
 use phaios_core::tone::{ToneCurveParams, ZoneParams, tone_curve, zone_system};
@@ -173,6 +175,37 @@ fn bench_quantize(c: &mut Criterion) {
     });
 }
 
+fn bench_analysis(c: &mut Criterion) {
+    let grey = pseudo_random_image(H, W, 1);
+    let rgb = pseudo_random_image(H, W, 3);
+
+    let display = HistogramParams::default();
+    c.bench_function("histogram/24MP/256bins-grey", |b| {
+        b.iter(|| histogram(black_box(grey.view()), black_box(&display)).unwrap())
+    });
+    c.bench_function("histogram/24MP/256bins-rgb", |b| {
+        b.iter(|| histogram(black_box(rgb.view()), black_box(&display)).unwrap())
+    });
+    // The analysis case: enough bins to resolve individual 16-bit codes.
+    let fine = HistogramParams::new(65_536, 0.0, 1.0);
+    c.bench_function("histogram/24MP/65536bins-grey", |b| {
+        b.iter(|| histogram(black_box(grey.view()), black_box(&fine)).unwrap())
+    });
+
+    let lut = ndarray::Array1::from_shape_fn(256, |i| (i as f32 / 255.0).powf(0.7));
+    let lp = LutParams::default();
+    c.bench_function("apply_lut/24MP/256-entry", |b| {
+        b.iter(|| {
+            apply_lut(
+                black_box(grey.view()),
+                black_box(lut.view()),
+                black_box(&lp),
+            )
+            .unwrap()
+        })
+    });
+}
+
 fn bench_local_contrast(c: &mut Criterion) {
     let grey = pseudo_random_image(H, W, 1);
     let params = GuidedFilterParams::new(8, 0.01);
@@ -231,6 +264,7 @@ criterion_group!(
     bench_tone_curve,
     bench_highlight_rolloff,
     bench_quantize,
+    bench_analysis,
     bench_local_contrast,
     bench_film_grain,
     bench_split_toning,

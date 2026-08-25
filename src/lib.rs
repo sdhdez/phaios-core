@@ -21,8 +21,10 @@ pub mod exposure;
 pub mod film_grain;
 pub mod geometry;
 pub mod highlight_rolloff;
+pub mod histogram;
 mod integral;
 pub mod local_contrast;
+pub mod lut;
 pub mod quantize;
 pub mod split_toning;
 pub mod tone;
@@ -561,6 +563,114 @@ pub fn quantize_u16(
     Ok(result.into_pyarray(py).unbind())
 }
 
+// ── Analysis bindings: histogram and LUT ──────────────────────────────────────
+
+/// Count how the image's samples are distributed, per channel.
+///
+/// Returns a ``Histogram`` with ``(channels, bins)`` counts over
+/// ``[min, max]``, plus separate tallies of the samples that fell below
+/// the range, above it, or were NaN. Those three are kept apart from the
+/// bins on purpose: folding out-of-range samples into the end bins is
+/// why so many histogram displays show a spike at the right edge that
+/// cannot be told apart from legitimately bright content.
+///
+/// **Call this after ``encode_srgb``** if the histogram is for a person
+/// to look at. A linear scene-referred histogram is correct and
+/// unreadable — 18% grey sits a fifth of the way up the axis. Call it on
+/// linear data only when analysing headroom.
+///
+/// Deterministic at any thread count and on either backend: bin counts
+/// are integers, and integer addition is associative.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)`` for any channel count, dtype
+///     ``float32``, any memory layout.
+/// params : HistogramParams
+///     Bin count and counted range. Default: 256 bins over ``[0, 1]``.
+///
+/// Returns
+/// -------
+/// Histogram
+///     With ``counts()``, ``cdf()``, ``below()``, ``above()``,
+///     ``non_finite()`` and ``total(channel)``.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``bins`` is below 2 or above 4194304; if the range is not
+///     finite with ``max > min`` or spans more than float32 can
+///     represent; or if the channel count and ``bins`` together would
+///     need an accumulator above the backend's limit.
+#[pyfunction]
+#[pyo3(name = "histogram", signature = (img, params = None))]
+pub fn histogram_fn(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: Option<pyo3::PyRef<'_, histogram::HistogramParams>>,
+) -> PyResult<histogram::Histogram> {
+    let view = img.as_array();
+    let owned = params.map_or_else(histogram::HistogramParams::default, |p| p.clone());
+    Ok(py.detach(move || histogram::histogram(view, &owned))?)
+}
+
+/// Apply a 1-D lookup table as a tone transfer.
+///
+/// The table's entries are spread evenly across ``[params.min,
+/// params.max]``; a sample between two entries is linearly interpolated,
+/// and one outside the domain takes the nearest end entry — clamped, not
+/// extrapolated. The same table is applied to every channel.
+///
+/// This one kernel covers the whole curve family. Sample a UI spline
+/// into a table and it is a curves tool; pass a ``Histogram.cdf()`` row
+/// and it is histogram equalisation; tabulate an H&D curve and it is
+/// film emulation.
+///
+/// The table is **not** required to be monotone — non-monotone tables
+/// are how solarisation is expressed, and it is the one thing
+/// ``tone_curve`` and ``zone_system`` structurally cannot do.
+///
+/// Note that a table is *data*, not a parameter: a consumer promising
+/// exact reproduction must store the whole table in its sidecar. See
+/// ``docs/export.md``.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)`` for any channel count, dtype
+///     ``float32``, any memory layout.
+/// lut : numpy.ndarray
+///     1-D ``float32`` table, at least 2 entries, all finite.
+/// params : LutParams
+///     The input range the table spans. Default: ``[0, 1]``.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If the table has fewer than 2 entries or a non-finite value, or
+///     the domain is not finite with ``max > min`` or spans more than
+///     float32 can represent.
+#[pyfunction]
+#[pyo3(signature = (img, lut, params = None))]
+pub fn apply_lut(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    lut: numpy::PyReadonlyArray1<f32>,
+    params: Option<pyo3::PyRef<'_, lut::LutParams>>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let table = lut.as_array();
+    let owned = params.map_or_else(lut::LutParams::default, |p| p.clone());
+    let result = py.detach(move || lut::apply_lut(view, table, &owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── Local contrast binding ────────────────────────────────────────────────────
 
 /// Enhance local contrast using the He–Sun–Tang guided filter.
@@ -797,6 +907,9 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<highlight_rolloff::RolloffParams>()?;
     m.add_class::<quantize::Dither>()?;
     m.add_class::<quantize::QuantizeParams>()?;
+    m.add_class::<histogram::HistogramParams>()?;
+    m.add_class::<histogram::Histogram>()?;
+    m.add_class::<lut::LutParams>()?;
 
     // Geometry
     m.add_function(wrap_pyfunction!(crop, m)?)?;
@@ -819,6 +932,8 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(highlight_rolloff_fn, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_u8, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_u16, m)?)?;
+    m.add_function(wrap_pyfunction!(histogram_fn, m)?)?;
+    m.add_function(wrap_pyfunction!(apply_lut, m)?)?;
 
     // Local contrast
     m.add_function(wrap_pyfunction!(local_contrast_py, m)?)?;

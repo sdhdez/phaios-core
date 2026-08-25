@@ -306,6 +306,40 @@ fn quantize_u16(
     Ok(result.into_pyarray(py).unbind())
 }
 
+/// Per-channel histogram of a device image, returned on the host.
+///
+/// A reduction, so it returns a ``Histogram`` rather than a
+/// ``GpuImage``: the counts are small and their destination is a display
+/// or an auto-correction, both of which live on the host. Mirrors
+/// ``phaios_core.histogram``; bit-identical, because bin counts are
+/// integers and integer addition commutes.
+#[pyfunction]
+#[pyo3(signature = (img, params = None))]
+fn histogram(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: Option<crate::histogram::HistogramParams>,
+) -> PyResult<crate::histogram::Histogram> {
+    let owned = params.unwrap_or_default();
+    Ok(py.detach(|| cuda::kernels::histogram_device(&img.inner, &owned))?)
+}
+
+/// Apply a 1-D lookup table on the GPU. Mirrors
+/// ``phaios_core.apply_lut``; bit-exact.
+#[pyfunction]
+#[pyo3(signature = (img, lut, params = None))]
+fn apply_lut(
+    py: Python<'_>,
+    img: &GpuImage,
+    lut: numpy::PyReadonlyArray1<f32>,
+    params: Option<crate::lut::LutParams>,
+) -> PyResult<GpuImage> {
+    let table = lut.as_array();
+    let owned = params.unwrap_or_default();
+    let result = py.detach(|| cuda::kernels::apply_lut_device(&img.inner, table, &owned))?;
+    Ok(GpuImage { inner: result })
+}
+
 /// Radial vignette on the GPU. Mirrors ``phaios_core.vignette``;
 /// bit-exact against the CPU.
 #[pyfunction]
@@ -514,6 +548,8 @@ pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult
     gpu.add_function(wrap_pyfunction!(highlight_rolloff, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(quantize_u8, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(quantize_u16, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(histogram, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(apply_lut, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(luminance_bw, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(channel_mixer_bw, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(color_filter_bw, &gpu)?)?;

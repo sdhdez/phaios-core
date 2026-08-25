@@ -907,3 +907,177 @@ def test_quantize_params_repr_and_eq():
     assert a != ph.QuantizeParams(ph.Dither.Tpdf, 8)
     assert "seed=7" in repr(a)
     assert ph.QuantizeParams().seed == 0
+
+
+# ── histogram ────────────────────────────────────────────────────────────────
+
+
+def test_histogram_counts_every_sample(rgb_f32):
+    h = ph.histogram(rgb_f32)
+    assert h.channels == 3 and h.bins == 256
+    assert h.counts().shape == (3, 256)
+    assert h.counts().dtype == np.uint64
+    for ch in range(3):
+        assert h.total(ch) == H * W
+
+
+def test_histogram_separates_clipping_from_content():
+    """Out-of-range samples must not be folded into the end bins — that
+    is the defect this design exists to avoid."""
+    probe = np.array([[[-0.5], [0.5], [1.5], [2.5]]], dtype=np.float32)
+    h = ph.histogram(probe, ph.HistogramParams(4, 0.0, 1.0))
+    assert h.below() == [1]
+    assert h.above() == [2]
+    assert h.counts().sum() == 1, "only the in-range sample is binned"
+    assert h.total(0) == 4
+
+
+def test_histogram_nan_is_not_clipping():
+    probe = np.array([[[np.nan], [np.inf], [-np.inf]]], dtype=np.float32)
+    h = ph.histogram(probe)
+    assert h.non_finite() == [1], "NaN is broken, not bright or dark"
+    assert h.above() == [1] and h.below() == [1], "infinities are genuinely out of range"
+
+
+def test_histogram_endpoints():
+    probe = np.array([[[0.0], [1.0]]], dtype=np.float32)
+    h = ph.histogram(probe, ph.HistogramParams(256, 0.0, 1.0))
+    assert h.counts()[0, 0] == 1 and h.counts()[0, 255] == 1
+    assert h.above() == [0], "exactly max is at white, not clipped"
+
+
+def test_histogram_cdf_is_monotonic_and_normalised(grey_f32):
+    cdf = ph.histogram(grey_f32).cdf()
+    assert cdf.shape == (1, 256) and cdf.dtype == np.float32
+    assert (np.diff(cdf[0]) >= -1e-7).all(), "cdf must be non-decreasing"
+    assert abs(cdf[0, -1] - 1.0) < 1e-6
+
+
+def test_histogram_accepts_strided_input(rgb_f32):
+    view = rgb_f32[::2, ::3]
+    np.testing.assert_array_equal(
+        ph.histogram(view).counts(), ph.histogram(np.ascontiguousarray(view)).counts()
+    )
+
+
+def test_histogram_rejects_bad_params(rgb_f32):
+    for bins, lo, hi in [(1, 0.0, 1.0), (0, 0.0, 1.0), (256, 1.0, 0.0), (256, 0.0, 0.0)]:
+        with pytest.raises(ValueError):
+            ph.histogram(rgb_f32, ph.HistogramParams(bins, lo, hi))
+
+
+def test_histogram_total_rejects_bad_channel(grey_f32):
+    with pytest.raises(IndexError):
+        ph.histogram(grey_f32).total(5)
+
+
+# ── apply_lut ────────────────────────────────────────────────────────────────
+
+
+def test_apply_lut_identity_table_is_identity(grey_f32):
+    lut = np.linspace(0, 1, 256).astype(np.float32)
+    out = ph.apply_lut(grey_f32, lut)
+    assert np.abs(out - grey_f32).max() < 1e-5
+
+
+def test_apply_lut_clamps_outside_the_domain():
+    probe = np.array([[[-5.0], [0.5], [5.0]]], dtype=np.float32)
+    lut = np.array([0.2, 0.8], dtype=np.float32)
+    out = ph.apply_lut(probe, lut)
+    assert out[0, 0, 0] == np.float32(0.2)
+    assert out[0, 2, 0] == np.float32(0.8)
+
+
+def test_apply_lut_nan_propagates():
+    probe = np.array([[[np.nan]]], dtype=np.float32)
+    assert np.isnan(ph.apply_lut(probe, np.array([0.0, 1.0], np.float32))[0, 0, 0])
+
+
+def test_apply_lut_accepts_a_non_contiguous_table(grey_f32):
+    """A cdf() row, or any slice, must work without the caller copying."""
+    wide = np.linspace(0, 1, 512).astype(np.float32)
+    strided = wide[::2]
+    assert not strided.flags["C_CONTIGUOUS"]
+    np.testing.assert_array_equal(
+        ph.apply_lut(grey_f32, strided), ph.apply_lut(grey_f32, np.ascontiguousarray(strided))
+    )
+
+
+def test_apply_lut_custom_domain():
+    probe = np.array([[[2.0]]], dtype=np.float32)
+    lut = np.array([0.0, 1.0], dtype=np.float32)
+    assert abs(ph.apply_lut(probe, lut, ph.LutParams(0.0, 4.0))[0, 0, 0] - 0.5) < 1e-6
+
+
+def test_apply_lut_rejects_bad_tables(grey_f32):
+    for bad in [
+        np.array([0.5], np.float32),
+        np.array([], np.float32),
+        np.array([0.0, np.nan], np.float32),
+        np.array([0.0, np.inf], np.float32),
+    ]:
+        with pytest.raises(ValueError):
+            ph.apply_lut(grey_f32, bad)
+    good = np.linspace(0, 1, 8).astype(np.float32)
+    for lo, hi in [(1.0, 0.0), (0.0, 0.0)]:
+        with pytest.raises(ValueError):
+            ph.apply_lut(grey_f32, good, ph.LutParams(lo, hi))
+
+
+def test_histogram_and_lut_compose_into_equalisation():
+    """The composition that justifies shipping these two rather than an
+    `equalise` kernel: cdf -> apply_lut IS equalisation."""
+    low = (np.random.default_rng(3).random((128, 128, 1)).astype(np.float32) * 0.2 + 0.4)
+    h = ph.histogram(low)
+    equalised = ph.apply_lut(low, h.equalisation_lut()[0])
+    assert equalised.max() - equalised.min() > 3 * (low.max() - low.min())
+    after = ph.histogram(equalised)
+    assert after.total(0) == 128 * 128, "no samples invented or lost"
+
+
+def test_equalisation_lut_is_aligned_and_cdf_is_not():
+    """`cdf()` is cumulative at bin upper edges; `apply_lut` spreads its
+    entries evenly. The leading zero reconciles the two, and without it
+    equalising a uniform image lifts black by a full bin."""
+    bins = 256
+    img = ((np.arange(bins) + 0.5) / bins).astype(np.float32).reshape(1, bins, 1)
+    h = ph.histogram(img, ph.HistogramParams(bins, 0.0, 1.0))
+
+    aligned = ph.apply_lut(img, h.equalisation_lut()[0])
+    assert np.abs(aligned - img).max() < 1e-6, "aligned table must be the identity here"
+
+    raw = ph.apply_lut(img, h.cdf()[0])
+    assert np.abs(raw - img).max() > 0.5 / bins, "the raw cdf is misaligned by ~a bin"
+    assert h.equalisation_lut().shape == (1, bins + 1)
+    assert h.equalisation_lut()[0, 0] == 0.0
+
+
+def test_apply_lut_accepts_a_reversed_table(grey_f32):
+    """`np.flip(cdf)` is the documented way to build a histogram-matching
+    transfer, and a reversed array is negative-stride — the case that
+    used to raise an uncatchable PanicException."""
+    cdf = ph.histogram(grey_f32).equalisation_lut()[0]
+    reversed_table = np.flip(cdf)
+    assert not reversed_table.flags["C_CONTIGUOUS"]
+    np.testing.assert_array_equal(
+        ph.apply_lut(grey_f32, reversed_table),
+        ph.apply_lut(grey_f32, np.ascontiguousarray(reversed_table)),
+    )
+
+
+def test_histogram_rejects_oversized_requests_instead_of_aborting():
+    """An allocation failure in Rust aborts the process rather than
+    unwinding, so nothing in Python could catch it. These must be
+    rejected up front."""
+    tiny = np.zeros((1, 1, 1), np.float32)
+    with pytest.raises(ValueError):
+        ph.histogram(tiny, ph.HistogramParams(500_000_000, 0.0, 1.0))
+    # Default parameters, but a channel count that multiplies out.
+    with pytest.raises(ValueError):
+        ph.histogram(np.zeros((0, 1, 20_000_000), np.float32))
+
+
+def test_apply_lut_nan_keeps_its_bit_pattern():
+    negative_nan = np.array([[[np.float32(np.frombuffer(b"\x00\x00\xc0\xff", dtype=np.float32)[0])]]], dtype=np.float32)
+    out = ph.apply_lut(negative_nan, np.linspace(0, 1, 16).astype(np.float32))
+    assert out.view(np.uint32)[0, 0, 0] == negative_nan.view(np.uint32)[0, 0, 0]

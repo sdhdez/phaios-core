@@ -360,3 +360,42 @@ def test_gpu_quantize_default_params(ctx):
     resident = ctx.upload(img)
     np.testing.assert_array_equal(gpu.quantize_u8(resident), ph.quantize_u8(img))
     np.testing.assert_array_equal(gpu.quantize_u16(resident), ph.quantize_u16(img))
+
+
+@needs_device
+@pytest.mark.parametrize("bins", [2, 256, 1024, 65536])
+def test_gpu_histogram_matches_cpu(ctx, bins):
+    """Both device paths: shared-memory privatised and the global-atomic
+    fallback for tables too large to privatise."""
+    rng = np.random.default_rng(41)
+    img = (rng.random((37, 53, 3)).astype(np.float32) * 1.4) - 0.2
+    params = ph.HistogramParams(bins, 0.0, 1.0)
+    c = ph.histogram(img, params)
+    g = gpu.histogram(ctx.upload(img), params)
+    np.testing.assert_array_equal(c.counts(), g.counts())
+    assert c.below() == g.below()
+    assert c.above() == g.above()
+    assert c.non_finite() == g.non_finite()
+
+
+@needs_device
+def test_gpu_apply_lut_matches_cpu(ctx):
+    rng = np.random.default_rng(42)
+    img = (rng.random((23, 31, 3)).astype(np.float32) * 1.4) - 0.2
+    lut = (np.linspace(0, 1, 256) ** 0.7).astype(np.float32)
+    params = ph.LutParams(0.0, 1.0)
+    got = gpu.apply_lut(ctx.upload(img), lut, params).download()
+    np.testing.assert_array_equal(got, ph.apply_lut(img, lut, params))
+
+
+@needs_device
+def test_gpu_equalisation_round_trip(ctx):
+    """The pair composing on-device: one upload, histogram, LUT, download."""
+    rng = np.random.default_rng(43)
+    img = (rng.random((64, 64, 1)).astype(np.float32) * 0.2 + 0.4)
+    resident = ctx.upload(img)
+    h = gpu.histogram(resident)
+    out = gpu.apply_lut(resident, h.equalisation_lut()[0], ph.LutParams()).download()
+    np.testing.assert_array_equal(
+        out, ph.apply_lut(img, ph.histogram(img).equalisation_lut()[0])
+    )

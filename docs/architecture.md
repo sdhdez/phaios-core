@@ -990,7 +990,99 @@ a code — triangular dither being zero-mean, it must not change exposure.
 
 ---
 
-## 15. Performance (v0.2-dev)
+## 15. Histogram and lookup tables
+
+Two primitives that are dull alone and cover a family together.
+
+### The histogram is a specification, not an algorithm
+
+Counting samples into bins is trivial; `numpy.histogram` does it in one
+line. What is not trivial is agreeing on what to count, and every answer
+below is a decision a front-end would otherwise make for itself — and
+differently from the next front-end:
+
+- **Which data.** A histogram of linear scene-referred values is
+  correct and unreadable: 18% grey sits a fifth of the way up the axis
+  and everything a photographer cares about piles against the left edge.
+  Histograms are read display-referred, so the intended call site is
+  after `encode_srgb`. Analysing highlight headroom is the exception —
+  there the question is how far above 1.0 the data reaches, and the
+  linear frame is the one to ask.
+- **Which range.** Fixed, defaulting to `[0, 1]`, never the data's own
+  extrema. An auto-ranged histogram rescales itself as the photographer
+  works, so two adjustments cannot be compared — which is the one thing
+  the display is for.
+- **What clipping means.** Samples outside the range are tallied
+  separately rather than folded into the end bins. Folding them in is
+  why so many histogram displays show a spike at the right edge that
+  cannot be distinguished from legitimately bright content, and it is
+  the single most common way a histogram misleads.
+- **What NaN means.** Counted apart from both. A NaN is not a bright
+  pixel or a dark one; it is a broken one, and hiding it inside a
+  clipping count would disguise a defect in the caller's data.
+
+### Determinism, for free
+
+This is the crate's only reduction that needs no care at all. §2's
+"deterministic reductions" rule exists because `f32` addition is not
+associative; bin counts are integers, and integer addition is. The
+result is therefore independent of visiting order at any thread count,
+and on the GPU the completion order of the atomics cannot change a
+total. Worth stating explicitly rather than leaving a reader to wonder
+whether the question was considered.
+
+The device kernel privatises the histogram per block in shared memory,
+which removes almost all global contention. That needs
+`channels × (bins + 3)` counters — 3 KB for the 256-bin display case but
+768 KB for a 65536-bin analysis pass — so above what fits, the host
+selects a global-atomic variant instead. Both produce identical counts;
+only the contention differs.
+
+### One table instead of many curves
+
+`apply_lut` evaluates a caller-supplied 1-D table with linear
+interpolation, clamped (not extrapolated) outside its domain. It exists
+because the alternative — a kernel per curve shape — grows without bound
+and still never covers the shape the next photographer asks for.
+
+| To get | Build the table from |
+|---|---|
+| An arbitrary curve from a UI spline | the spline, sampled |
+| Histogram equalisation | the histogram's CDF |
+| Histogram matching | one CDF composed with another's inverse |
+| A film characteristic curve | tabulated H&D data |
+| Solarisation (Sabattier) | a deliberately non-monotone table |
+
+That last row is the one `tone_curve` and `zone_system` structurally
+cannot reach: a single power function and a blend of log-space offsets
+are both monotone by construction. A table has no such opinion, so the
+kernel deliberately does **not** check monotonicity — the Sabattier
+effect *is* a fold in the transfer.
+
+Equalisation is the demonstration that the factoring is right:
+`histogram` → `equalisation_lut()` → `apply_lut` is the complete
+implementation, with no third component.
+
+The alignment is worth one paragraph, because it is the kind of half-bin
+error that looks like nothing and is visible as a lifted black point.
+`cdf()[b]` is the cumulative fraction at the **upper edge** of bin `b`,
+which is the standard definition, so the `bins` values describe inputs
+`1/bins … 1`. `apply_lut` reads an `n`-entry table as describing inputs
+`0 … 1` evenly. Handing the CDF over directly therefore shifts the whole
+transfer by one bin: measured on a uniform image, black lifts by exactly
+`1/bins` while white stays put, so equalising an already-flat image is
+not the identity. `equalisation_lut()` prepends the cumulative fraction
+below the first bin — zero, by definition — which puts entry `i` at input
+fraction `i/bins` on both sides. The uniform case is then the identity
+exactly, which is what the test asserts.
+
+The cost, stated plainly: a table is *data*, not a parameter. Two floats
+reproduce a `ToneCurveParams`; reproducing a LUT means storing the whole
+table in the sidecar (`docs/export.md` §6).
+
+---
+
+## 16. Performance (v0.2-dev)
 
 Measured with `cargo bench` (criterion, bench profile) on a synthetic
 4323 × 5765 (≈ 24 MP) `f32` image filled with deterministic
@@ -1037,7 +1129,7 @@ input, the three B&W kernels measured 10.1 ms rather than 15 ms.
 
 ---
 
-## 16. Geometry (crop, orientation)
+## 17. Geometry (crop, orientation)
 
 Two exact operations, deliberately in the core rather than in front
 ends: their parameters live in consumers' sidecar files, and if two

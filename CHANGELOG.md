@@ -8,6 +8,62 @@ The Rust crate and the Python wheel always carry the same version.
 
 ## [Unreleased] — 0.2.0-dev
 
+### Added — histogram and lookup tables
+
+Two primitives that are dull alone and cover a family together.
+
+`histogram(img, HistogramParams)` — the crate's **first reduction**. It
+returns a `Histogram` (per-channel `(channels, bins)` counts, plus
+separate `below` / `above` / `non_finite` tallies and a `cdf()`), not an
+image, which deliberately widens §1's "pure functions on `(H, W, C)`
+arrays".
+
+The widening is justified by what the function actually settles.
+Counting into bins is trivial; agreeing on *what to count* is not, and
+each of these is a decision a front-end would otherwise make alone:
+histograms are read display-referred, so the intended call site is after
+`encode_srgb`; the range is fixed rather than auto-scaled, so two
+adjustments stay comparable; out-of-range samples are tallied *apart
+from* the end bins, which is the difference between a display that can
+show clipping and one where a bright picture and a clipped one look
+alike; and NaN is counted apart from both, because a NaN is a broken
+pixel rather than a bright or dark one.
+
+It is also the crate's only reduction needing no determinism care at
+all: bin counts are integers and integer addition is associative, so
+neither thread count nor the completion order of the device's atomics
+can change a total.
+
+`apply_lut(img, lut, LutParams)` — arbitrary tone transfer through a
+caller-supplied 1-D table, linearly interpolated and clamped (not
+extrapolated) outside its domain. One kernel instead of a kernel per
+curve shape: sample a UI spline and it is a curves tool, pass a CDF row
+and it is histogram equalisation, tabulate an H&D curve and it is film
+emulation. It deliberately does **not** require monotonicity, which
+makes it the only tone kernel able to express solarisation — `tone_curve`
+and `zone_system` are both monotone by construction.
+
+Equalisation is the proof the factoring is right: `histogram` →
+`equalisation_lut()` → `apply_lut` is the whole implementation, with no
+third component, and the test suite asserts it end to end.
+
+`equalisation_lut()` is `cdf()` with a leading zero, and the extra entry
+is load-bearing. `cdf()[b]` is the cumulative fraction at the *upper
+edge* of bin `b`, so the `bins` values describe inputs `1/bins … 1`,
+while `apply_lut` reads an `n`-entry table as describing `0 … 1` evenly.
+Feeding the CDF straight in biases the transfer by a full bin — black
+lifts by `1/bins`, white stays — so equalising an already-uniform image
+was not quite the identity. With the leading zero it is the identity
+exactly, measured at 16, 64, 256 and 1024 bins.
+
+Both **bit-exact across CPU and CUDA**. The device histogram privatises
+per block in shared memory and falls back to global atomics above what
+fits (768 KB would be needed for a 65536-bin three-channel pass); both
+paths produce identical counts.
+
+24 MP: histogram 3.7 ms (256 bins, 1 channel), 9.4 ms (3 channels),
+49.4 ms (65536 bins); `apply_lut` 10.9 ms.
+
 ### Added — dithered quantisation, and the export contract
 
 `quantize_u8(img, QuantizeParams)` and `quantize_u16(...)` — the

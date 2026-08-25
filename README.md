@@ -46,6 +46,8 @@ freshly allocated C-contiguous array.
 | `highlight_rolloff` | Bézier highlight shoulder; defaults to a hard clip | v0.2 |
 | `encode_srgb` | IEC 61966-2-1 sRGB transfer encoding | v0.1 |
 | `quantize_u8` / `quantize_u16` | Dithered integer conversion (terminal) | v0.2 |
+| `apply_lut` | Arbitrary tone transfer through a 1-D table | v0.2 |
+| `histogram` | Per-channel counts + clipping tallies (a *reduction*) | v0.2 |
 
 ### GPU backend (optional)
 
