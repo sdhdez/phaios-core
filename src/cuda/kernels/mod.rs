@@ -27,7 +27,8 @@ pub use analysis::{apply_lut, apply_lut_device, histogram, histogram_device};
 pub use elementwise::{
     channel_mixer_bw, channel_mixer_bw_device, color_filter_bw, color_filter_bw_device,
     encode_srgb, encode_srgb_device, highlight_rolloff, highlight_rolloff_device, luminance_bw,
-    luminance_bw_device, tone_curve, tone_curve_device, vignette, vignette_device,
+    luminance_bw_device, shadow_rolloff, shadow_rolloff_device, tone_curve, tone_curve_device,
+    vignette, vignette_device,
 };
 pub use exposure::{exposure, exposure_device};
 pub use geometry::{

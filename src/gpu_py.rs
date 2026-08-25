@@ -340,6 +340,22 @@ fn apply_lut(
     Ok(GpuImage { inner: result })
 }
 
+/// Shadow toe on the GPU. Mirrors ``phaios_core.shadow_rolloff``;
+/// bit-exact.
+///
+/// The default ``ShadowRolloffParams()`` is the identity.
+#[pyfunction]
+#[pyo3(signature = (img, params = None))]
+fn shadow_rolloff(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: Option<crate::shadow_rolloff::ShadowRolloffParams>,
+) -> PyResult<GpuImage> {
+    let owned = params.unwrap_or_default();
+    let result = py.detach(|| cuda::kernels::shadow_rolloff_device(&img.inner, &owned))?;
+    Ok(GpuImage { inner: result })
+}
+
 /// Radial vignette on the GPU. Mirrors ``phaios_core.vignette``;
 /// bit-exact against the CPU.
 #[pyfunction]
@@ -546,6 +562,7 @@ pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult
     gpu.add_function(wrap_pyfunction!(tone_curve, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(vignette, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(highlight_rolloff, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(shadow_rolloff, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(quantize_u8, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(quantize_u16, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(histogram, &gpu)?)?;

@@ -789,8 +789,14 @@ fn non_finite_pixels_agree_across_backends() {
         let cpu = phaios_core::bw::hsl_bw(img.view(), &params).unwrap();
         let gpu = cuda::kernels::hsl_bw(&ctx, img.view(), &params).unwrap();
         let (c, g) = (cpu[[0, 0, 0]], gpu[[0, 0, 0]]);
-        assert!(
-            c.to_bits() == g.to_bits() || (c.is_nan() && g.is_nan()),
+        // Strict bit comparison. `is_nan() && is_nan()` would accept any
+        // NaN as equal to any other, and a NaN sign or payload flip is
+        // exactly the divergence class the negated comparisons in these
+        // kernels exist to prevent — the shadow_rolloff review found the
+        // looser form hiding a real one.
+        assert_eq!(
+            c.to_bits(),
+            g.to_bits(),
             "hsl_bw diverges on {pixel:?}: cpu={c}, gpu={g}"
         );
     }
@@ -917,8 +923,11 @@ fn highlight_rolloff_edge_values_agree() {
     let cpu = phaios_core::highlight_rolloff::highlight_rolloff(img.view(), &params).unwrap();
     let gpu = cuda::kernels::highlight_rolloff(&ctx, img.view(), &params).unwrap();
     for (c, g) in cpu.iter().zip(gpu.iter()) {
-        assert!(
-            c.to_bits() == g.to_bits() || (c.is_nan() && g.is_nan()),
+        // Strict, for the reason given on `hsl_bw_non_finite`: the
+        // NaN-tolerant form cannot see a payload or sign divergence.
+        assert_eq!(
+            c.to_bits(),
+            g.to_bits(),
             "edge value diverges: cpu={c}, gpu={g}"
         );
     }
@@ -1144,6 +1153,102 @@ fn oversized_histogram_requests_are_refused_by_both() {
             cpu.to_string(),
             gpu.to_string(),
             "both backends must reject with the same message"
+        );
+    }
+}
+
+/// `shadow_rolloff` is bit-exact: a cubic in Horner form built from
+/// multiply, add, subtract and one divide, every one correctly rounded,
+/// with `-fmad=false` stopping the compiler contracting the polynomial's
+/// multiply-adds. No tolerance.
+#[test]
+fn shadow_rolloff_is_bit_exact() {
+    use phaios_core::shadow_rolloff::{ShadowRolloffParams, shadow_rolloff};
+
+    let Some(ctx) = try_context() else { return };
+    // Reaching below zero and above the knee so every branch is taken.
+    let img = pseudo_random_image(257, 389, 3).mapv(|v| v * 1.3 - 0.15);
+
+    for (knee, strength) in [
+        (0.2_f32, 0.0_f32), // the identity fast path
+        (0.2, 0.25),
+        (0.2, 0.5),
+        (0.2, 1.0), // zero slope at black
+        (1.0, 0.7), // the whole range is toe
+        (0.05, 1.0),
+        (0.0, 1.0), // empty region: also the identity
+    ] {
+        let params = ShadowRolloffParams::new(knee, strength);
+        assert_eq!(
+            shadow_rolloff(img.view(), &params).unwrap(),
+            cuda::kernels::shadow_rolloff(&ctx, img.view(), &params).unwrap(),
+            "shadow_rolloff knee={knee} strength={strength}"
+        );
+    }
+}
+
+/// Non-finite and negative samples must agree too — the branches the
+/// pseudo-random image alone does not reach.
+///
+/// Two things this test had to learn. It sweeps `strength`, because the
+/// only broken case was `strength == 1.0`, where the continuation slope
+/// is exactly zero and `0.0 · −∞` is NaN. And it compares **bit
+/// patterns**, not `is_nan() && is_nan()` — the looser form accepted any
+/// NaN as equal to any other and so could not see the divergence at all,
+/// which is exactly the class the kernel's negated comparisons exist to
+/// prevent.
+#[test]
+fn shadow_rolloff_edge_values_agree() {
+    use phaios_core::shadow_rolloff::{ShadowRolloffParams, shadow_rolloff};
+
+    let Some(ctx) = try_context() else { return };
+    let img = ndarray::array![[
+        [-1.0_f32, -0.001, 0.0],
+        [1e-30, 0.1, 0.2],
+        [f32::INFINITY, f32::NEG_INFINITY, f32::NAN],
+    ]];
+    for step in 0..=10 {
+        let strength = step as f32 / 10.0;
+        let params = ShadowRolloffParams::new(0.2, strength);
+        let cpu = shadow_rolloff(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::shadow_rolloff(&ctx, img.view(), &params).unwrap();
+        for (c, g) in cpu.iter().zip(gpu.iter()) {
+            assert_eq!(
+                c.to_bits(),
+                g.to_bits(),
+                "strength={strength}: cpu={c} and gpu={g} differ bitwise"
+            );
+        }
+    }
+}
+
+/// The device entry point must validate. Deleting the `validate` call in
+/// `shadow_rolloff_device` left every conformance test green, yet that is
+/// the function the Python GPU binding calls — so an out-of-domain
+/// parameter would have produced pixels instead of an error.
+#[test]
+fn shadow_rolloff_device_rejects_what_the_cpu_rejects() {
+    use phaios_core::shadow_rolloff::{ShadowRolloffParams, shadow_rolloff};
+
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(4, 4, 1);
+    for (knee, strength) in [
+        (1.5_f32, 0.5_f32),
+        (-0.1, 0.5),
+        (0.2, 1.5),
+        (0.2, -0.1),
+        (f32::NAN, 0.5),
+        (0.2, f32::INFINITY),
+    ] {
+        let params = ShadowRolloffParams::new(knee, strength);
+        let cpu = shadow_rolloff(img.view(), &params).expect_err("the CPU kernel must reject this");
+        let device = ctx.upload(img.view()).unwrap();
+        let gpu = cuda::kernels::shadow_rolloff_device(&device, &params)
+            .expect_err("the device kernel must reject it too");
+        assert_eq!(
+            cpu.to_string(),
+            gpu.to_string(),
+            "knee={knee} strength={strength}: backends must refuse identically"
         );
     }
 }

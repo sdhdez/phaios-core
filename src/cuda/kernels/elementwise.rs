@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The element-wise finishing kernels: `encode_srgb`, `tone_curve`,
-//! `vignette`, `highlight_rolloff`, and the (H, W, 3) → (H, W, 1)
-//! `luminance_bw`.
+//! `vignette`, `highlight_rolloff`, `shadow_rolloff`, and the
+//! (H, W, 3) → (H, W, 1) `luminance_bw`.
 //!
 //! With FMA contraction disabled at PTX compile time (`-fmad=false` in
 //! build.rs) and every operation involved correctly rounded (mul, add,
@@ -20,6 +20,7 @@ use crate::bw::LuminanceStandard;
 use crate::cuda::context::{Context, DeviceImage};
 use crate::error::PhaiosError;
 use crate::highlight_rolloff::RolloffParams;
+use crate::shadow_rolloff::ShadowRolloffParams;
 use crate::tone::ToneCurveParams;
 use crate::vignette::VignetteParams;
 
@@ -28,6 +29,7 @@ const PTX_TONE: &str = include_str!(concat!(env!("OUT_DIR"), "/tone_curve.ptx"))
 const PTX_VIGNETTE: &str = include_str!(concat!(env!("OUT_DIR"), "/vignette.ptx"));
 const PTX_LUMINANCE: &str = include_str!(concat!(env!("OUT_DIR"), "/luminance_bw.ptx"));
 const PTX_ROLLOFF: &str = include_str!(concat!(env!("OUT_DIR"), "/highlight_rolloff.ptx"));
+const PTX_SHADOW: &str = include_str!(concat!(env!("OUT_DIR"), "/shadow_rolloff.ptx"));
 
 /// Copy a device image (used by identity fast paths, so they mirror the
 /// CPU's `out.assign(&img)` exactly: fresh output, same bytes).
@@ -198,6 +200,62 @@ pub fn highlight_rolloff(
     crate::highlight_rolloff::validate(params)?;
     let device = ctx.upload(img)?;
     ctx.download(&highlight_rolloff_device(&device, params)?)
+}
+
+// ── shadow_rolloff ───────────────────────────────────────────────────────────
+
+/// Cubic Hermite shadow toe, device-resident. Mirrors
+/// [`crate::shadow_rolloff::shadow_rolloff`]; **bit-exact** against the
+/// CPU (multiply, add, subtract and one divide, all correctly rounded).
+///
+/// # Errors
+/// Same [`PhaiosError::Parameter`] as the CPU kernel; plus
+/// [`PhaiosError::Backend`] on device failure.
+#[must_use = "kernel returns a new image; ignoring it wastes work"]
+pub fn shadow_rolloff_device(
+    img: &DeviceImage,
+    params: &ShadowRolloffParams,
+) -> Result<DeviceImage, PhaiosError> {
+    crate::shadow_rolloff::validate(params)?;
+
+    let ShadowRolloffParams { knee, strength } = *params;
+    // Identity fast path, mirroring the CPU short-circuit exactly.
+    if strength == 0.0 || knee <= 0.0 {
+        return copy_device(img);
+    }
+
+    let ctx = img.context().clone();
+    let shape = img.shape();
+    let n = shape.0 * shape.1 * shape.2;
+    let mut out = ctx.alloc_image(shape)?;
+    if n == 0 {
+        return Ok(out);
+    }
+    let n_ll = n as i64;
+    let func = ctx.function("shadow_rolloff_kernel", PTX_SHADOW)?;
+    let mut launch = ctx.stream.launch_builder(&func);
+    launch
+        .arg(&img.buf)
+        .arg(&mut out.buf)
+        .arg(&knee)
+        .arg(&strength)
+        .arg(&n_ll);
+    // Safety: signature matches the .cu; both buffers hold exactly n
+    // elements and the kernel bounds-checks against n.
+    unsafe { launch.launch(grid_1d(n)) }.map_err(be("kernel launch failed"))?;
+    Ok(out)
+}
+
+/// Per-call offload form of [`shadow_rolloff_device`].
+#[must_use = "kernel returns a new array; ignoring it wastes work"]
+pub fn shadow_rolloff(
+    ctx: &Context,
+    img: ArrayView3<f32>,
+    params: &ShadowRolloffParams,
+) -> Result<Array3<f32>, PhaiosError> {
+    crate::shadow_rolloff::validate(params)?;
+    let device = ctx.upload(img)?;
+    ctx.download(&shadow_rolloff_device(&device, params)?)
 }
 
 // ── vignette ─────────────────────────────────────────────────────────────────

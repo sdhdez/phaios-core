@@ -399,3 +399,13 @@ def test_gpu_equalisation_round_trip(ctx):
     np.testing.assert_array_equal(
         out, ph.apply_lut(img, ph.histogram(img).equalisation_lut()[0])
     )
+
+
+@needs_device
+@pytest.mark.parametrize("knee,strength", [(0.2, 0.0), (0.2, 0.5), (0.2, 1.0), (1.0, 0.7), (0.0, 1.0)])
+def test_gpu_shadow_rolloff_matches_cpu(ctx, knee, strength):
+    rng = np.random.default_rng(51)
+    img = (rng.random((19, 27, 3)).astype(np.float32) * 1.3) - 0.15
+    params = ph.ShadowRolloffParams(knee, strength)
+    got = gpu.shadow_rolloff(ctx.upload(img), params).download()
+    np.testing.assert_array_equal(got, ph.shadow_rolloff(img, params))

@@ -44,14 +44,15 @@ pipeline:
 | `split_toning` | 1 | **3** | the only kernel that adds channels |
 | `vignette` | any | same | one factor per pixel, applied to every channel |
 | `tone_curve` | any | same | element-wise |
-| `highlight_rolloff` | any | same | element-wise; last linear stage, immediately before `encode_srgb` |
+| `shadow_rolloff` | any | same | element-wise; the toe, at the start of the tone stages |
+| `highlight_rolloff` | any | same | element-wise; the shoulder, last linear stage before `encode_srgb` |
 | `encode_srgb` | any | same | element-wise |
 | `quantize_u8` | any | same, **`uint8`** | terminal; display-referred input |
 | `quantize_u16` | any | same, **`uint16`** | terminal; display-referred input |
 | `apply_lut` | any | same | element-wise through a caller-supplied table |
 | `histogram` | any | **not an image** | a reduction — returns a `Histogram`, see below |
 
-A kernel given the wrong channel count raises `ValueError`. The thirteen
+A kernel given the wrong channel count raises `ValueError`. The fourteen
 that accept "any" do so for three distinct reasons.
 
 The four **geometry** kernels (`crop`, `orient`, `straighten`, `resize`)
@@ -59,9 +60,10 @@ are channel-agnostic by nature: they move pixels without looking inside
 them, and they run first, before the pipeline has decided anything about
 colour.
 
-The five **tone** kernels (`exposure`, `vignette`, `tone_curve`,
-`highlight_rolloff`, `encode_srgb`) run either side of `split_toning`,
-so a pipeline need not branch on whether toning is enabled.
+The six **tone** kernels (`exposure`, `vignette`, `tone_curve`,
+`shadow_rolloff`, `highlight_rolloff`, `encode_srgb`) run either side of
+`split_toning`, so a pipeline need not branch on whether toning is
+enabled.
 
 The remaining four — `apply_lut`, `quantize_u8`, `quantize_u16` and
 `histogram` — are per-sample by construction. The first three map each
@@ -355,7 +357,8 @@ What is promised across backends:
   once on the host and shared), and `highlight_rolloff` (a quadratic
   solve — IEEE-754-2008 §5.4.1 requires `sqrt` to be correctly rounded
   just as it does the four arithmetic operations, so a curve built from
-  those five alone carries across), `apply_lut` (subtract, divide,
+  those five alone carries across), `shadow_rolloff` (a cubic in Horner
+  form — multiply, add, subtract and one divide), `apply_lut` (subtract, divide,
   multiply, truncate and one linear interpolation), `histogram` (whose
   only float arithmetic is the bin assignment — everything after it is
   integer counting, and integer addition commutes, so the order in which

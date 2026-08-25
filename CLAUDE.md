@@ -20,7 +20,9 @@ encoding.
 B&W (8 hue bands), procedural film grain (explicit seed, no RNG
 dependency), split-toning in OKLab, radial vignette, parametric tone
 curve (ASC CDL); highlight roll-off (the explicit clip-vs-shoulder
-decision, defaulting to a hard clip); dithered quantisation to u8/u16
+decision, defaulting to a hard clip) and its counterpart shadow
+roll-off (the toe; together with `tone_curve` they compose the
+characteristic curve); dithered quantisation to u8/u16
 (the first kernels returning integers); `apply_lut` and `histogram` —
 the latter being the crate's first *reduction*, returning statistics
 rather than an image; the four geometry kernels — `crop`, `orient` (the eight
@@ -121,7 +123,8 @@ RAW (consumer's problem)
   → film grain                                     ← kernel
   → split-toning                      → (H, W, 3) ← kernel
   → vignette                                       ← kernel
-  → parametric tone curve                          ← kernel
+  → shadow roll-off (toe)                          ← kernel
+  → parametric tone curve                          ← kernel (straight)
   → highlight roll-off                             ← kernel (last linear)
   → sRGB encode                                    ← kernel
   → quantize (u8 / u16)                            ← kernel (terminal)

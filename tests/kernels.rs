@@ -763,3 +763,129 @@ fn equalising_an_already_flat_image_changes_little() {
         "an already-uniform image should barely move, shifted {max_shift}"
     );
 }
+
+// ── Shadow roll-off and the characteristic curve ─────────────────────────────
+
+use phaios_core::shadow_rolloff::{ShadowRolloffParams, shadow_rolloff};
+
+/// The property the toe exists for: shadow *separation* shrinks while
+/// the endpoints stay pinned. Checking only the endpoints would pass on
+/// a kernel that did nothing between them.
+#[test]
+fn the_toe_compresses_shadow_separation() {
+    // Eight evenly spaced samples inside the toe region.
+    let vals: Vec<f32> = (0..8).map(|i| i as f32 * 0.02).collect();
+    let img = ndarray::Array3::from_shape_vec((1, 8, 1), vals).unwrap();
+
+    // Measured next to black, which is where the toe acts. Across the
+    // whole toe region the effect is diluted by the part near the knee,
+    // where the curve has already returned to the identity — the span
+    // from 0 to 0.14 barely moves, so measuring that would understate
+    // the kernel and pass on a far weaker one.
+    let near_black = |strength: f32| {
+        let out = shadow_rolloff(img.view(), &ShadowRolloffParams::new(0.2, strength)).unwrap();
+        out[[0, 1, 0]] - out[[0, 0, 0]]
+    };
+
+    let none = near_black(0.0);
+    let some = near_black(0.5);
+    let full = near_black(1.0);
+    assert!(
+        (none - 0.02).abs() < 1e-6,
+        "strength 0 must leave the separation alone, got {none}"
+    );
+    assert!(
+        some < none * 0.65,
+        "half strength should compress clearly: {some} vs {none}"
+    );
+    assert!(
+        full < none * 0.25,
+        "full strength should compress about fivefold: {full} vs {none}"
+    );
+    assert!(
+        full < some,
+        "and more than half strength does: {full} vs {some}"
+    );
+
+    // And the order is never disturbed — a fold here would be a bug.
+    let out = shadow_rolloff(img.view(), &ShadowRolloffParams::new(0.2, 1.0)).unwrap();
+    for i in 1..8 {
+        assert!(
+            out[[0, i, 0]] > out[[0, i - 1, 0]],
+            "ordering broken at {i}"
+        );
+    }
+}
+
+/// The toe darkens as it compresses. A version that lifted the shadows
+/// instead would be a black-lift control, a different thing entirely,
+/// and would still pass a separation-only test.
+#[test]
+fn the_toe_darkens_rather_than_lifting() {
+    let img = ndarray::Array3::from_shape_fn((1, 64, 1), |(_, x, _)| x as f32 / 320.0);
+    let out = shadow_rolloff(img.view(), &ShadowRolloffParams::new(0.2, 0.7)).unwrap();
+    let lifted = img.iter().zip(out.iter()).filter(|(i, o)| o > i).count();
+    assert_eq!(
+        lifted, 0,
+        "{lifted} samples were lifted instead of deepened"
+    );
+}
+
+/// The composition this kernel was built to complete: toe, straight
+/// section, shoulder. The signature of a characteristic curve is that
+/// the slope is low at both ends and holds in the middle, so that is
+/// what gets asserted — not merely that three calls run.
+#[test]
+fn toe_curve_and_shoulder_compose_a_characteristic_curve() {
+    use phaios_core::highlight_rolloff::{RolloffParams, highlight_rolloff};
+    use phaios_core::tone::{ToneCurveParams, tone_curve};
+
+    let n = 4000_usize;
+    let top = 4.0_f32;
+    let img = ndarray::Array3::from_shape_fn((1, n, 1), |(_, x, _)| x as f32 / n as f32 * top);
+
+    let out = highlight_rolloff(
+        tone_curve(
+            shadow_rolloff(img.view(), &ShadowRolloffParams::new(0.18, 0.8))
+                .unwrap()
+                .view(),
+            &ToneCurveParams::new(1.2, 0.0, 1.0),
+        )
+        .unwrap()
+        .view(),
+        &RolloffParams::new(0.7, 3.0),
+    )
+    .unwrap();
+
+    // Monotone, and inside the displayable range at the top.
+    let mut prev = f32::NEG_INFINITY;
+    for i in 0..n {
+        let v = out[[0, i, 0]];
+        assert!(v >= prev, "the composed curve dips at sample {i}");
+        assert!(v <= 1.0 + 1e-6, "and must not exceed white: {v}");
+        prev = v;
+    }
+
+    // Local slope at three places: deep shadow, midtone, near white.
+    let slope_at = |x: f32| {
+        let i = ((x / top) * n as f32) as usize;
+        let (a, b) = (out[[0, i, 0]], out[[0, i + 1, 0]]);
+        (b - a) / (top / n as f32)
+    };
+    let shadow = slope_at(0.01);
+    let mid = slope_at(0.4);
+    let highlight = slope_at(2.0);
+
+    assert!(
+        shadow < mid * 0.6,
+        "the toe must hold less contrast than the midtones: {shadow} vs {mid}"
+    );
+    assert!(
+        highlight < mid * 0.6,
+        "and so must the shoulder: {highlight} vs {mid}"
+    );
+    assert!(
+        mid > 1.0,
+        "the straight section should carry the contrast the curve was given: {mid}"
+    );
+}

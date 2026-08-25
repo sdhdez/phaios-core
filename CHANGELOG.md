@@ -106,6 +106,52 @@ should carry linear scene-referred data and skip both encoding and
 quantisation. The document is written to outlast the parked question of
 *where* file writing lives, since it constrains the output either way.
 
+### Added — shadow roll-off, completing the characteristic curve
+
+`shadow_rolloff(img, ShadowRolloffParams)` — the **toe**, and the
+counterpart to `highlight_rolloff`'s shoulder. An emulsion does not hold
+full contrast down to zero exposure: below some threshold the density
+gradient falls away, so the deepest shadows lose separation and run
+together into black instead of being cut off at a hard floor.
+
+Two parameters: `knee`, above which nothing changes, and `strength`,
+which is one minus the slope at black. On `[0, knee]` the transfer is
+the cubic Hermite fixed by passing through the origin at slope
+`1 − strength` and meeting the identity at the knee in both value and
+slope, so the join shows no crease. Monotone for every strength, and
+`strength = 0` is the *exact* identity — short-circuited rather than
+trusting `knee · (x / knee)` to round back, which it does not always do.
+
+The measurable effect is compression: two samples 0.02 apart just above
+black stay 0.02 apart at strength 0, 0.0119 at 0.5, and 0.0038 at 1.0.
+It darkens as it compresses, which is the right direction — lifting them
+instead would be a black-lift control, a different thing, and a
+separation-only test would not have told the two apart.
+
+**Bit-exact across CPU and CUDA**: a cubic in Horner form, built from
+multiply, add, subtract and one divide, with the same grouping on both
+sides because a different association would round differently.
+
+The point is the composition it completes. With the straight section —
+whose slope is what `tone_curve` sets — the three make the classic
+characteristic shape:
+
+    shadow_rolloff  →  tone_curve  →  highlight_rolloff
+         toe            straight          shoulder
+
+That composition's local slope, measured by feeding scalar probe pairs
+through the three kernels (the table `examples/19_characteristic_curve`
+prints), runs 0.45 / 1.09 / 1.20 / 0.03 at inputs 0.01 / 0.05 / 0.40 /
+2.00 — low, rising, peak, low. A linear rendering gives
+1.00 / 1.00 / 1.00 / 0.00: flat, then clipped abruptly instead of
+gradually. The example also renders the checker at +2 EV, but the slope
+figures come from the probes, not from the image.
+
+It is not a densitometric H&D model and does not claim to be: no
+base-plus-fog, no D-max, no named emulsion, no gamma in the sense a
+densitometer measures. For a genuine measured curve, tabulate it and use
+`apply_lut`. ~11.0 ms on a 24 MP frame.
+
 ### Added — highlight roll-off
 
 `highlight_rolloff(img, RolloffParams)` — the explicit choice between

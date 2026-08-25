@@ -84,6 +84,7 @@ difference.
 | `16_highlight_rolloff.rs` | `highlight_rolloff` | Clip vs shoulder on a +2 EV push; how many of 8 highlights survive each |
 | `17_quantize.rs` | `quantize_u8`, `quantize_u16` | Where banding comes from: a ramp spanning two 8-bit codes, plain vs dithered |
 | `18_histogram_lut.rs` | `histogram`, `apply_lut` | Equalisation from two calls; solarisation; a tabulated film curve |
+| `19_characteristic_curve.rs` | `shadow_rolloff` + the composition | Toe, straight, shoulder; the slope table that shows the shape |
 | `15_gpu_exposure.rs` | CUDA backend | Needs `--features cuda`; bit-exactness and the resident-image pattern |
 
 Several examples print measurements as well as writing files — the

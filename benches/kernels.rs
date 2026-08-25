@@ -28,6 +28,7 @@ use phaios_core::histogram::{HistogramParams, histogram};
 use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
 use phaios_core::lut::{LutParams, apply_lut};
 use phaios_core::quantize::{Dither, QuantizeParams, quantize_u8, quantize_u16};
+use phaios_core::shadow_rolloff::{ShadowRolloffParams, shadow_rolloff};
 use phaios_core::split_toning::{SplitToningParams, split_toning};
 use phaios_core::tone::{ToneCurveParams, ZoneParams, tone_curve, zone_system};
 use phaios_core::vignette::{VignetteParams, vignette};
@@ -159,6 +160,16 @@ fn bench_highlight_rolloff(c: &mut Criterion) {
     });
 }
 
+fn bench_shadow_rolloff(c: &mut Criterion) {
+    // Values inside the toe, so the cubic is exercised rather than
+    // short-circuiting on the above-knee branch.
+    let grey = pseudo_random_image(H, W, 1).mapv(|v| v * 0.2);
+    let params = ShadowRolloffParams::new(0.2, 0.8);
+    c.bench_function("shadow_rolloff/24MP/knee0.2-strength0.8", |b| {
+        b.iter(|| shadow_rolloff(black_box(grey.view()), black_box(&params)).unwrap())
+    });
+}
+
 fn bench_quantize(c: &mut Criterion) {
     // Display-referred input, as the kernel expects.
     let grey = pseudo_random_image(H, W, 1);
@@ -263,6 +274,7 @@ criterion_group!(
     bench_zone_system,
     bench_tone_curve,
     bench_highlight_rolloff,
+    bench_shadow_rolloff,
     bench_quantize,
     bench_analysis,
     bench_local_contrast,

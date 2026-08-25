@@ -850,7 +850,7 @@ walks any input layout — see §2's layout rule.
 
 ---
 
-## 13. Highlight roll-off
+## 13. The characteristic curve: toe and shoulder
 
 The pipeline preserves values above 1.0 through eleven stages, and then
 historically threw them away in one line of consumer code: `np.clip`.
@@ -923,6 +923,70 @@ Last stage on linear scene-referred data, immediately before
 display quantity rather than a scene one; running it before the tone
 stages would let those stages push values back above 1.0 afterwards,
 which defeats the purpose.
+
+### The toe
+
+`shadow_rolloff` is the shoulder's counterpart at the other end. An
+emulsion does not hold full contrast down to zero exposure either: below
+some threshold the density gradient falls away, so the deepest shadows
+lose separation and run together into black rather than being cut off at
+a hard floor (Ferdinand Hurter and Vero C. Driffield, "Photo-Chemical
+Investigations and a New Method of Determination of the Sensitiveness of
+Photographic Plates", *Journal of the Society of Chemical Industry* 9
+(May 1890), p. 455 — the paper the H&D curve is named for).
+
+Two parameters: `knee`, the value above which nothing changes, and
+`strength`, which is one minus the slope at black. On `[0, knee]` the
+transfer is the cubic Hermite fixed by four conditions — through the
+origin, leaving it at slope `1 − strength`, meeting the identity at the
+knee in both value and slope:
+
+```text
+out = knee · [ (s−1)u³ + 2(1−s)u² + s·u ],   u = x/knee,  s = 1 − strength
+```
+
+Monotone for every `strength` in `0..=1`: the derivative is
+`(1−s)(4u − 3u²) + s`, and `4u − 3u²` is non-negative across the
+interval, so the slope never falls below `s`. At `strength = 0` the
+polynomial collapses to `out = x`, and the kernel short-circuits to a
+literal passthrough rather than trusting `knee · (x / knee)` to round
+back — which it does not always do.
+
+The effect is a *compression*, and the number worth remembering is how
+much: two samples 0.02 apart just above black stay 0.02 apart at
+`strength = 0`, 0.0119 at 0.5, and 0.0038 at 1.0 — about fivefold at
+full strength. It also darkens as it compresses, which is the right
+direction: a version that lifted the shadows would be a black-lift
+control, a different thing.
+
+### The three-part shape
+
+Neither roll-off is a film model on its own. Together with the straight
+section — whose slope is what `tone_curve` sets — they compose the
+classic characteristic shape:
+
+```text
+shadow_rolloff  →  tone_curve  →  highlight_rolloff
+     toe            straight          shoulder
+```
+
+The local slope `d(out)/d(in)` of that composition, measured by feeding
+scalar probe pairs straight through the three kernels — the table
+`examples/19_characteristic_curve` prints — runs **0.45** at an input of
+0.01, **1.09** at 0.05, **1.20** at 0.40 and **0.03** at 2.00: low,
+rising, peak, low. At black itself it is lower again, about 0.24. The
+same measurement on a linear rendering gives 1.00, 1.00, 1.00 and then
+0.00 — flat, and then clipped abruptly rather than gradually.
+
+### What this is not
+
+Not a densitometric H&D model. These kernels know nothing of
+base-plus-fog, D-max, or a named emulsion, and they do not claim a gamma
+in the sense a densitometer measures. They compress the two ends of a
+linear tone scale in a controlled, monotone, C¹-continuous way, from
+parameters rather than from data. For a genuine *measured* emulsion
+curve, tabulate the real data and use `apply_lut` (§15) — which is one
+of the reasons that kernel exists.
 
 ---
 

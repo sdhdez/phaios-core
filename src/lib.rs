@@ -26,6 +26,7 @@ mod integral;
 pub mod local_contrast;
 pub mod lut;
 pub mod quantize;
+pub mod shadow_rolloff;
 pub mod split_toning;
 pub mod tone;
 pub mod vignette;
@@ -671,6 +672,60 @@ pub fn apply_lut(
     Ok(result.into_pyarray(py).unbind())
 }
 
+// ── Shadow roll-off binding ───────────────────────────────────────────────────
+
+/// Roll the deepest shadows off into black instead of holding full
+/// contrast down to zero.
+///
+/// Above ``knee`` nothing changes. Below it the curve bends away,
+/// reaching the origin with slope ``1 - strength``, so shadow separation
+/// is compressed and tones run together as they approach black. The join
+/// at the knee is C-1 in value and slope, so it does not show as a crease
+/// in a gradient.
+///
+/// This is the **toe** of the characteristic curve.
+/// ``highlight_rolloff`` is the shoulder, and ``tone_curve`` sets the
+/// slope of the straight section between them; applied in that order
+/// they compose the classic three-part film tone scale. For a *measured*
+/// emulsion curve rather than a parametric one, tabulate the data and
+/// use ``apply_lut``.
+///
+/// The default ``ShadowRolloffParams()`` has ``strength=0`` and is the
+/// exact identity.
+///
+/// Order-sensitive: apply at the start of the tone stages, on linear
+/// scene-referred data, before the contrast is set.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)`` for any channel count, dtype
+///     ``float32``, any memory layout.
+/// params : ShadowRolloffParams
+///     Knee and strength, both in 0..=1. Default: no compression.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``knee`` or ``strength`` is outside 0..=1, or is not finite.
+#[pyfunction]
+#[pyo3(name = "shadow_rolloff", signature = (img, params = None))]
+pub fn shadow_rolloff_fn(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: Option<pyo3::PyRef<'_, shadow_rolloff::ShadowRolloffParams>>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let owned = params.map_or_else(shadow_rolloff::ShadowRolloffParams::default, |p| p.clone());
+    let result = py.detach(move || shadow_rolloff::shadow_rolloff(view, &owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── Local contrast binding ────────────────────────────────────────────────────
 
 /// Enhance local contrast using the He–Sun–Tang guided filter.
@@ -905,6 +960,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<split_toning::SplitToningParams>()?;
     m.add_class::<vignette::VignetteParams>()?;
     m.add_class::<highlight_rolloff::RolloffParams>()?;
+    m.add_class::<shadow_rolloff::ShadowRolloffParams>()?;
     m.add_class::<quantize::Dither>()?;
     m.add_class::<quantize::QuantizeParams>()?;
     m.add_class::<histogram::HistogramParams>()?;
@@ -930,6 +986,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(zone_system, m)?)?;
     m.add_function(wrap_pyfunction!(tone_curve, m)?)?;
     m.add_function(wrap_pyfunction!(highlight_rolloff_fn, m)?)?;
+    m.add_function(wrap_pyfunction!(shadow_rolloff_fn, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_u8, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_u16, m)?)?;
     m.add_function(wrap_pyfunction!(histogram_fn, m)?)?;

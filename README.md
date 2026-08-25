@@ -43,6 +43,7 @@ freshly allocated C-contiguous array.
 | `split_toning` | Shadow/highlight tinting in OKLab — returns `(H, W, 3)` | v0.2 |
 | `vignette` | Radial darkening or lightening, resolution-independent | v0.2 |
 | `tone_curve` | Parametric slope/offset/power curve (ASC CDL) | v0.2 |
+| `shadow_rolloff` | Cubic shadow toe; with the shoulder, the characteristic curve | v0.2 |
 | `highlight_rolloff` | Bézier highlight shoulder; defaults to a hard clip | v0.2 |
 | `encode_srgb` | IEC 61966-2-1 sRGB transfer encoding | v0.1 |
 | `quantize_u8` / `quantize_u16` | Dithered integer conversion (terminal) | v0.2 |

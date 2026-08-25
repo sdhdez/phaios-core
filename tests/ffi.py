@@ -731,6 +731,7 @@ def test_all_kernels_accept_any_layout(label, rgb_f32, grey_f32):
         ph.film_grain(grey, ph.GrainParams(0.2, 2.0, 99)),
         ph.orient(grey, ph.Orientation.Rotate180),
         ph.highlight_rolloff(grey, ph.RolloffParams(0.7, 3.0)),
+        ph.shadow_rolloff(grey, ph.ShadowRolloffParams(0.2, 0.5)),
     ):
         assert out.shape == grey.shape
         assert out.flags["C_CONTIGUOUS"], "output must be C-contiguous"
@@ -1081,3 +1082,96 @@ def test_apply_lut_nan_keeps_its_bit_pattern():
     negative_nan = np.array([[[np.float32(np.frombuffer(b"\x00\x00\xc0\xff", dtype=np.float32)[0])]]], dtype=np.float32)
     out = ph.apply_lut(negative_nan, np.linspace(0, 1, 16).astype(np.float32))
     assert out.view(np.uint32)[0, 0, 0] == negative_nan.view(np.uint32)[0, 0, 0]
+
+
+# ── shadow_rolloff (the toe) ─────────────────────────────────────────────────
+
+
+def test_shadow_rolloff_default_is_the_identity(grey_f32):
+    np.testing.assert_array_equal(ph.shadow_rolloff(grey_f32), grey_f32)
+    np.testing.assert_array_equal(
+        ph.shadow_rolloff(grey_f32, ph.ShadowRolloffParams(0.2, 0.0)), grey_f32
+    )
+
+
+def test_shadow_rolloff_params_defaults_and_repr():
+    """The documented `ShadowRolloffParams()` default is the identity, and
+    the pyo3 signature defaults are only reachable from Python — nothing
+    on the Rust side exercises them."""
+    p = ph.ShadowRolloffParams()
+    assert p.knee == pytest.approx(0.2)
+    assert p.strength == 0.0
+    assert p == ph.ShadowRolloffParams(0.2, 0.0)
+    assert p != ph.ShadowRolloffParams(0.2, 0.5)
+    assert "strength=0" in repr(p)
+    # Keyword-only construction, as the docstring advertises.
+    assert ph.ShadowRolloffParams(strength=0.5).strength == 0.5
+    assert ph.ShadowRolloffParams(knee=0.4).knee == pytest.approx(0.4)
+
+
+def test_shadow_rolloff_non_finite_at_every_strength():
+    """-inf must survive at strength 1.0, where the continuation slope is
+    zero and `0.0 * -inf` would make it NaN."""
+    probe = np.array([[[np.nan], [np.inf], [-np.inf]]], dtype=np.float32)
+    for st in (0.0, 0.5, 1.0):
+        out = ph.shadow_rolloff(probe, ph.ShadowRolloffParams(0.2, st))
+        assert np.isnan(out[0, 0, 0])
+        assert out[0, 1, 0] == np.inf
+        assert out[0, 2, 0] == -np.inf, f"-inf became {out[0, 2, 0]} at strength {st}"
+
+
+def test_shadow_rolloff_compresses_shadow_separation():
+    probe = np.array([[[0.0], [0.02]]], dtype=np.float32)
+    sep = lambda st: float(
+        np.diff(ph.shadow_rolloff(probe, ph.ShadowRolloffParams(0.2, st))[0, :, 0])[0]
+    )
+    assert abs(sep(0.0) - 0.02) < 1e-6
+    assert sep(0.5) < 0.02 * 0.65
+    assert sep(1.0) < 0.02 * 0.25
+    assert sep(1.0) < sep(0.5)
+
+
+def test_shadow_rolloff_pins_its_endpoints_and_leaves_the_rest():
+    knee = 0.2
+    probe = np.array([[[0.0], [knee], [0.5], [1.0], [4.0]]], dtype=np.float32)
+    out = ph.shadow_rolloff(probe, ph.ShadowRolloffParams(knee, 0.9))
+    assert out[0, 0, 0] == np.float32(0.0)
+    assert out[0, 1, 0] == np.float32(knee)
+    np.testing.assert_array_equal(out[0, 2:, 0], probe[0, 2:, 0])
+
+
+def test_shadow_rolloff_darkens_rather_than_lifting():
+    probe = (np.arange(64) / 320.0).astype(np.float32).reshape(1, 64, 1)
+    out = ph.shadow_rolloff(probe, ph.ShadowRolloffParams(0.2, 0.7))
+    assert (out <= probe + 1e-7).all()
+
+
+@pytest.mark.parametrize(
+    "knee,strength",
+    [(1.5, 0.5), (-0.1, 0.5), (0.2, 1.5), (0.2, -0.1), (float("nan"), 0.5), (0.2, float("inf"))],
+)
+def test_shadow_rolloff_rejects_out_of_domain(grey_f32, knee, strength):
+    with pytest.raises(ValueError):
+        ph.shadow_rolloff(grey_f32, ph.ShadowRolloffParams(knee, strength))
+
+
+def test_characteristic_curve_composes_from_three_kernels():
+    """Toe, straight section, shoulder: low slope at both ends, contrast
+    held in the middle. That shape is the whole point of the toe."""
+    top = 4.0
+    x = np.linspace(0, top, 4001).astype(np.float32).reshape(1, -1, 1)
+    y = ph.highlight_rolloff(
+        ph.tone_curve(
+            ph.shadow_rolloff(x, ph.ShadowRolloffParams(0.18, 0.8)),
+            ph.ToneCurveParams(1.2, 0.0, 1.0),
+        ),
+        ph.RolloffParams(0.7, 3.0),
+    )
+    assert (np.diff(y[0, :, 0]) >= -1e-7).all(), "must stay monotone"
+    assert y.max() <= 1.0 + 1e-6
+
+    slope = np.gradient(y[0, :, 0].astype(np.float64), x[0, :, 0].astype(np.float64))
+    at = lambda v: slope[np.argmin(np.abs(x[0, :, 0] - v))]
+    assert at(0.01) < at(0.4) * 0.6, "the toe holds less contrast than the midtones"
+    assert at(2.0) < at(0.4) * 0.6, "and so does the shoulder"
+    assert at(0.4) > 1.0, "the straight section carries the contrast it was given"
