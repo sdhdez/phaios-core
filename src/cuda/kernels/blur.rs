@@ -8,10 +8,13 @@
 //! backends can never disagree about which filter they are applying —
 //! only about the order in which they sum it.
 //!
-//! **Bounded, not bit-exact.** The CPU accumulates in f64; a consumer
-//! card runs f64 at 1/64 rate, so the device accumulates in f32 with
-//! Kahan compensation instead. Same trade as `local_contrast`, same
-//! reasoning, and the bound is committed in `docs/ffi.md` §6.
+//! **Bounded, not bit-exact.** The CPU accumulates in f64. The direct
+//! convolution answers that with Kahan-compensated f32 — the same trade
+//! as `local_contrast`, and enough because that loop only ever adds
+//! positive-weighted terms. The box pass accumulates in f64 like its host
+//! counterpart: a sliding window subtracts, which no compensation scheme
+//! survives on high-dynamic-range input. The bound is committed in
+//! `docs/ffi.md` §6.
 
 use cudarc::driver::PushKernelArg;
 use ndarray::{Array3, ArrayView3};

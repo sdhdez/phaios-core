@@ -1283,6 +1283,48 @@ fn blur_agrees_within_bound_on_both_paths() {
     }
 }
 
+/// The same agreement, on input that actually spans a scene's dynamic
+/// range.
+///
+/// `pseudo_random_image` draws from `[0, 1)`, so nothing above ever put a
+/// bright sample and a dark one in the same sliding window — and that is
+/// precisely what the box path could not survive. With an f32 accumulator
+/// holding ~1e8, the ~1e-4 samples entering behind it were annihilated on
+/// contact, and when the bright sample left the window their contribution
+/// was gone: 164% relative error against an exact oracle at a 1e4
+/// highlight, and 2.8e7 times this bound at 1e8. Kahan compensation does
+/// not help, because its error bound scales with Σ|xᵢ|, which the bright
+/// sample dominates.
+///
+/// A dark field with a specular bar is not an exotic input for this
+/// crate. It is linear scene-referred data with a highlight in it.
+#[test]
+fn blur_agrees_within_bound_across_the_dynamic_range() {
+    use phaios_core::blur::{BlurParams, BlurShape, blur};
+
+    let Some(ctx) = try_context() else { return };
+
+    for highlight in [1.0_f32, 1e2, 1e4, 1e6, 1e8] {
+        let mut img = ndarray::Array3::<f32>::from_elem((97, 131, 1), 1e-4);
+        img.slice_mut(ndarray::s![40..44, 20..110, ..])
+            .fill(highlight);
+
+        // Both paths: below the crossover a direct convolution, at or above
+        // it the sliding window that was wrong.
+        for sigma in [3.0_f32, 12.0, 30.0] {
+            let params = BlurParams::new(sigma, BlurShape::Gaussian);
+            let cpu = blur(img.view(), &params).unwrap();
+            let gpu = cuda::kernels::blur(&ctx, img.view(), &params).unwrap();
+            let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+            assert!(
+                v <= 1.0,
+                "blur sigma={sigma} with a {highlight:e} highlight: \
+                 {v:.4}x the (1e-5, 1e-7) bound"
+            );
+        }
+    }
+}
+
 /// The identity path must be bit-exact on both backends: σ = 0 is a copy,
 /// not a filter, and a copy has no rounding to disagree about.
 #[test]
@@ -1366,10 +1408,14 @@ fn glow_identity_is_bit_exact() {
     assert_eq!(glow(img.view(), &params).unwrap(), img);
 }
 
-/// `blur` and `glow` diverge on non-finite input, and `docs/ffi.md` §1
-/// says so. This pins the *shape* of that divergence rather than
-/// papering over it: the device's Kahan compensation computes ∞ − ∞ and
-/// yields NaN where the host's uncompensated f64 sum keeps ±∞.
+/// `blur` and `glow` diverge on non-finite input **below the box
+/// crossover**, and `docs/ffi.md` §1 says so. This pins the *shape* of
+/// that divergence rather than papering over it: on the direct path the
+/// device's Kahan compensation computes ∞ − ∞ and yields NaN where the
+/// host's uncompensated f64 sum keeps ±∞. σ here is deliberately 1.5.
+///
+/// At or above the crossover the two agree — both accumulate the box
+/// passes in f64, and a sliding window turns ∞ into NaN on either side.
 ///
 /// If a future change makes these agree, this test fails and the doc
 /// paragraph should be rewritten — that would be good news.

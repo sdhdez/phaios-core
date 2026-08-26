@@ -1340,6 +1340,24 @@ setup stays small against the sliding work it buys parallelism for.
 The lesson generalises: on a GPU an O(1)-per-output algorithm with five
 thousand threads loses to an O(r) one with twenty-four million.
 
+**And it accumulates in f64, not compensated f32.** The direct path uses
+Kahan-compensated f32 and is right to: every weight is positive, nothing
+is ever subtracted, and the loop is well conditioned. A sliding window is
+not. It subtracts, so once the accumulator holds a bright sample the dark
+ones entering behind it are annihilated on contact, and what they
+contributed is gone when the bright one leaves. Kahan does not rescue
+this — its error bound scales with `Σ|xᵢ|`, which the bright sample
+dominates. Measured against an exact oracle on a dark field with a
+specular bar: 164% relative error at a 1e4 highlight, and up to 2.8e7×
+the committed cross-backend bound at 1e8, on data this crate exists to
+process. Only carrying the magnitude fixes it.
+
+The f64 costs nothing measurable — 7.5 → 7.5 ms at σ = 6 and 8.8 → 8.3 ms
+at σ = 64 — because the kernel is bandwidth-bound: two loads and a store
+per output against three f64 operations, so even a consumer card's 1/64
+f64 rate hides under the memory traffic. Where arithmetic is not the
+bottleneck, precision is very cheap.
+
 ---
 
 ## 19. Geometry (crop, orientation)

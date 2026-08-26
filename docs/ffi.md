@@ -161,14 +161,23 @@ Two things are worth knowing about how the disagreement behaves, because
 they are structural rather than incidental:
 
 - *Neighbourhood kernels do not, and the reasons differ per kernel.*
-  `blur` and `glow` (which is built on it) diverge on ±∞: the device
-  accumulates each separable pass with Kahan compensation, and the
-  compensation term computes `∞ − ∞ = NaN`, which then poisons every
-  later term — so the device returns NaN where the host, whose f64 sum
-  carries no compensation term, returns ±∞. One infinite sample is
-  enough. Removing the compensation would trade a documented divergence
-  on input the contract excludes for a real accuracy loss on input it
-  does not, which is a bad trade.
+  `blur` and `glow` (which is built on it) diverge on ±∞ **below σ = 6**,
+  where the device runs a direct convolution accumulated in
+  Kahan-compensated f32: the compensation term computes `∞ − ∞ = NaN`,
+  which then poisons every later term, so the device returns NaN where
+  the host's uncompensated f64 sum returns ±∞. One infinite sample is
+  enough. Dropping the compensation there would trade a divergence on
+  input the contract already excludes for a real accuracy loss on input
+  it does not.
+
+  At or above σ = 6 both backends accumulate the box passes in f64 and
+  agree, including on ±∞ — a sliding window subtracts, so an infinity
+  becomes NaN on *both* sides. That path used to accumulate in
+  Kahan-compensated f32 and was not merely divergent on non-finite input:
+  it missed the committed bound by up to 2.8e7× on ordinary linear
+  scene-referred data with a highlight in it, because Kahan's error
+  bound scales with `Σ|xᵢ|`, which a bright sample dominates.
+  `blur_agrees_within_bound_across_the_dynamic_range` pins it.
 - *Element-wise and geometry kernels* stay in agreement anyway. Their
   arithmetic is per-pixel, so a poisoned sample poisons exactly its own
   output on both backends. `non_finite_pixels_agree_across_backends` in

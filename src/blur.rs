@@ -58,12 +58,13 @@
 //! accumulate in a different order on a device than on a host. See
 //! `docs/ffi.md` §6.
 //!
-//! On **non-finite** input the two backends diverge outright, and
-//! `docs/ffi.md` §1 records it: the device's Kahan compensation computes
-//! `∞ − ∞ = NaN` and poisons the rest of the sum, so it returns NaN
-//! where the host returns ±∞. Finite samples are a precondition of the
-//! whole crate, and dropping the compensation to paper over this would
-//! cost real accuracy on the input that is actually in scope.
+//! On **non-finite** input the two backends diverge below the crossover,
+//! and `docs/ffi.md` §1 records it: the direct path's Kahan compensation
+//! computes `∞ − ∞ = NaN` and poisons the rest of the sum, so the device
+//! returns NaN where the host returns ±∞. At or above the crossover both
+//! backends now accumulate in f64 and agree — a sliding window subtracts,
+//! so `∞` becomes NaN on *both* sides. Finite samples are a precondition
+//! of the whole crate either way.
 
 use ndarray::{Array3, ArrayView2, ArrayView3, ArrayViewMut2, Axis};
 use pyo3::{pyclass, pymethods};
