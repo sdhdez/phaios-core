@@ -1264,12 +1264,17 @@ Measured with `cargo bench` (criterion, bench profile) on a synthetic
 4323 × 5765 (≈ 24 MP) `f32` image filled with deterministic
 pseudo-random values. Not CI gates — informational only.
 
+### CPU
+
 | Kernel | Measured mean | Benchmark id | Notes |
 |--------|--------------|--------------|-------|
 | `crop` | **7.7 ms** | `crop/24MP/centre-half` | pure copy of the half-area rectangle |
 | `orient` | **112.7 ms** | `orient/24MP/rotate90` | known-slow: the transposing copy is cache-hostile and currently single-threaded; quarter-turn-heavy pipelines should batch it with straighten |
 | `resize` | **32.6 ms** | `resize/24MP/to-2048-area` | separable area filter to a 2048-wide export |
 | `straighten` | **47.1 ms** | `straighten/24MP/2deg` | 16-tap Catmull-Rom per pixel |
+| `blur` | **50 / 71 ms** | `blur/24MP/sigma2-direct`, `sigma5.9-direct` | direct path; grows with σ at about 1.3 ms per tap |
+| `blur` | **90 ms** | `blur/24MP/sigma{6,16,64}-box` | box path; **flat** — identical at σ 6, 16 and 64 |
+| `glow` | **106 / 117 ms** | `glow/24MP/{halation,diffusion,glare}` | the blur plus two element-wise passes |
 | `exposure` | **29.3 ms** | `exposure/24MP/+1EV` | 3 channels in *and* out — 300 MB of traffic, twice the B&W kernels' |
 | `luminance_bw` | **14.8 ms** | `luminance_bw/24MP/BT709` | Memory-bandwidth bound |
 | `channel_mixer_bw` | **15.0 ms** | `channel_mixer_bw/24MP` | Same bandwidth pattern |
@@ -1302,6 +1307,38 @@ to v0.1.1 ran on a *constant* image, which is the cheapest possible
 input for `encode_srgb` (one branch), `zone_system` (one zone position)
 and `local_contrast` (zero variance everywhere). Against the same flat
 input, the three B&W kernels measured 10.1 ms rather than 15 ms.
+
+---
+
+### GPU
+
+Device-resident, single channel, same frame, timed with the stream
+synchronised — an unsynchronised measurement reports launch overhead and
+impossible numbers, which is how the figures below were nearly wrong.
+
+| Kernel | GPU | CPU | Notes |
+|---|---|---|---|
+| `exposure` | 2.0 ms | 29.3 ms | element-wise reference point |
+| `local_contrast` r=8 | 4.4 ms | 178 ms | |
+| `blur` σ=2 / 5.9 (direct) | 6.0 / 10.7 ms | 50 / 71 ms | one thread per output element |
+| `blur` σ=6 / 64 (box) | 7.5 / 8.8 ms | 90 ms | segmented; see below |
+| `glow` halation / glare | 8.3 / 17.9 ms | 106 / 117 ms | |
+
+**The box kernel had to be segmented to get there.** Written the obvious
+way — one thread per row or column, sliding a window along it — it
+measured **40 ms**, four times the direct path and worse than
+`local_contrast`, which does far more work. The cause is that a 24 MP
+frame has only about five thousand rows or columns, so a thread per lane
+leaves a modern device around 95% idle with each thread grinding through
+thousands of serial steps.
+
+Cutting each lane into segments and giving one thread to each takes it to
+**7.5 ms**, a 5.4× improvement, at the cost of every segment recomputing
+its own leading window. The host sizes the segments so that O(radius)
+setup stays small against the sliding work it buys parallelism for.
+
+The lesson generalises: on a GPU an O(1)-per-output algorithm with five
+thousand threads loses to an O(r) one with twenty-four million.
 
 ---
 

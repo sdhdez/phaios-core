@@ -144,7 +144,8 @@ element-wise and exact, and the spread between them is the crate's one
 Gaussian, so this cannot drift from `blur`. Bounded at (rtol 1e-5, atol
 1e-7), inherited entirely from that blur.
 
-24 MP: 106 ms for halation and diffusion, 117 ms for glare.
+24 MP: 106 ms for halation and diffusion, 117 ms for glare on the CPU;
+8.3 and 17.9 ms on the GPU.
 
 ### Added — Gaussian blur
 
@@ -181,6 +182,13 @@ Borders clamp: a constant image is preserved exactly including its edges,
 and an impulse near an edge loses the tail that falls outside — a σ = 5
 kernel in a 16×16 frame keeps 0.79 of its energy. Both halves are
 asserted, so the second cannot later be mistaken for a defect.
+
+On the GPU the box kernel needed segmenting to be worth having. Written
+the obvious way — one thread per row or column — it measured **40 ms**,
+four times the direct path and worse than `local_contrast`, because a
+24 MP frame has only ~5000 lanes and a thread each leaves the device
+about 95% idle. Cutting each lane into segments takes it to **7.5 ms**.
+GPU figures: blur 6.0–10.7 ms direct, 7.5–8.8 ms box.
 
 **Bounded, not bit-exact** across backends at (rtol 1e-5, atol 1e-7): the
 device accumulates each pass in Kahan-compensated f32 where the host uses

@@ -71,10 +71,25 @@ fn pass(
         Pass::Box(radius) => {
             let r = i32::try_from(*radius)
                 .map_err(|_| PhaiosError::Parameter(format!("box radius {radius} too large")))?;
-            // One thread per (row, channel) lane, not per element: the
-            // sliding sum is serial along a lane.
+
+            // Lanes alone are far too few: a 24 MP frame has ~5000 rows
+            // or columns, which leaves the device idle and measured 4x
+            // slower than the direct path. Cut each lane into segments so
+            // there is real work to schedule.
+            //
+            // Each segment recomputes its own leading window, O(radius)
+            // repeated per segment, so the segment must stay long enough
+            // that the setup is small against the sliding it enables —
+            // hence the floor at several times the radius.
             let lanes = rows * c;
-            let lanes_ll = lanes as i64;
+            let min_seg = (4 * radius + 16).max(64);
+            let want_threads = 1 << 16;
+            let segments = (want_threads / lanes.max(1)).clamp(1, len.div_ceil(min_seg).max(1));
+            let seg_len = len.div_ceil(segments.max(1)).max(1);
+            let seg_len_i = i32::try_from(seg_len)
+                .map_err(|_| PhaiosError::Parameter(format!("segment {seg_len} too large")))?;
+            let threads = lanes * len.div_ceil(seg_len);
+            let lanes_ll = threads as i64;
             let func = ctx.function("blur_box_kernel", PTX)?;
             let mut launch = ctx.stream.launch_builder(&func);
             launch
@@ -85,11 +100,12 @@ fn pass(
                 .arg(&len_i)
                 .arg(&c_i)
                 .arg(&axis)
+                .arg(&seg_len_i)
                 .arg(&lanes_ll);
-            // Safety: signature matches the .cu; each lane writes exactly
-            // `len` elements of the output, all within its own row, and
-            // every read index is clamped into [0, len-1].
-            unsafe { launch.launch(grid_1d(lanes)) }.map_err(be("kernel launch failed"))?;
+            // Safety: signature matches the .cu; the segments of a lane
+            // partition it, so every output element is written exactly
+            // once, and every read index is clamped into [0, len-1].
+            unsafe { launch.launch(grid_1d(threads)) }.map_err(be("kernel launch failed"))?;
         }
     }
     Ok(out)
