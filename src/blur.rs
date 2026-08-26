@@ -290,7 +290,12 @@ fn box_lane(src: ArrayView2<'_, f32>, mut dst: ArrayViewMut2<'_, f32>, radius: u
 /// the same shape of parallelism every other kernel here uses. Nothing
 /// is transposed: `axis_iter` over axis 0 yields rows and over axis 1
 /// yields columns, both as `(len, channels)` views.
-fn separable<F>(img: &Array3<f32>, pass: F) -> Result<Array3<f32>, PhaiosError>
+/// Takes a *view*, not an owned array, so the first pass can read the
+/// caller's memory directly. `Zip` walks any layout, so a strided or
+/// Fortran-order input costs nothing but the read; materialising it first
+/// would cost a full-resolution copy — 100 MB on a 24 MP frame — and, worse,
+/// would allocate the caller's *logical* shape before any bound was checked.
+fn separable<F>(img: ArrayView3<'_, f32>, pass: F) -> Result<Array3<f32>, PhaiosError>
 where
     F: Fn(ArrayView2<'_, f32>, ArrayViewMut2<'_, f32>) + Sync + Send,
 {
@@ -356,13 +361,18 @@ pub(crate) fn validate(params: &BlurParams) -> Result<(), PhaiosError> {
 pub fn blur(img: ArrayView3<f32>, params: &BlurParams) -> Result<Array3<f32>, PhaiosError> {
     validate(params)?;
 
-    let owned = img.to_owned();
-    let (h, w, c) = owned.dim();
+    let (h, w, c) = img.dim();
+    // Bound the caller's *logical* shape before touching a single pixel of
+    // it. A zero-stride numpy view reaches gigabytes from four bytes of
+    // storage, so a guard placed after the copy is not a guard: it reports
+    // the right error having already committed the memory.
+    crate::alloc::check_shape::<f32>((h, w, c))?;
+
     if params.sigma == 0.0 || h == 0 || w == 0 || c == 0 {
         // Identity: a fresh C-contiguous copy, matching every other
         // kernel's fast path.
         let mut out = crate::alloc::zeros3::<f32>((h, w, c))?;
-        out.assign(&owned);
+        out.assign(&img);
         return Ok(out);
     }
 
@@ -370,15 +380,22 @@ pub fn blur(img: ArrayView3<f32>, params: &BlurParams) -> Result<Array3<f32>, Ph
         BlurShape::Gaussian => {
             if params.sigma < BOX_CROSSOVER_SIGMA {
                 let weights = gaussian_weights(params.sigma);
-                separable(&owned, |s, d| conv_lane(s, d, &weights))
+                separable(img, |s, d| conv_lane(s, d, &weights))
             } else {
                 let widths = box_widths(params.sigma);
-                let mut cur = owned;
+                let mut cur: Option<Array3<f32>> = None;
                 for wdt in widths {
                     let r = (wdt - 1) / 2;
-                    cur = separable(&cur, |s, d| box_lane(s, d, r))?;
+                    // The first pass reads the caller's view; later ones read
+                    // the previous pass's output. Matched rather than
+                    // `map_or`, so the borrow of `cur` ends before it is
+                    // reassigned.
+                    cur = Some(match cur.as_ref() {
+                        Some(prev) => separable(prev.view(), |s, d| box_lane(s, d, r))?,
+                        None => separable(img, |s, d| box_lane(s, d, r))?,
+                    });
                 }
-                Ok(cur)
+                Ok(cur.expect("three box passes always run at least once"))
             }
         }
     }
@@ -585,6 +602,37 @@ mod tests {
         for s in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert!(blur(img.view(), &BlurParams::new(s, BlurShape::Gaussian)).is_err());
         }
+    }
+
+    #[test]
+    fn an_oversized_logical_shape_is_refused_before_it_is_materialised() {
+        // A zero-stride broadcast: four bytes of real storage behind a shape
+        // implying 43 TB. The guard has to fire on the shape alone.
+        //
+        // The size is chosen so the test *bites*. `blur` used to open with
+        // `img.to_owned()` and only meet a bound further down, which returned
+        // exactly this error having already committed the caller's full
+        // logical shape — so a merely-large shape passes either way on a
+        // machine with the RAM to absorb it. At 43 TB the copy cannot
+        // succeed: before the fix this aborts the process through
+        // `handle_alloc_error`, which is the failure being prevented.
+        let base = Array3::<f32>::zeros((1, 1, 1));
+        let huge = base
+            .broadcast((2_000_000, 2_000_000, 3))
+            .expect("(1,1,1) broadcasts to anything");
+        let err = blur(huge, &BlurParams::new(2.0, BlurShape::Gaussian)).unwrap_err();
+        assert!(
+            matches!(err, PhaiosError::Allocation(_)),
+            "expected an allocation error, got {err:?}"
+        );
+
+        // The same view under the limit must still work, and still not be
+        // materialised: 4 MB logical, one real pixel behind it.
+        let ok = base
+            .broadcast((1_000, 1_000, 1))
+            .expect("(1,1,1) broadcasts to anything");
+        let out = blur(ok, &BlurParams::new(2.0, BlurShape::Gaussian)).unwrap();
+        assert_eq!(out.dim(), (1_000, 1_000, 1));
     }
 
     #[test]

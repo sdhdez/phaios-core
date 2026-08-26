@@ -101,15 +101,11 @@ fn check_budget<T>(count: usize, shape: impl std::fmt::Debug) -> Result<usize, P
 /// For call sites that hand the allocation to someone else —
 /// `ArrayView::as_standard_layout` on the CUDA upload path, which
 /// materialises a host copy of the logical shape and would abort on the
-/// same input the kernels now refuse.
+/// same input the kernels now refuse; and [`crate::blur::blur`], which must
+/// bound the caller's shape *before* its first pass reads it.
 ///
 /// # Errors
 /// [`PhaiosError::Allocation`] on the same terms as [`zeros3`].
-// Only the CUDA upload path calls this, so a CPU-only build sees it as
-// dead. Kept unconditionally rather than cfg-gated so its tests run in
-// both configurations — the same trap that broke a CPU-only clippy run
-// once already.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 pub(crate) fn check_shape<T>(shape: (usize, usize, usize)) -> Result<(), PhaiosError> {
     let n = element_count(shape)?;
     check_budget::<T>(n, shape)?;
