@@ -109,6 +109,8 @@ pub struct BlurParams {
     /// full frame — unlike [`crate::vignette`], which is
     /// resolution-independent by construction. Scale σ with the image if
     /// you are previewing.
+    ///
+    /// Bounded above by [`MAX_SIGMA`].
     #[pyo3(get, set)]
     pub sigma: f32,
     /// Kernel shape. Default [`BlurShape::Gaussian`].
@@ -176,6 +178,21 @@ pub(crate) fn box_series_sigma(widths: &[usize]) -> f32 {
 /// work, which is what makes the central limit theorem apply.
 const MAX_WIDTH_RATIO: usize = 3;
 
+/// Largest standard deviation any blur will accept, in pixels.
+///
+/// Choosing the box widths searches a space that grows with σ, and σ
+/// arrives from the caller. Before this bound that search was cubic *and*
+/// unbounded:
+/// σ = 3000 took 4.6 s, σ = 10 000 did not return at all, and because the
+/// kernel runs under `py.detach` there was no way to interrupt it from
+/// Python — a caller-controlled parameter that hangs the calling thread.
+///
+/// 4096 px of standard deviation is far past any frame this crate is built
+/// for; a 24 MP image is 6000 px on its long edge, and a blur at this σ
+/// returns a near-constant field. With the search pruned to its feasible
+/// range the worst case inside the bound is a few tens of milliseconds.
+pub const MAX_SIGMA: f32 = 4096.0;
+
 /// Three odd widths, each at least 3 and within [`MAX_WIDTH_RATIO`] of
 /// one another, whose box series best matches `sigma`.
 ///
@@ -184,27 +201,67 @@ const MAX_WIDTH_RATIO: usize = 3;
 /// it gives 1.826 where 2.16 is available), and the search runs once per
 /// call, not once per pixel.
 pub(crate) fn box_widths(sigma: f32) -> [usize; 3] {
-    // A width beyond this cannot improve the match: the series already
-    // overshoots σ with the smallest legal partners.
+    // Variances add, so this is a search for three odd widths with
+    //     a² + b² + c² = 12σ² + 3
+    // as nearly as odd integers allow. The objective stays in σ space
+    // rather than sum space: √ is concave, so the triple closest in *sum*
+    // is not always the triple closest in σ.
+    let target = 12.0 * f64::from(sigma) * f64::from(sigma) + 3.0;
+
+    // The width ceiling is part of the *result*, not just a stopping rule,
+    // and is kept bit-for-bit as it was. It excludes triples that sit at
+    // the MAX_WIDTH_RATIO ceiling even when they tie on σ: at σ = 9 both
+    // [15, 15, 23] and [9, 13, 27] sum to 979 and so match σ identically,
+    // but the first is balanced and the second is the near-a-single-box
+    // shape MAX_WIDTH_RATIO exists to keep out. Widening this changes the
+    // picture, so it does not move.
     let hi = ((12.0 * sigma * sigma / 3.0 + 1.0).sqrt() as usize).max(3) + 8;
+
+    // The lower bound *is* a pure pruning, and is exact. With
+    // 3 ≤ a ≤ b ≤ c ≤ min(MAX_WIDTH_RATIO·a, hi) the largest sum any `a`
+    // can reach is 19a², so an `a` falling short of the target there is
+    // beaten by the balanced triple near √(target/3) — which is always
+    // inside the range and always near-exact. Two widths of slack absorbs
+    // the rounding to odd. This is what turns a cubic sweep starting at 3
+    // into a quadratic one starting near σ.
+    let lo = ((target / 19.0).sqrt().floor() as usize)
+        .saturating_sub(2)
+        .max(3);
+
     let mut best = [3_usize; 3];
     let mut best_err = f32::INFINITY;
-    let mut a = 3;
+    let mut a = lo | 1;
     while a <= hi {
+        // `3a` is odd because `a` is, but `hi` need not be — round the
+        // ceiling down so it can never contribute an even width.
+        let c_max = {
+            let m = (a * MAX_WIDTH_RATIO).min(hi);
+            if m.is_multiple_of(2) { m - 1 } else { m }
+        };
         let mut b = a;
-        while b <= hi {
-            let mut c = b;
-            while c <= hi {
-                // `a` is the smallest and `c` the largest, since the loops
-                // are non-decreasing.
-                if c <= a * MAX_WIDTH_RATIO {
-                    let err = (box_series_sigma(&[a, b, c]) - sigma).abs();
-                    if err < best_err {
-                        best_err = err;
-                        best = [a, b, c];
-                    }
+        while b <= c_max {
+            // Second, `c`. For fixed `a` and `b` the series σ is strictly
+            // increasing in `c`, so |σ_series − σ| is strictly V-shaped and
+            // only the odd widths bracketing the exact solution — or the
+            // ends of the legal range, when the solution falls outside it —
+            // can win. Evaluated ascending with a strict improvement test,
+            // this picks exactly the triple a full scan over `c` would.
+            let rest = target - (a * a) as f64 - (b * b) as f64;
+            let exact = if rest > 0.0 { rest.sqrt() } else { 0.0 };
+            let mid = (exact.floor() as usize).max(1) | 1;
+            let mut cands = [b, mid.saturating_sub(2) | 1, mid, mid + 2, c_max];
+            cands.sort_unstable();
+            let mut prev = 0;
+            for c in cands {
+                if c == prev || c < b || c > c_max {
+                    continue;
                 }
-                c += 2;
+                prev = c;
+                let err = (box_series_sigma(&[a, b, c]) - sigma).abs();
+                if err < best_err {
+                    best_err = err;
+                    best = [a, b, c];
+                }
             }
             b += 2;
         }
@@ -328,6 +385,12 @@ pub(crate) fn validate(params: &BlurParams) -> Result<(), PhaiosError> {
             params.sigma
         )));
     }
+    if params.sigma > MAX_SIGMA {
+        return Err(PhaiosError::Parameter(format!(
+            "sigma is {}, above the maximum of {MAX_SIGMA}",
+            params.sigma
+        )));
+    }
     Ok(())
 }
 
@@ -354,7 +417,8 @@ pub(crate) fn validate(params: &BlurParams) -> Result<(), PhaiosError> {
 /// frame gets that right.
 ///
 /// # Errors
-/// - [`PhaiosError::Parameter`] if `sigma` is negative or not finite.
+/// - [`PhaiosError::Parameter`] if `sigma` is negative, not finite, or
+///   above [`MAX_SIGMA`].
 /// - [`PhaiosError::Allocation`] if the output exceeds the backend's
 ///   single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
@@ -602,6 +666,65 @@ mod tests {
         for s in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert!(blur(img.view(), &BlurParams::new(s, BlurShape::Gaussian)).is_err());
         }
+    }
+
+    /// The unpruned cubic scan `box_widths` replaced, kept verbatim as the
+    /// oracle for the pruned one.
+    fn exhaustive_box_widths(sigma: f32) -> [usize; 3] {
+        let hi = ((12.0 * sigma * sigma / 3.0 + 1.0).sqrt() as usize).max(3) + 8;
+        let mut best = [3_usize; 3];
+        let mut best_err = f32::INFINITY;
+        let mut a = 3;
+        while a <= hi {
+            let mut b = a;
+            while b <= hi {
+                let mut c = b;
+                while c <= hi {
+                    if c <= a * MAX_WIDTH_RATIO {
+                        let err = (box_series_sigma(&[a, b, c]) - sigma).abs();
+                        if err < best_err {
+                            best_err = err;
+                            best = [a, b, c];
+                        }
+                    }
+                    c += 2;
+                }
+                b += 2;
+            }
+            a += 2;
+        }
+        best
+    }
+
+    #[test]
+    fn the_pruned_search_returns_what_an_exhaustive_one_would() {
+        // The pruning is exact, not heuristic: it discards only triples that
+        // cannot win. If that is ever wrong the picture changes silently, so
+        // it is checked against the scan it replaced rather than argued for.
+        let mut s = BOX_CROSSOVER_SIGMA;
+        while s <= 48.0 {
+            assert_eq!(box_widths(s), exhaustive_box_widths(s), "sigma = {s}");
+            s += 0.25;
+        }
+        for s in [64.0, 96.5, 128.0, 200.25] {
+            assert_eq!(box_widths(s), exhaustive_box_widths(s), "sigma = {s}");
+        }
+    }
+
+    #[test]
+    fn a_huge_sigma_is_refused_rather_than_searched_forever() {
+        // `blur(sigma = 1e4)` used to run an unbounded cubic search under
+        // `py.detach`: no result, no error, and no way to interrupt it from
+        // Python. A caller-controlled parameter must not do that.
+        let img = array![[[0.5_f32]]];
+        for s in [MAX_SIGMA * 1.001, 1e4, 1e5, f32::MAX] {
+            assert!(
+                blur(img.view(), &BlurParams::new(s, BlurShape::Gaussian)).is_err(),
+                "sigma = {s} should be refused"
+            );
+        }
+        // The bound itself must still work, and promptly.
+        assert!(blur(img.view(), &BlurParams::new(MAX_SIGMA, BlurShape::Gaussian)).is_ok());
     }
 
     #[test]

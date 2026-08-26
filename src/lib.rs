@@ -767,7 +767,9 @@ pub fn shadow_rolloff_fn(
 /// Raises
 /// ------
 /// ValueError
-///     If sigma is negative or not finite.
+///     If sigma is negative, not finite, or above 4096 — a blur wider
+///     than any frame this crate is built for, and the point past which
+///     choosing the box widths stops being cheap.
 /// MemoryError
 ///     If the output exceeds the single-allocation limit.
 #[pyfunction]

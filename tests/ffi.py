@@ -1302,6 +1302,29 @@ def test_blur_rejects_bad_sigma(grey_f32, sigma):
         ph.blur(grey_f32, ph.BlurParams(sigma))
 
 
+@pytest.mark.parametrize("sigma", [4096.5, 1e4, 1e5, 3.4e38])
+def test_blur_rejects_sigma_above_the_maximum(grey_f32, sigma):
+    # These used to run an unbounded search inside py.detach: no result and
+    # no way to interrupt it, since the GIL was released. sigma = 1e4 never
+    # returned at all. A caller-controlled parameter must not hang the
+    # calling thread.
+    with pytest.raises(ValueError):
+        ph.blur(grey_f32, ph.BlurParams(sigma))
+
+
+def test_blur_accepts_the_largest_permitted_sigma(grey_f32):
+    out = ph.blur(grey_f32, ph.BlurParams(4096.0))
+    assert out.shape == grey_f32.shape
+    assert np.isfinite(out).all()
+
+
+def test_glow_inherits_the_blur_sigma_bound(grey_f32):
+    # glow delegates its sigma to blur's validator, so the bound has to
+    # reach it without glow restating anything.
+    with pytest.raises(ValueError):
+        ph.glow(grey_f32, ph.GlowParams(0.5, 1e5, 0.5))
+
+
 def test_blur_params_repr_and_defaults():
     p = ph.BlurParams()
     assert p.sigma == 0.0
