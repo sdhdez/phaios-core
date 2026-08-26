@@ -24,6 +24,7 @@ use phaios_core::geometry::{
     CropParams, Orientation, ResizeFilter, ResizeParams, StraightenParams, crop, orient, resize,
     straighten,
 };
+use phaios_core::glow::{GlowParams, glow};
 use phaios_core::highlight_rolloff::{RolloffParams, highlight_rolloff};
 use phaios_core::histogram::{HistogramParams, histogram};
 use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
@@ -231,6 +232,21 @@ fn bench_blur(c: &mut Criterion) {
     }
 }
 
+fn bench_glow(c: &mut Criterion) {
+    let grey = pseudo_random_image(H, W, 1);
+    // The three regimes; the cost is the blur's plus two element-wise passes.
+    for (label, t, sigma, a) in [
+        ("halation", 0.8_f32, 8.0_f32, 0.35_f32),
+        ("diffusion", 0.5, 20.0, 0.4),
+        ("glare", 0.0, 400.0, 0.06),
+    ] {
+        let params = GlowParams::new(t, sigma, a);
+        c.bench_function(&format!("glow/24MP/{label}"), |b| {
+            b.iter(|| glow(black_box(grey.view()), black_box(&params)).unwrap())
+        });
+    }
+}
+
 fn bench_local_contrast(c: &mut Criterion) {
     let grey = pseudo_random_image(H, W, 1);
     let params = GuidedFilterParams::new(8, 0.01);
@@ -292,6 +308,7 @@ criterion_group!(
     bench_quantize,
     bench_analysis,
     bench_blur,
+    bench_glow,
     bench_local_contrast,
     bench_film_grain,
     bench_split_toning,

@@ -1212,7 +1212,53 @@ both halves so it cannot later be mistaken for one.
 
 ---
 
-## 17. Performance (v0.2-dev)
+## 17. Light scattering
+
+Halation, diffusion and veiling glare are one operation:
+
+```text
+out = in + amount · blur(max(in − threshold, 0), σ)
+```
+
+so they are one kernel. What separates them is the parameters and, more
+importantly, **where in the pipeline the call sits** — which is why a
+kernel each would have been three copies with different defaults.
+
+| Effect | Happens in | threshold | σ | Position |
+|---|---|---|---|---|
+| Veiling glare | the lens | 0 | frame-spanning | earliest |
+| Halation | the emulsion | high | moderate | after `exposure`, before the tone stages |
+| Diffusion | the print | mid | large | after the tone stages |
+
+### Why veiling glare needs a kernel rather than a curve preset
+
+Because it is not a per-pixel transfer. With `threshold = 0` and a σ
+spanning the frame, the scattered term approaches the scene's mean, so
+the black point lifts by an amount set by *the brightness of the whole
+image*. Measured in `examples/21_glow`, an identical black corner pixel
+ends at 0.019 in a dim frame and 0.380 in a bright one — the same input
+value, two different outputs. No tone curve can do that, because a curve
+sees one pixel at a time. It is a large part of why uncoated lenses look
+the way they do, and it is not reachable by grading.
+
+### Additive, and why
+
+The scattered light is added rather than exchanged, so the result can
+exceed 1.0. That is deliberate: headroom is preserved through every stage
+and spent once, explicitly, at `highlight_rolloff` (§13). A conserving
+form would darken the source to pay for the halo — right for a diffuser,
+wrong for halation, where the highlight is already saturated and the halo
+is genuinely extra density.
+
+### The weight is a soft knee
+
+`max(in − threshold, 0)`, not a hard cut at the threshold. A hard cut
+would give the halo an outline exactly where the source crosses the
+threshold; subtracting instead lets the contribution fade in.
+
+---
+
+## 18. Performance (v0.2-dev)
 
 Measured with `cargo bench` (criterion, bench profile) on a synthetic
 4323 × 5765 (≈ 24 MP) `f32` image filled with deterministic
@@ -1259,7 +1305,7 @@ input, the three B&W kernels measured 10.1 ms rather than 15 ms.
 
 ---
 
-## 18. Geometry (crop, orientation)
+## 19. Geometry (crop, orientation)
 
 Two exact operations, deliberately in the core rather than in front
 ends: their parameters live in consumers' sidecar files, and if two

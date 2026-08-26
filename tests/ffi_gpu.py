@@ -433,3 +433,20 @@ def test_gpu_blur_matches_cpu_within_bound(ctx, sigma):
         np.testing.assert_array_equal(got, want)   # identity is a copy
     else:
         assert np.abs(got - want).max() <= 1e-5 * np.abs(want).max() + 1e-7
+
+
+@needs_device
+@pytest.mark.parametrize(
+    "threshold,sigma,amount",
+    [(0.0, 8.0, 0.0), (0.8, 8.0, 0.35), (0.5, 20.0, 0.4), (0.0, 400.0, 0.06)],
+)
+def test_gpu_glow_matches_cpu(ctx, threshold, sigma, amount):
+    rng = np.random.default_rng(71)
+    img = (rng.random((31, 43, 3)).astype(np.float32) * 2.0)
+    params = ph.GlowParams(threshold, sigma, amount)
+    got = gpu.glow(ctx.upload(img), params).download()
+    want = ph.glow(img, params)
+    if amount == 0.0:
+        np.testing.assert_array_equal(got, want)
+    else:
+        assert np.abs(got - want).max() <= 1e-5 * np.abs(want).max() + 1e-7

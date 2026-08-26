@@ -45,6 +45,7 @@ pipeline:
 | `vignette` | any | same | one factor per pixel, applied to every channel |
 | `tone_curve` | any | same | element-wise |
 | `blur` | any | same | separable Gaussian; channels filtered independently |
+| `glow` | any | same | scattering: halation, diffusion, veiling glare |
 | `shadow_rolloff` | any | same | element-wise; the toe, at the start of the tone stages |
 | `highlight_rolloff` | any | same | element-wise; the shoulder, last linear stage before `encode_srgb` |
 | `encode_srgb` | any | same | element-wise |
@@ -53,7 +54,7 @@ pipeline:
 | `apply_lut` | any | same | element-wise through a caller-supplied table |
 | `histogram` | any | **not an image** | a reduction — returns a `Histogram`, see below |
 
-A kernel given the wrong channel count raises `ValueError`. The fifteen
+A kernel given the wrong channel count raises `ValueError`. The sixteen
 that accept "any" do so for three distinct reasons.
 
 The four **geometry** kernels (`crop`, `orient`, `straighten`, `resize`)
@@ -64,8 +65,9 @@ colour.
 The six **tone** kernels (`exposure`, `vignette`, `tone_curve`,
 `shadow_rolloff`, `highlight_rolloff`, `encode_srgb`) run either side of
 `split_toning`, so a pipeline need not branch on whether toning is
-enabled. `blur` joins them for the same reason — it filters each channel
-independently, so it neither needs nor imposes a channel count.
+enabled. `blur` and `glow` join them for the same reason — each channel is
+filtered and scattered independently, so neither needs nor imposes a
+channel count.
 
 The remaining four — `apply_lut`, `quantize_u8`, `quantize_u16` and
 `histogram` — are per-sample by construction. The first three map each

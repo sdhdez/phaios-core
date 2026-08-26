@@ -106,6 +106,46 @@ should carry linear scene-referred data and skip both encoding and
 quantisation. The document is written to outlast the parked question of
 *where* file writing lives, since it constrains the output either way.
 
+### Added — light scattering (halation, diffusion, veiling glare)
+
+`glow(img, GlowParams)` — `out = in + amount · blur(max(in − threshold,
+0), σ)`. One kernel, because the three named effects are one operation:
+what separates them is the parameters and, more to the point, **where in
+the pipeline the call sits**.
+
+| Effect | Happens in | threshold | σ | Position |
+|---|---|---|---|---|
+| Veiling glare | the lens | 0 | frame-spanning | earliest |
+| Halation | the emulsion | high | moderate | after `exposure`, before the tone stages |
+| Diffusion | the print | mid | large | after the tone stages |
+
+**Veiling glare is the one that needs a kernel rather than a curve
+preset**, because it is not a per-pixel transfer. With no threshold and a
+frame-spanning σ, the black point lifts by an amount set by the
+brightness of the *whole image*: measured in `examples/21_glow`, an
+identical black corner pixel ends at 0.019 in a dim frame and 0.380 in a
+bright one. No tone curve can do that — a curve sees one pixel at a time
+— and it is a large part of why uncoated lenses look the way they do.
+
+Additive rather than conserving, so the result may exceed 1.0. That is
+deliberate: headroom is carried to `highlight_rolloff` and spent once,
+explicitly. A conserving form would darken the source to pay for the
+halo, which is right for a diffuser and wrong for halation, where the
+highlight is already saturated and the halo is genuinely extra density.
+
+The weight is `max(in − threshold, 0)` rather than a hard cut, so a
+bright region does not acquire an outline where it crosses the threshold.
+`amount = 0` is the exact identity; `amount` must be non-negative, so
+this cannot be used as an unsharp mask — detail enhancement remains
+`local_contrast`, which is edge-aware and does not halo.
+
+Composed rather than fused on both backends: the weight and the add are
+element-wise and exact, and the spread between them is the crate's one
+Gaussian, so this cannot drift from `blur`. Bounded at (rtol 1e-5, atol
+1e-7), inherited entirely from that blur.
+
+24 MP: 106 ms for halation and diffusion, 117 ms for glare.
+
 ### Added — Gaussian blur
 
 `blur(img, BlurParams)` — a separable Gaussian, and the primitive the

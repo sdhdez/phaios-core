@@ -374,6 +374,21 @@ fn blur(
     Ok(GpuImage { inner: result })
 }
 
+/// Light scattering on the GPU — halation, diffusion and veiling glare.
+/// Mirrors ``phaios_core.glow``; agreement is bounded, inherited from
+/// the blur between the two element-wise halves.
+#[pyfunction]
+#[pyo3(signature = (img, params = None))]
+fn glow(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: Option<crate::glow::GlowParams>,
+) -> PyResult<GpuImage> {
+    let owned = params.unwrap_or_default();
+    let result = py.detach(|| cuda::kernels::glow_device(&img.inner, &owned))?;
+    Ok(GpuImage { inner: result })
+}
+
 /// Radial vignette on the GPU. Mirrors ``phaios_core.vignette``;
 /// bit-exact against the CPU.
 #[pyfunction]
@@ -582,6 +597,7 @@ pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult
     gpu.add_function(wrap_pyfunction!(highlight_rolloff, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(shadow_rolloff, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(blur, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(glow, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(quantize_u8, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(quantize_u16, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(histogram, &gpu)?)?;

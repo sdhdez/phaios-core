@@ -737,6 +737,7 @@ def test_all_kernels_accept_any_layout(label, rgb_f32, grey_f32):
         ph.highlight_rolloff(grey, ph.RolloffParams(0.7, 3.0)),
         ph.shadow_rolloff(grey, ph.ShadowRolloffParams(0.2, 0.5)),
         ph.blur(grey, ph.BlurParams(2.0)),
+        ph.glow(grey, ph.GlowParams(0.3, 3.0, 0.4)),
     ):
         assert out.shape == grey.shape
         assert out.flags["C_CONTIGUOUS"], "output must be C-contiguous"
@@ -1307,3 +1308,73 @@ def test_blur_params_repr_and_defaults():
     assert p.shape == ph.BlurShape.Gaussian
     assert p == ph.BlurParams(0.0, ph.BlurShape.Gaussian)
     assert "sigma=2" in repr(ph.BlurParams(2.0))
+
+
+# ── glow: halation, diffusion, veiling glare ─────────────────────────────────
+
+
+def test_glow_amount_zero_is_the_exact_identity(rgb_f32):
+    np.testing.assert_array_equal(ph.glow(rgb_f32), rgb_f32)
+    np.testing.assert_array_equal(
+        ph.glow(rgb_f32, ph.GlowParams(0.5, 8.0, 0.0)), rgb_f32
+    )
+
+
+def test_glow_only_adds_light(rgb_f32):
+    out = ph.glow(rgb_f32, ph.GlowParams(0.3, 4.0, 0.5))
+    assert (out >= rgb_f32 - 1e-6).all()
+
+
+def test_glow_puts_light_beside_a_bright_region():
+    """The halo is the point: light where there was none."""
+    n = 31
+    img = np.full((n, n, 1), 0.05, np.float32)
+    img[n // 2 - 1 : n // 2 + 2, n // 2 - 1 : n // 2 + 2] = 1.0
+    out = ph.glow(img, ph.GlowParams(0.5, 4.0, 0.6))
+    near = out[n // 2, n // 2 + 4, 0] - img[n // 2, n // 2 + 4, 0]
+    far = out[n // 2, n // 2 + 10, 0] - img[n // 2, n // 2 + 10, 0]
+    assert near > 0.005, f"no halo four pixels out: {near}"
+    assert near > far, f"halo should fall off: {near} vs {far}"
+
+
+def test_veiling_glare_depends_on_the_whole_frame():
+    """The property a per-pixel tone curve structurally cannot have: the
+    black point lifts by an amount set by the rest of the image."""
+    n = 33
+    params = ph.GlowParams(0.0, 200.0, 0.5)
+    def corner_lift(peak):
+        img = np.zeros((n, n, 1), np.float32)
+        img[:3, :3] = peak
+        return float(ph.glow(img, params)[n - 1, n - 1, 0])
+    dim, bright = corner_lift(0.2), corner_lift(4.0)
+    assert dim > 0.0
+    assert bright > dim * 5.0, f"{dim} vs {bright}"
+
+
+def test_glow_does_not_clamp():
+    """Headroom is carried to highlight_rolloff, not spent here."""
+    img = np.ones((9, 9, 1), np.float32)
+    assert ph.glow(img, ph.GlowParams(0.0, 2.0, 0.5)).max() > 1.0
+
+
+def test_glow_threshold_above_everything_is_the_identity():
+    img = np.full((15, 15, 1), 0.3, np.float32)
+    out = ph.glow(img, ph.GlowParams(2.0, 4.0, 0.5))
+    assert np.abs(out - img).max() < 1e-6
+
+
+@pytest.mark.parametrize(
+    "threshold,sigma,amount",
+    [(-0.1, 4.0, 0.5), (0.0, 4.0, -0.1), (float("nan"), 4.0, 0.5),
+     (0.0, -1.0, 0.5), (0.0, 4.0, float("inf"))],
+)
+def test_glow_rejects_out_of_domain(grey_f32, threshold, sigma, amount):
+    with pytest.raises(ValueError):
+        ph.glow(grey_f32, ph.GlowParams(threshold, sigma, amount))
+
+
+def test_glow_params_repr_and_defaults():
+    p = ph.GlowParams()
+    assert p.amount == 0.0
+    assert p == ph.GlowParams(0.0, 8.0, 0.0)
+    assert "amount=0.35" in repr(ph.GlowParams(0.8, 8.0, 0.35))

@@ -22,6 +22,7 @@ pub mod error;
 pub mod exposure;
 pub mod film_grain;
 pub mod geometry;
+pub mod glow;
 pub mod highlight_rolloff;
 pub mod histogram;
 mod integral;
@@ -782,6 +783,68 @@ pub fn blur_fn(
     Ok(result.into_pyarray(py).unbind())
 }
 
+// ── Glow binding ──────────────────────────────────────────────────────────────
+
+/// Spread light above ``threshold`` and add it back — halation,
+/// diffusion and veiling glare, which are one operation at three sets of
+/// parameters.
+///
+/// Computes ``out = in + amount * blur(max(in - threshold, 0), sigma)``.
+///
+/// What separates the three effects is the parameters and **where in the
+/// pipeline the call sits**:
+///
+/// - **Veiling glare** — the lens. ``threshold=0`` so all light
+///   scatters, a frame-spanning ``sigma``, applied earliest. Blacks lift
+///   by an amount that depends on how bright the *whole frame* is, which
+///   is precisely what a per-pixel tone curve cannot do.
+/// - **Halation** — the emulsion. A high ``threshold``, moderate
+///   ``sigma``, applied after ``exposure`` and *before* the tone stages,
+///   because it happens at capture.
+/// - **Diffusion** — the print. Mid ``threshold``, large ``sigma``,
+///   applied after the tone stages.
+///
+/// The result may exceed 1.0, deliberately: headroom is carried to
+/// ``highlight_rolloff`` rather than clamped here. ``amount = 0.0`` is
+/// the exact identity.
+///
+/// Not an unsharp mask — ``amount`` must be non-negative. For detail
+/// enhancement use ``local_contrast``, which is edge-aware and does not
+/// halo.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)`` for any channel count, dtype
+///     ``float32``, any memory layout.
+/// params : GlowParams
+///     Threshold, sigma in pixels, and amount. Default: amount 0.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``threshold`` or ``amount`` is negative or not finite, or
+///     ``sigma`` is outside the blur's domain.
+/// MemoryError
+///     If the intermediates exceed the single-allocation limit.
+#[pyfunction]
+#[pyo3(name = "glow", signature = (img, params = None))]
+pub fn glow_fn(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: Option<pyo3::PyRef<'_, glow::GlowParams>>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let owned = params.map_or_else(glow::GlowParams::default, |p| p.clone());
+    let result = py.detach(move || glow::glow(view, &owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── Local contrast binding ────────────────────────────────────────────────────
 
 /// Enhance local contrast using the He–Sun–Tang guided filter.
@@ -1017,6 +1080,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<vignette::VignetteParams>()?;
     m.add_class::<blur::BlurShape>()?;
     m.add_class::<blur::BlurParams>()?;
+    m.add_class::<glow::GlowParams>()?;
     m.add_class::<highlight_rolloff::RolloffParams>()?;
     m.add_class::<shadow_rolloff::ShadowRolloffParams>()?;
     m.add_class::<quantize::Dither>()?;
@@ -1044,6 +1108,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(zone_system, m)?)?;
     m.add_function(wrap_pyfunction!(tone_curve, m)?)?;
     m.add_function(wrap_pyfunction!(blur_fn, m)?)?;
+    m.add_function(wrap_pyfunction!(glow_fn, m)?)?;
     m.add_function(wrap_pyfunction!(highlight_rolloff_fn, m)?)?;
     m.add_function(wrap_pyfunction!(shadow_rolloff_fn, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_u8, m)?)?;

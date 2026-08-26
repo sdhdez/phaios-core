@@ -86,6 +86,7 @@ difference.
 | `18_histogram_lut.rs` | `histogram`, `apply_lut` | Equalisation from two calls; solarisation; a tabulated film curve |
 | `19_characteristic_curve.rs` | `shadow_rolloff` + the composition | Toe, straight, shoulder; the slope table that shows the shape |
 | `20_blur.rs` | `blur` | Impulse response against a true Gaussian on both paths; the border-clamp case |
+| `21_glow.rs` | `glow` | Halation vs diffusion vs glare; why glare cannot be a tone curve |
 | `15_gpu_exposure.rs` | CUDA backend | Needs `--features cuda`; bit-exactness and the resident-image pattern |
 
 Several examples print measurements as well as writing files — the

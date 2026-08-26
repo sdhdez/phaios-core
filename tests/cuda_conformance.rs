@@ -1322,3 +1322,46 @@ fn blur_degenerate_shapes_agree() {
         }
     }
 }
+
+/// Glow across its three parameter regimes. The bound is inherited from
+/// the blur between the two element-wise halves, so it is the blur's
+/// (1e-5, 1e-7) rather than anything looser.
+#[test]
+fn glow_agrees_within_bound() {
+    use phaios_core::glow::{GlowParams, glow};
+
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(97, 131, 3).mapv(|v| v * 2.0);
+
+    for (threshold, sigma, amount) in [
+        (0.0_f32, 8.0_f32, 0.0_f32), // the identity fast path
+        (0.8, 8.0, 0.35),            // halation
+        (0.5, 20.0, 0.4),            // diffusion
+        (0.0, 400.0, 0.06),          // veiling glare, sigma beyond the frame
+        (3.0, 4.0, 0.5),             // threshold above everything present
+    ] {
+        let params = GlowParams::new(threshold, sigma, amount);
+        let cpu = glow(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::glow(&ctx, img.view(), &params).unwrap();
+        let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+        assert!(
+            v <= 1.0,
+            "glow threshold={threshold} sigma={sigma} amount={amount}: {v:.2}x the bound"
+        );
+    }
+}
+
+/// `amount = 0` is a copy on both backends, so it must be bit-exact.
+#[test]
+fn glow_identity_is_bit_exact() {
+    use phaios_core::glow::{GlowParams, glow};
+
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(48, 64, 3);
+    let params = GlowParams::new(0.5, 8.0, 0.0);
+    assert_eq!(
+        glow(img.view(), &params).unwrap(),
+        cuda::kernels::glow(&ctx, img.view(), &params).unwrap()
+    );
+    assert_eq!(glow(img.view(), &params).unwrap(), img);
+}

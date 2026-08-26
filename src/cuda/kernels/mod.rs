@@ -17,6 +17,7 @@ mod blur;
 mod elementwise;
 mod exposure;
 mod geometry;
+mod glow;
 mod grain;
 mod hsl;
 mod local_contrast;
@@ -36,6 +37,7 @@ pub use exposure::{exposure, exposure_device};
 pub use geometry::{
     crop, crop_device, orient, orient_device, resize, resize_device, straighten, straighten_device,
 };
+pub use glow::{glow, glow_device};
 pub use grain::{film_grain, film_grain_device, hash_grid};
 pub use hsl::{hsl_bw, hsl_bw_device};
 pub use local_contrast::{local_contrast, local_contrast_device};
