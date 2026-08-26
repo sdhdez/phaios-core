@@ -160,6 +160,15 @@ holds for finite input only.
 Two things are worth knowing about how the disagreement behaves, because
 they are structural rather than incidental:
 
+- *Neighbourhood kernels do not, and the reasons differ per kernel.*
+  `blur` and `glow` (which is built on it) diverge on ±∞: the device
+  accumulates each separable pass with Kahan compensation, and the
+  compensation term computes `∞ − ∞ = NaN`, which then poisons every
+  later term — so the device returns NaN where the host, whose f64 sum
+  carries no compensation term, returns ±∞. One infinite sample is
+  enough. Removing the compensation would trade a documented divergence
+  on input the contract excludes for a real accuracy loss on input it
+  does not, which is a bad trade.
 - *Element-wise and geometry kernels* stay in agreement anyway. Their
   arithmetic is per-pixel, so a poisoned sample poisons exactly its own
   output on both backends. `non_finite_pixels_agree_across_backends` in

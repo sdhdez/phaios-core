@@ -1365,3 +1365,46 @@ fn glow_identity_is_bit_exact() {
     );
     assert_eq!(glow(img.view(), &params).unwrap(), img);
 }
+
+/// `blur` and `glow` diverge on non-finite input, and `docs/ffi.md` §1
+/// says so. This pins the *shape* of that divergence rather than
+/// papering over it: the device's Kahan compensation computes ∞ − ∞ and
+/// yields NaN where the host's uncompensated f64 sum keeps ±∞.
+///
+/// If a future change makes these agree, this test fails and the doc
+/// paragraph should be rewritten — that would be good news.
+#[test]
+fn blur_non_finite_is_documented_as_divergent() {
+    use phaios_core::blur::{BlurParams, BlurShape, blur};
+
+    let Some(ctx) = try_context() else { return };
+    for fill in [f32::INFINITY, f32::NEG_INFINITY] {
+        let img = ndarray::Array3::<f32>::from_elem((5, 7, 1), fill);
+        let params = BlurParams::new(1.5, BlurShape::Gaussian);
+        let cpu = blur(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::blur(&ctx, img.view(), &params).unwrap();
+
+        assert!(
+            cpu[[2, 3, 0]].is_infinite(),
+            "the host keeps the infinity: {}",
+            cpu[[2, 3, 0]]
+        );
+        assert!(
+            gpu[[2, 3, 0]].is_nan(),
+            "the device's compensation turns it into NaN: {}",
+            gpu[[2, 3, 0]]
+        );
+    }
+
+    // Finite input, by contrast, agrees inside the committed bound —
+    // this is a non-finite-only divergence, not a broken kernel.
+    let finite = pseudo_random_image(5, 7, 1);
+    let params = BlurParams::new(1.5, BlurShape::Gaussian);
+    let v = worst_violation(
+        &blur(finite.view(), &params).unwrap(),
+        &cuda::kernels::blur(&ctx, finite.view(), &params).unwrap(),
+        1e-5,
+        1e-7,
+    );
+    assert!(v <= 1.0, "finite input must still agree: {v:.2}x the bound");
+}

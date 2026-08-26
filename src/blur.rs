@@ -57,6 +57,13 @@
 //! [`crate::local_contrast`], and for the same reason: the running sums
 //! accumulate in a different order on a device than on a host. See
 //! `docs/ffi.md` §6.
+//!
+//! On **non-finite** input the two backends diverge outright, and
+//! `docs/ffi.md` §1 records it: the device's Kahan compensation computes
+//! `∞ − ∞ = NaN` and poisons the rest of the sum, so it returns NaN
+//! where the host returns ±∞. Finite samples are a precondition of the
+//! whole crate, and dropping the compensation to paper over this would
+//! cost real accuracy on the input that is actually in scope.
 
 use ndarray::{Array3, ArrayView2, ArrayView3, ArrayViewMut2, Axis};
 use pyo3::{pyclass, pymethods};
