@@ -35,7 +35,37 @@
 //! 24 bytes per pixel.
 //!
 //! Reference: Kaiming He, Jian Sun, Xiaoou Tang, "Guided Image
-//! Filtering," *ECCV 2010*, LNCS 6311, pp. 1–14. Patent-free.
+//! Filtering," *ECCV 2010*, LNCS 6311, pp. 1–14. The authors' extended
+//! version is IEEE *TPAMI* 35(6), 2013, pp. 1397–1409.
+//!
+//! # Provenance and prior art
+//!
+//! Two things a future contributor needs to know, neither of which is a
+//! legal opinion — this is a record of what was checked, not advice.
+//!
+//! **Do not port the authors' MATLAB.** Their reference implementation
+//! (`guided-filter-code-v1`) carries no licence file and its readme
+//! restricts it: "This code is for academic purpose only. Not for
+//! commercial/industrial activities." That is incompatible with GPLv3
+//! and with distribution on crates.io and PyPI. The code here is an
+//! independent reimplementation from the paper's published equations,
+//! which is what that readme explicitly invites, and it differs in
+//! formulation as well as language: summed-area tables with four-corner
+//! queries rather than the reference's `cumsum` box filter, specialised
+//! to the self-guided case `I = p`, with f64 accumulation and a variance
+//! clamp the reference has no counterpart for. The CUDA path is a third
+//! formulation again. Keep it that way.
+//!
+//! **Patents.** A search of the granted-patent record found nothing
+//! claiming guided image filtering itself, and the three closest
+//! Microsoft filings naming these authors — US 8,625,888 (variable
+//! kernel size image matting), US 8,386,964 (interactive image matting)
+//! and US 8,855,411 (opacity measurement using a global pixel set) —
+//! were each read against this kernel and none of their claims cover it;
+//! all three are matting patents requiring elements this code has no
+//! analogue of. That is a search result, not a clearance opinion, and an
+//! earlier version of this comment overstated it as the bare assertion
+//! "Patent-free."
 
 use ndarray::{Array2, Array3, ArrayView2, ArrayView3};
 use pyo3::{pyclass, pymethods};

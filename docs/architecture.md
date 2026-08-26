@@ -144,7 +144,7 @@ normalisation factors; the Y row of the resulting matrix is:
 Y_709 = 0.2126·R + 0.7152·G + 0.0722·B
 ```
 
-These values are specified verbatim in ITU-R BT.709-6 (2015), Table 1.
+These values are specified verbatim in ITU-R BT.709-6 (2015), Part 2, item 3.2.
 They are the default in phaios-core because sRGB-primary RAW data (the
 vast majority of consumer cameras) is defined on the Rec. 709 primaries.
 
@@ -464,7 +464,12 @@ Syntax", version 1.2 (2009), §2.1.
 
 The guided filter (He, Sun, Tang, "Guided Image Filtering," *ECCV 2010*,
 LNCS 6311, pp. 1–14) is a linear-time edge-preserving smoothing filter.
-It is patent-free. The key property for local contrast use: it
+A search of the granted-patent record found nothing claiming the
+filter itself, and the three closest Microsoft filings naming the same
+authors are matting patents whose claims do not read on it — see the
+provenance note in `src/local_contrast.rs`, which also records why the
+authors' own MATLAB must not be ported. The key property for local
+contrast use: it
 preserves edges while smoothing flat regions, making it superior to a
 Gaussian blur for the unsharp-masking operation.
 

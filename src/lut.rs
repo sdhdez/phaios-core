@@ -38,6 +38,21 @@
 //! reference to whichever spline widget produced it. See
 //! `docs/export.md` §6.
 //!
+//! # References
+//!
+//! The evaluation itself — piecewise-linear interpolation between evenly
+//! spaced table entries — is elementary and carries no attribution;
+//! saying so explicitly is better than leaving a reader to wonder
+//! whether a citation was forgotten.
+//!
+//! The *methods* a table expresses do have sources, and they live with
+//! the code that builds the table rather than here: histogram
+//! equalisation and matching in [`crate::histogram`] (Gonzalez and
+//! Woods, 4th ed., §3.3–3.4), the film characteristic curve in
+//! [`crate::shadow_rolloff`] and [`crate::highlight_rolloff`] (Hurter
+//! and Driffield 1890; Hunt, 6th ed., §8.3). This kernel is deliberately
+//! agnostic about which of them it is being used for.
+//!
 //! # Determinism
 //!
 //! Evaluation is one subtraction, one multiply, a floor, and a linear

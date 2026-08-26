@@ -28,7 +28,9 @@ crate-type = ["cdylib", "rlib"]
 # wheel compatible with CPython 3.12+.
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py312"] }
 
-# licence: MIT OR Apache-2.0  source: https://github.com/PyO3/rust-numpy
+# licence: BSD-2-Clause  source: https://github.com/PyO3/rust-numpy
+# (NOT MIT OR Apache-2.0, as this line said until it was checked against
+# `cargo metadata`. BSD-2-Clause is permissive and GPLv3-compatible.)
 # PyO3-based bindings for the NumPy C-API; provides PyReadonlyArray3 / PyArray3.
 numpy = "0.29"
 
@@ -50,6 +52,9 @@ rayon = "1"
 thiserror = "2"
 
 # licence: MIT OR Apache-2.0  source: https://github.com/chelsea0x3b/cudarc
+# transitive: pulls `libloading` (ISC) for the `dynamic-loading` feature.
+# ISC is permissive and GPLv3-compatible; noted here because §6 asks for
+# the licence of what a dependency actually brings in, not just its own.
 # maintainer: single primary author (75% of commits); #3 contributor is a
 # HuggingFace engineer, and Candle + cubecl-cuda build on this crate.
 # justification: safe host-side CUDA driver-API bindings for the optional
@@ -85,7 +90,7 @@ default = []
 cuda = ["dep:cudarc"]
 
 [dev-dependencies]
-# licence: MIT OR Apache-2.0  source: https://github.com/bheisler/criterion.rs
+# licence: Apache-2.0 OR MIT  source: https://github.com/bheisler/criterion.rs
 # Statistics-driven micro-benchmarking library.
 criterion = { version = "0.8", features = ["html_reports"] }
 

@@ -167,7 +167,45 @@ taking `(H, W, 1)` to `(H, W, 3)` — the kernels after it accept either.
 
 GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
 
-All dependencies are MIT OR Apache-2.0, both compatible with GPLv3.
+All dependencies are permissively licensed and GPLv3-compatible, but
+they are not all `MIT OR Apache-2.0` as an earlier version of this
+sentence claimed. Of the 36 crates that actually link into the library
+(build and runtime, excluding dev-only tooling such as criterion), 32 are
+`MIT OR Apache-2.0` in some spelling and four are not:
+
+| Crate | Licence | Reached via |
+|---|---|---|
+| `numpy` | BSD-2-Clause | direct dependency |
+| `libloading` | ISC | `cudarc`, only with `--features cuda` |
+| `target-lexicon` | Apache-2.0 WITH LLVM-exception | build graph |
+| `unicode-ident` | (MIT OR Apache-2.0) AND Unicode-3.0 | build graph |
+
+BSD-2-Clause, ISC and the Unicode licence are permissive and impose no
+condition GPLv3 cannot satisfy; the LLVM exception only widens
+Apache-2.0. Regenerate this table with `cargo metadata` after any
+dependency change — the claim is checkable, so it should be checked
+rather than assumed.
+
+### Algorithm provenance
+
+Every kernel cites the paper, textbook or standard it implements; the
+citations were checked against primary sources rather than from memory.
+Two kernels carry a fuller **provenance note** in their module
+documentation, because the licence of a *reference implementation* is a
+separate question from the licence of a *paper*:
+
+- **`local_contrast`** (`src/local_contrast.rs`) — the guided filter.
+  The authors' own MATLAB is restricted to non-commercial academic use
+  and **must not be ported**; this crate is an independent
+  reimplementation from the published equations. The note also records
+  which patents were searched and read against the kernel.
+- **`split_toning`** (`src/split_toning.rs`) — OKLab. The coefficients
+  come verbatim from Ottosson's reference implementation, offered as MIT
+  or public domain; this crate elects the public-domain branch, and says
+  so rather than relying on a citation to discharge a notice obligation.
+
+Nothing found in that review constrains use or distribution of this
+crate. It is a record of what was checked, not legal advice.
 Corresponding source is available at the repository URL above
 (satisfies GPLv3 §6(d)).
 

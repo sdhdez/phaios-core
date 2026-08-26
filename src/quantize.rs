@@ -12,12 +12,18 @@
 //! The fix is older than digital imaging: perturb each sample by
 //! sub-LSB noise *before* rounding, so the error becomes noise instead
 //! of structure. With a triangular probability density of ±1 LSB the
-//! quantisation error is rendered independent of the signal and its
-//! variance made constant — the standard result for subtractive-free
-//! dither (Lipshitz, Wannamaker and Vanderkooy, "Quantization and
-//! Dither: A Theoretical Survey", *Journal of the Audio Engineering
-//! Society* 40(5), 1992, pp. 355–375; the argument is signal-theoretic
-//! and transfers to images unchanged).
+//! the **first two moments** of the quantisation error are rendered
+//! independent of the signal — its mean and its variance become
+//! constant. That is the precise claim, and it is weaker than full
+//! statistical independence, which needs *subtractive* dither; higher
+//! moments remain input-dependent here.
+//!
+//! Reference: Stanley P. Lipshitz, Robert A. Wannamaker and John
+//! Vanderkooy, "Quantization and Dither: A Theoretical Survey",
+//! *Journal of the Audio Engineering Society* 40(5), 1992, pp. 355–375.
+//! The image-domain case is older still: L. G. Roberts, "Picture Coding
+//! Using Pseudo-Random Noise", *IRE Transactions on Information Theory*
+//! IT-8(2), February 1962, pp. 145–154 — reference 11 of that survey.
 //!
 //! Trading a contour for a little noise is a good trade at 8 bits and
 //! an irrelevant one at 16. It is also nearly free if grain is already

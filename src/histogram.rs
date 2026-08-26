@@ -39,6 +39,17 @@
 //! the crate that does not need the care §2's "deterministic reductions"
 //! rule demands of floating-point sums, and it is worth saying why
 //! rather than leaving a reader to wonder whether it was overlooked.
+//!
+//! # Reference
+//!
+//! Counting samples into bins needs no attribution. The one result here
+//! that does is the equalising transfer returned by
+//! [`Histogram::equalisation_lut`] — that the cumulative distribution
+//! function, used as a tone curve, flattens a histogram:
+//!
+//! > Rafael C. Gonzalez and Richard E. Woods, *Digital Image
+//! > Processing*, 4th ed., Pearson (2018), §3.3 "Histogram
+//! > Equalization"; histogram matching is §3.4.
 
 use ndarray::parallel::prelude::*;
 use ndarray::{Array2, ArrayView3, Axis};

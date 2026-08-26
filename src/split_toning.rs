@@ -27,6 +27,17 @@
 //!
 //! Reference: Björn Ottosson, "A perceptual color space for image
 //! processing" (2020), <https://bottosson.github.io/posts/oklab/>.
+//!
+//! # Provenance
+//!
+//! The 33 matrix coefficients in [`linear_srgb_to_oklab`] and
+//! [`oklab_to_linear_srgb`] are taken verbatim from Ottosson's published
+//! reference implementation, which he offers under a choice of the MIT
+//! licence or public domain. **This crate elects the public-domain
+//! branch**, which carries no notice obligation; stating the election is
+//! the point, since the MIT branch would require his copyright notice to
+//! travel with the code and a bare academic citation is not that. Either
+//! branch is compatible with GPLv3.
 
 use ndarray::{Array3, ArrayView3, s};
 use pyo3::{pyclass, pymethods};

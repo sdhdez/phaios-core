@@ -18,7 +18,7 @@
 //! pixel coordinates, which must be the final grid. Orientation before
 //! crop, so crop rectangles are expressed in the upright image.
 //!
-//! Reference for the orientation encoding: JEITA CP-3451 (Exif 2.3),
+//! Reference for the orientation encoding: JEITA CP-3451C / CIPA DC-008-2012 (Exif 2.3),
 //! tag 0x0112 — the enum discriminants are the Exif values 1..=8.
 //!
 //! [`resize`] and [`straighten`] resample, but with **polynomial

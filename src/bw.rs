@@ -144,7 +144,7 @@ pub(crate) fn validate_rgb(img: ArrayView3<f32>) -> Result<(), PhaiosError> {
 /// Input shape: `(H, W, 3)` — linear scene-referred f32 RGB.
 /// Output shape: `(H, W, 1)` — linear luminance.
 ///
-/// Reference: ITU-R BT.709-6 (2015), Table 1.
+/// Reference: ITU-R BT.709-6 (2015), Part 2, item 3.2.
 ///
 /// # Errors
 /// Returns [`PhaiosError::Shape`] if the input is not `(H, W, 3)`.

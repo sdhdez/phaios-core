@@ -51,9 +51,17 @@ use crate::integral::{sat, window_sum};
 
 /// splitmix64 finalizer — the bit mixer behind `SplittableRandom`.
 ///
-/// Reference: Sebastiano Vigna, "Further scramblings of Marsaglia's
-/// xorshift generators", *Journal of Computational and Applied
-/// Mathematics* 315 (2017), pp. 175–181.
+/// Reference: Guy L. Steele Jr., Doug Lea and Christine H. Flood,
+/// "Fast splittable pseudorandom number generators", *OOPSLA '14*,
+/// ACM SIGPLAN Notices 49(10), pp. 453–472, DOI 10.1145/2660193.2660195.
+///
+/// The specific finalizer constants below are the widely-used variant
+/// popularised by Sebastiano Vigna's public-domain `splitmix64.c`
+/// (<https://prng.di.unimi.it/splitmix64.c>) rather than the exact
+/// constants in the OOPSLA paper. An earlier version of this comment
+/// credited the whole construction to Vigna's 2017 *Journal of
+/// Computational and Applied Mathematics* paper, which is about the
+/// xorshift family and does not describe splitmix64 at all.
 #[inline]
 #[doc(hidden)]
 pub fn splitmix64(mut z: u64) -> u64 {
