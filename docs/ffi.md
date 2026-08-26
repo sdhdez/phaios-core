@@ -445,11 +445,16 @@ What is promised across backends:
 - Kernels containing transcendentals hold a committed per-kernel bound,
   asserted against the CPU oracle by `tests/cuda_conformance.rs`:
   (rtol 1e-5, atol 1e-7) for one-`powf`/`expf`/`cbrtf` kernels,
-  (rtol 1e-4, atol 1e-6) for `local_contrast` (which also reformulates
-  the f64 summed-area tables as separable Kahan-compensated f32 box
-  filters), (rtol 1e-5, atol 1e-7) for `blur`, whose separable passes
-  make the same f64-to-Kahan-f32 substitution for the same reason and
-  measure at 0.04x of `local_contrast`'s looser bound, (rtol 1e-3,
+  (rtol 1e-4, atol 1e-6) for `local_contrast` (which reformulates the
+  global f64 summed-area tables as separable box filters — dropping the
+  *global prefix sum*, but not the f64: the L and L² partial sums stay
+  f64 because their difference is the variance, and that subtraction
+  cancels. The coefficient sums downstream are Kahan-compensated f32,
+  which is enough because nothing there is squared or subtracted),
+  (rtol 1e-5, atol 1e-7) for `blur`, whose direct path makes the
+  f64-to-Kahan-f32 substitution — sound there because every weight is
+  positive and nothing is subtracted — while its box path keeps f64,
+  a sliding window being a subtraction. (rtol 1e-3,
   atol 1e-5) for `film_grain`'s Box–Muller half.
   A driver update that regresses accuracy fails the suite rather than
   being absorbed.

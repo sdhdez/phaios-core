@@ -191,6 +191,51 @@ fn local_contrast_agrees_with_cpu_oracle() {
     }
 }
 
+/// The same agreement on input that spans a scene's dynamic range.
+///
+/// The guided filter's variance is `mean(L²) − mean(L)²`, a subtraction of
+/// two nearly equal large numbers whose true difference can be many orders
+/// smaller than either. The device computed it in f32 from
+/// Kahan-compensated f32 partial sums, and Kahan does nothing for a
+/// cancelling difference — it compensates a *sum*. On a uniformly bright
+/// region, where the true variance is near zero and both terms are ~1e8,
+/// the f32 result was noise, `a = var/(var+ε)` then read that noise as an
+/// edge, and the filter smoothed where it should have sharpened.
+///
+/// Measured at 51.8× the committed bound before the L/L² path moved to
+/// f64. Nothing caught it because every other case here draws from
+/// `pseudo_random_image`, i.e. `[0, 1)`, where `mean(L²)` and `mean(L)²`
+/// are both O(1) and the cancellation is harmless.
+#[test]
+fn local_contrast_agrees_within_bound_across_the_dynamic_range() {
+    use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
+
+    let Some(ctx) = try_context() else { return };
+
+    for highlight in [1.0_f32, 1e2, 1e4, 1e6, 1e8] {
+        let mut img = ndarray::Array3::<f32>::from_elem((81, 97, 1), 1e-4);
+        img.slice_mut(ndarray::s![30..34, 10..80, ..])
+            .fill(highlight);
+
+        // Small radii and a large ε are the worst case: the window sits
+        // wholly inside the bright bar, so the true variance really is
+        // near zero and the cancellation has nothing left to stand on.
+        for radius in [1_u32, 2, 8, 32] {
+            for eps in [1e-4_f32, 0.01, 0.5] {
+                let params = GuidedFilterParams::new(radius, eps);
+                let cpu = local_contrast(img.view(), &params, 0.5).unwrap();
+                let gpu = cuda::kernels::local_contrast(&ctx, img.view(), &params, 0.5).unwrap();
+                let v = worst_violation(&cpu, &gpu, 1e-4, 1e-6);
+                assert!(
+                    v <= 1.0,
+                    "r={radius} eps={eps} with a {highlight:e} highlight: \
+                     {v:.4}x the (1e-4, 1e-6) bound"
+                );
+            }
+        }
+    }
+}
+
 /// radius = 0 makes the filter the identity — and because no windowed
 /// arithmetic happens at all in that configuration, CPU and GPU agree
 /// bit-for-bit, not merely closely.

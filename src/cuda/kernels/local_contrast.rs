@@ -62,13 +62,21 @@ pub fn local_contrast_device(
     // Safety (all four): uninitialised device buffers, each fully
     // written by the kernel that produces it before any kernel reads
     // it; the stream serialises the passes.
-    let mut buf_1: CudaSlice<f32> =
+    // f64: these carry L and L² partial sums, whose magnitudes and whose
+    // cancelling difference an f32 buffer cannot hold. See the .cu.
+    let mut buf_1: CudaSlice<f64> =
         unsafe { ctx.stream.alloc(n) }.map_err(be("device allocation failed"))?;
-    let mut buf_2: CudaSlice<f32> =
+    let mut buf_2: CudaSlice<f64> =
         unsafe { ctx.stream.alloc(n) }.map_err(be("device allocation failed"))?;
     let mut buf_a: CudaSlice<f32> =
         unsafe { ctx.stream.alloc(n) }.map_err(be("device allocation failed"))?;
     let mut buf_b: CudaSlice<f32> =
+        unsafe { ctx.stream.alloc(n) }.map_err(be("device allocation failed"))?;
+    // The a/b window sums stay f32 — they feed no cancelling difference —
+    // so they need their own buffers rather than reusing the f64 pair.
+    let mut buf_c: CudaSlice<f32> =
+        unsafe { ctx.stream.alloc(n) }.map_err(be("device allocation failed"))?;
+    let mut buf_d: CudaSlice<f32> =
         unsafe { ctx.stream.alloc(n) }.map_err(be("device allocation failed"))?;
 
     // Pass 1: row-window sums of L and L².
@@ -100,14 +108,14 @@ pub fn local_contrast_device(
         .arg(&eps);
     unsafe { launch.launch(cfg) }.map_err(be("coeff_ab launch failed"))?;
 
-    // Pass 3: row-window sums of a and b (reusing the first two buffers).
+    // Pass 3: row-window sums of a and b.
     let f = ctx.function("box_h_ab", PTX)?;
     let mut launch = ctx.stream.launch_builder(&f);
     launch
         .arg(&buf_a)
         .arg(&buf_b)
-        .arg(&mut buf_1)
-        .arg(&mut buf_2)
+        .arg(&mut buf_c)
+        .arg(&mut buf_d)
         .arg(&h_i)
         .arg(&w_i)
         .arg(&r);
@@ -117,8 +125,8 @@ pub fn local_contrast_device(
     let f = ctx.function("final_out", PTX)?;
     let mut launch = ctx.stream.launch_builder(&f);
     launch
-        .arg(&buf_1)
-        .arg(&buf_2)
+        .arg(&buf_c)
+        .arg(&buf_d)
         .arg(&img.buf)
         .arg(&mut out.buf)
         .arg(&h_i)

@@ -1319,7 +1319,7 @@ impossible numbers, which is how the figures below were nearly wrong.
 | Kernel | GPU | CPU | Notes |
 |---|---|---|---|
 | `exposure` | 2.0 ms | 29.3 ms | element-wise reference point |
-| `local_contrast` r=8 | 4.4 ms | 178 ms | |
+| `local_contrast` r=8 | 12.5 ms | 178 ms | f64 L/L² sums; see below |
 | `blur` σ=2 / 5.9 (direct) | 6.0 / 10.7 ms | 50 / 71 ms | one thread per output element |
 | `blur` σ=6 / 64 (box) | 7.5 / 8.8 ms | 90 ms | segmented; see below |
 | `glow` halation / glare | 8.3 / 17.9 ms | 106 / 117 ms | |
@@ -1340,7 +1340,26 @@ setup stays small against the sliding work it buys parallelism for.
 The lesson generalises: on a GPU an O(1)-per-output algorithm with five
 thousand threads loses to an O(r) one with twenty-four million.
 
-**And it accumulates in f64, not compensated f32.** The direct path uses
+**`local_contrast` pays for its precision, and the box blur does not.**
+Both kernels moved partial sums from Kahan-compensated f32 to f64 for the
+same reason (below), but the bills differ by an order of magnitude: the
+box blur went 7.5 → 7.5 ms, `local_contrast` 4.4 → 12.5 ms at r = 8, and
+6.1 → 35.4 ms at r = 32. The box blur is bandwidth-bound, so f64
+arithmetic hides under the memory traffic; the guided filter accumulates
+(2r+1) values per output per pass across four passes, so it is
+compute-bound and a consumer card's 1/64 f64 rate lands squarely on it.
+
+That is why only the L and L² sums are f64 there. Their difference is the
+variance — `mean(L²) − mean(L)²`, a cancelling subtraction — so they must
+carry the magnitude. The coefficient sums downstream stay
+Kahan-compensated f32, because `a` is confined to [0, 1], `b` is never
+squared, and neither feeds a difference; measured, that split costs 12.5
+ms where all-f64 cost 20.2 ms and bought nothing. The compensation on
+that path is not optional either: a caller may pass a radius covering the
+whole image, and then those sums run over every pixel rather than a
+handful.
+
+**The box blur accumulates in f64, not compensated f32.** The direct path uses
 Kahan-compensated f32 and is right to: every weight is positive, nothing
 is ever subtracted, and the loop is well conditioned. A sliding window is
 not. It subtracts, so once the accumulator holds a bright sample the dark
