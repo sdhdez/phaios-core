@@ -152,11 +152,83 @@ fn exposure_accepts_empty_input() {
 /// two-term form numpy's `assert_allclose` uses: a pure relative metric
 /// punishes outputs that legitimately cross zero (out = L + s·(L − q)
 /// does), where a few-ULP absolute difference is a huge ratio.
+///
+/// Non-finite values are compared explicitly rather than arithmetically,
+/// and the shapes are asserted rather than zipped. Both matter: this was
+/// `.zip(...).fold(0.0, f32::max)`, and `f32::max` returns the *other*
+/// operand when one is NaN, so every NaN violation was silently dropped.
+/// A GPU kernel returning nothing but NaN scored 0.000 — a perfect
+/// match — as did an empty output, or one truncated to a single element,
+/// because `zip` stops at the shorter side. That is the oracle behind
+/// every bounded assertion in this file.
 fn worst_violation(a: &Array3<f32>, b: &Array3<f32>, rtol: f32, atol: f32) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| (x - y).abs() / (atol + rtol * x.abs()))
-        .fold(0.0, f32::max)
+    assert_eq!(
+        a.dim(),
+        b.dim(),
+        "worst_violation: shape mismatch, {:?} against {:?}",
+        a.dim(),
+        b.dim()
+    );
+    let mut worst = 0.0_f32;
+    for (x, y) in a.iter().zip(b.iter()) {
+        let v = if x.is_nan() || y.is_nan() {
+            // Agreeing on NaN is agreement; disagreeing about whether a
+            // value is NaN at all is total disagreement, not zero.
+            if x.is_nan() && y.is_nan() {
+                0.0
+            } else {
+                f32::INFINITY
+            }
+        } else if x.is_infinite() || y.is_infinite() {
+            if x == y { 0.0 } else { f32::INFINITY }
+        } else {
+            (x - y).abs() / (atol + rtol * x.abs())
+        };
+        // Plain `>`, so a NaN could not sneak through here either.
+        if v > worst {
+            worst = v;
+        }
+    }
+    worst
+}
+
+/// The oracle needs its own test, because a lenient oracle silently
+/// weakens every assertion built on it — which is exactly what happened.
+#[test]
+fn worst_violation_does_not_score_garbage_as_agreement() {
+    let ok = Array3::from_shape_vec((1, 3, 1), vec![1.0_f32, 2.0, 3.0]).unwrap();
+    let nan = Array3::from_shape_vec((1, 3, 1), vec![f32::NAN; 3]).unwrap();
+    let inf = Array3::from_shape_vec((1, 3, 1), vec![f32::INFINITY; 3]).unwrap();
+
+    assert_eq!(worst_violation(&ok, &ok, 1e-5, 1e-7), 0.0);
+    assert_eq!(
+        worst_violation(&nan, &nan, 1e-5, 1e-7),
+        0.0,
+        "NaN agrees with NaN"
+    );
+    assert_eq!(
+        worst_violation(&inf, &inf, 1e-5, 1e-7),
+        0.0,
+        "+inf agrees with +inf"
+    );
+
+    // Each of these scored 0.0 before.
+    assert!(
+        worst_violation(&ok, &nan, 1e-5, 1e-7).is_infinite(),
+        "an all-NaN output must not read as agreement"
+    );
+    assert!(
+        worst_violation(&nan, &ok, 1e-5, 1e-7).is_infinite(),
+        "the NaN side being the reference must not read as agreement either"
+    );
+    assert!(
+        worst_violation(&ok, &inf, 1e-5, 1e-7).is_infinite(),
+        "a finite/infinite mismatch must not read as agreement"
+    );
+
+    // A real numerical difference still scores as before.
+    let off = Array3::from_shape_vec((1, 3, 1), vec![1.0_f32, 2.0, 3.5]).unwrap();
+    assert!(worst_violation(&ok, &off, 1e-5, 1e-7) > 1000.0);
 }
 
 /// GPU guided filter agrees with the CPU oracle within 1e-4 relative.
