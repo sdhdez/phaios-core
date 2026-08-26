@@ -12,6 +12,7 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use ndarray::Array3;
+use phaios_core::blur::{BlurParams, BlurShape, blur};
 use phaios_core::bw::{
     ColorFilter, HslWeightedParams, LuminanceStandard, channel_mixer_bw, color_filter_bw, hsl_bw,
     luminance_bw,
@@ -217,6 +218,19 @@ fn bench_analysis(c: &mut Criterion) {
     });
 }
 
+fn bench_blur(c: &mut Criterion) {
+    let grey = pseudo_random_image(H, W, 1);
+    // Either side of the crossover: the direct path's cost grows with
+    // sigma, the box path's does not.
+    for sigma in [2.0_f32, 4.0, 5.9, 6.0, 16.0, 64.0] {
+        let params = BlurParams::new(sigma, BlurShape::Gaussian);
+        let path = if sigma < 6.0 { "direct" } else { "box" };
+        c.bench_function(&format!("blur/24MP/sigma{sigma}-{path}"), |b| {
+            b.iter(|| blur(black_box(grey.view()), black_box(&params)).unwrap())
+        });
+    }
+}
+
 fn bench_local_contrast(c: &mut Criterion) {
     let grey = pseudo_random_image(H, W, 1);
     let params = GuidedFilterParams::new(8, 0.01);
@@ -277,6 +291,7 @@ criterion_group!(
     bench_shadow_rolloff,
     bench_quantize,
     bench_analysis,
+    bench_blur,
     bench_local_contrast,
     bench_film_grain,
     bench_split_toning,

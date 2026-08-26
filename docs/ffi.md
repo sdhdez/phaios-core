@@ -44,6 +44,7 @@ pipeline:
 | `split_toning` | 1 | **3** | the only kernel that adds channels |
 | `vignette` | any | same | one factor per pixel, applied to every channel |
 | `tone_curve` | any | same | element-wise |
+| `blur` | any | same | separable Gaussian; channels filtered independently |
 | `shadow_rolloff` | any | same | element-wise; the toe, at the start of the tone stages |
 | `highlight_rolloff` | any | same | element-wise; the shoulder, last linear stage before `encode_srgb` |
 | `encode_srgb` | any | same | element-wise |
@@ -52,7 +53,7 @@ pipeline:
 | `apply_lut` | any | same | element-wise through a caller-supplied table |
 | `histogram` | any | **not an image** | a reduction — returns a `Histogram`, see below |
 
-A kernel given the wrong channel count raises `ValueError`. The fourteen
+A kernel given the wrong channel count raises `ValueError`. The fifteen
 that accept "any" do so for three distinct reasons.
 
 The four **geometry** kernels (`crop`, `orient`, `straighten`, `resize`)
@@ -63,7 +64,8 @@ colour.
 The six **tone** kernels (`exposure`, `vignette`, `tone_curve`,
 `shadow_rolloff`, `highlight_rolloff`, `encode_srgb`) run either side of
 `split_toning`, so a pipeline need not branch on whether toning is
-enabled.
+enabled. `blur` joins them for the same reason — it filters each channel
+independently, so it neither needs nor imposes a channel count.
 
 The remaining four — `apply_lut`, `quantize_u8`, `quantize_u16` and
 `histogram` — are per-sample by construction. The first three map each
@@ -425,7 +427,10 @@ What is promised across backends:
   (rtol 1e-5, atol 1e-7) for one-`powf`/`expf`/`cbrtf` kernels,
   (rtol 1e-4, atol 1e-6) for `local_contrast` (which also reformulates
   the f64 summed-area tables as separable Kahan-compensated f32 box
-  filters), (rtol 1e-3, atol 1e-5) for `film_grain`'s Box–Muller half.
+  filters), (rtol 1e-5, atol 1e-7) for `blur`, whose separable passes
+  make the same f64-to-Kahan-f32 substitution for the same reason and
+  measure at 0.04x of `local_contrast`'s looser bound, (rtol 1e-3,
+  atol 1e-5) for `film_grain`'s Box–Muller half.
   A driver update that regresses accuracy fails the suite rather than
   being absorbed.
 

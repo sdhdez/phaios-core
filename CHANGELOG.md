@@ -106,6 +106,49 @@ should carry linear scene-referred data and skip both encoding and
 quantisation. The document is written to outlast the parked question of
 *where* file writing lives, since it constrains the output either way.
 
+### Added — Gaussian blur
+
+`blur(img, BlurParams)` — a separable Gaussian, and the primitive the
+scattering effects are built on: halation, diffusion and veiling glare
+are all *blur, weighted, added back*, so none of them can be written
+until this exists.
+
+Two paths, chosen by measurement rather than taste. Below σ = 6 a direct
+separable convolution against sampled weights, which is exact. At or
+above it, three box passes whose variances sum to σ², which costs the
+same at any radius — 90 ms on a 24 MP frame whether σ is 6, 16 or 64,
+where a truncated kernel at σ = 32 would need 386 taps per axis.
+
+The crossover sits where the two *cost* the same, because on accuracy the
+direct path always wins. That is not where it first went: placed at σ = 4
+(where the box path's σ error first drops under 1%), σ ∈ [4, 6) was being
+handled by the slower *and* less accurate path. Benchmarking surfaced it,
+and moving the crossover made that band numerically exact.
+
+Two traps the width search had to be taught, both found by measurement
+and both now documented so they are not retried:
+
+- **More box passes do not help small σ** — they raise the floor, 1.414
+  for three passes, 1.633 for four, 1.826 for five.
+- **Matching σ alone is the wrong objective.** An unconstrained search
+  for σ = 2 returns `[1, 1, 7]`: the right variance from a single box and
+  two passes that do nothing. Requiring width ≥ 3 is still not enough —
+  σ = 5 then picks `[3, 3, 17]`, best σ match available and still nearly
+  a box, shape error 0.0223 against 0.0131 for a balanced triple at the
+  same σ error. The search now also caps the width ratio at 3:1.
+
+Borders clamp: a constant image is preserved exactly including its edges,
+and an impulse near an edge loses the tail that falls outside — a σ = 5
+kernel in a 16×16 frame keeps 0.79 of its energy. Both halves are
+asserted, so the second cannot later be mistaken for a defect.
+
+**Bounded, not bit-exact** across backends at (rtol 1e-5, atol 1e-7): the
+device accumulates each pass in Kahan-compensated f32 where the host uses
+f64, since a consumer card runs f64 at 1/64 rate. Measured worst case is
+0.04x of `local_contrast`'s looser bound, which is why a tighter one is
+committed — a bound never approached cannot catch a regression. σ = 0 is
+the exact identity on both.
+
 ### Fixed — an uncatchable abort on zero-stride input
 
 Every kernel sized its output from the *logical* shape of the caller's

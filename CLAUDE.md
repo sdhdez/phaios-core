@@ -25,7 +25,9 @@ roll-off (the toe; together with `tone_curve` they compose the
 characteristic curve); dithered quantisation to u8/u16
 (the first kernels returning integers); `apply_lut` and `histogram` —
 the latter being the crate's first *reduction*, returning statistics
-rather than an image; the four geometry kernels — `crop`, `orient` (the eight
+rather than an image; a separable Gaussian `blur` (the
+primitive the scattering effects will be built on); the four geometry
+kernels — `crop`, `orient` (the eight
 Exif transforms), `straighten` (±45° with an inscribed-rectangle crop)
 and `resize` (area / bilinear / Catmull-Rom); and an **optional CUDA
 backend** behind `--features cuda`, exposing every kernel a second time

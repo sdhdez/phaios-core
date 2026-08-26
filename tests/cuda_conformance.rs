@@ -1252,3 +1252,73 @@ fn shadow_rolloff_device_rejects_what_the_cpu_rejects() {
         );
     }
 }
+
+/// Gaussian blur, across the crossover in both directions.
+///
+/// The committed bound is (1e-5, 1e-7) — the crate's tolerance for a
+/// one-transcendental kernel — rather than `local_contrast`'s looser
+/// (1e-4, 1e-6), because the measured worst case is 0.038x of the looser
+/// one and a bound that is never approached cannot catch a regression.
+///
+/// Both paths are exercised: direct convolution below σ = 4 (where the
+/// device only has to sum the same weights in a different order) and
+/// three box passes at or above it (where it also swaps f64 accumulation
+/// for Kahan-compensated f32).
+#[test]
+fn blur_agrees_within_bound_on_both_paths() {
+    use phaios_core::blur::{BlurParams, BlurShape, blur};
+
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(129, 173, 3);
+
+    for sigma in [0.5_f32, 0.8, 1.5, 2.5, 3.9, 4.0, 6.0, 12.0, 30.0] {
+        let params = BlurParams::new(sigma, BlurShape::Gaussian);
+        let cpu = blur(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::blur(&ctx, img.view(), &params).unwrap();
+        let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+        assert!(
+            v <= 1.0,
+            "blur sigma={sigma}: {v:.2}x the (1e-5, 1e-7) bound"
+        );
+    }
+}
+
+/// The identity path must be bit-exact on both backends: σ = 0 is a copy,
+/// not a filter, and a copy has no rounding to disagree about.
+#[test]
+fn blur_identity_is_bit_exact() {
+    use phaios_core::blur::{BlurParams, BlurShape, blur};
+
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(64, 96, 3);
+    let params = BlurParams::new(0.0, BlurShape::Gaussian);
+    assert_eq!(
+        blur(img.view(), &params).unwrap(),
+        cuda::kernels::blur(&ctx, img.view(), &params).unwrap()
+    );
+    // And it really is the input, not merely equal across backends.
+    assert_eq!(blur(img.view(), &params).unwrap(), img);
+}
+
+/// Degenerate shapes and non-finite samples must agree too — the single
+/// row and single column cases are where a separable filter's axis
+/// handling goes wrong.
+#[test]
+fn blur_degenerate_shapes_agree() {
+    use phaios_core::blur::{BlurParams, BlurShape, blur};
+
+    let Some(ctx) = try_context() else { return };
+    for (h, w, c) in [(1, 1, 1), (1, 33, 3), (33, 1, 3), (2, 2, 1), (17, 5, 3)] {
+        let img = pseudo_random_image(h, w, c);
+        for sigma in [1.5_f32, 6.0] {
+            let params = BlurParams::new(sigma, BlurShape::Gaussian);
+            let cpu = blur(img.view(), &params).unwrap();
+            let gpu = cuda::kernels::blur(&ctx, img.view(), &params).unwrap();
+            let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+            assert!(
+                v <= 1.0,
+                "blur {h}x{w}x{c} sigma={sigma}: {v:.2}x the bound"
+            );
+        }
+    }
+}

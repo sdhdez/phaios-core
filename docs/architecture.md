@@ -1151,7 +1151,68 @@ table in the sidecar (`docs/export.md` §6).
 
 ---
 
-## 16. Performance (v0.2-dev)
+## 16. Gaussian blur
+
+The primitive underneath the scattering effects — halation, diffusion,
+veiling glare are all *blur, weighted, added back* — and useful alone for
+softening.
+
+### Two paths, and where they meet
+
+A Gaussian is separable, so both paths filter rows then columns; they
+differ in how each 1-D pass is computed.
+
+| σ | Method | Cost at 24 MP | Accuracy |
+|---|---|---|---|
+| < 6 | direct convolution, sampled weights truncated at ±4σ | 50 ms at σ=2, 71 ms at σ=3.9 — grows with σ | exact |
+| ≥ 6 | three box passes, variances summing to σ² | **90 ms, flat** at σ = 6, 16 or 64 | σ within 1%, profile to a few parts in 10³ |
+
+The crossover sits where the two *cost* the same, because on accuracy the
+direct path always wins: it has no σ quantisation and no shape error at
+all. Measured, direct runs about 1.3 ms per tap and so meets the box
+path's flat 90 ms at roughly σ = 6.
+
+That is not where the crossover first went. Placing it at σ = 4 — the
+point where the box path's σ error first drops below 1% — left σ ∈ [4, 6)
+being handled by the *less* accurate and *slower* path. Benchmarking is
+what surfaced it.
+
+### Why the box path cannot simply be used everywhere
+
+A box of odd width `w` has variance `(w² − 1)/12`, and variances add, so
+three width-3 boxes give σ = 1.414 and **nothing smaller is reachable**.
+Just above that floor the achievable values are sparse: a request for 2.0
+lands on 2.16.
+
+Two things that look like fixes and are not, both measured:
+
+- **More passes do not help small σ.** They raise the floor: 1.414 for
+  three, 1.633 for four, 1.826 for five. Extra passes buy shape accuracy
+  at large σ, not reach at small σ.
+- **Matching σ alone is the wrong objective.** An unconstrained search
+  for widths hitting σ = 2 returns `[1, 1, 7]` — the right variance from
+  a single box and two passes that do nothing. Even requiring every width
+  to be at least 3 is not enough: σ = 5 then picks `[3, 3, 17]`, best
+  σ match available and still nearly a single box, with shape error
+  0.0223 against 0.0131 for a balanced triple at the same σ error. The
+  search therefore also caps the widest-to-narrowest ratio at 3:1, which
+  is what makes the central limit theorem actually apply.
+
+Three successive box filters converge on a Gaussian by that theorem —
+the classical result behind Kovesi's *Fast Almost-Gaussian Filtering*
+(DICTA 2010).
+
+### Borders
+
+Clamped. A constant image is preserved exactly, including at its edges,
+and an impulse close enough to an edge **loses** the tail that falls
+outside: a σ = 5 kernel in a 16×16 frame retains 0.79 of its energy. That
+is what clamping means rather than a defect, and the test suite asserts
+both halves so it cannot later be mistaken for one.
+
+---
+
+## 17. Performance (v0.2-dev)
 
 Measured with `cargo bench` (criterion, bench profile) on a synthetic
 4323 × 5765 (≈ 24 MP) `f32` image filled with deterministic
@@ -1198,7 +1259,7 @@ input, the three B&W kernels measured 10.1 ms rather than 15 ms.
 
 ---
 
-## 17. Geometry (crop, orientation)
+## 18. Geometry (crop, orientation)
 
 Two exact operations, deliberately in the core rather than in front
 ends: their parameters live in consumers' sidecar files, and if two

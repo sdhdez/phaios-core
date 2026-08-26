@@ -356,6 +356,24 @@ fn shadow_rolloff(
     Ok(GpuImage { inner: result })
 }
 
+/// Gaussian blur on the GPU. Mirrors ``phaios_core.blur``; agreement is
+/// bounded rather than bit-exact, because the device accumulates each
+/// separable pass in Kahan-compensated float32 where the host uses
+/// float64 — a consumer card runs float64 at 1/64 rate.
+///
+/// ``sigma = 0.0`` is the exact identity on both backends.
+#[pyfunction]
+#[pyo3(signature = (img, params = None))]
+fn blur(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: Option<crate::blur::BlurParams>,
+) -> PyResult<GpuImage> {
+    let owned = params.unwrap_or_default();
+    let result = py.detach(|| cuda::kernels::blur_device(&img.inner, &owned))?;
+    Ok(GpuImage { inner: result })
+}
+
 /// Radial vignette on the GPU. Mirrors ``phaios_core.vignette``;
 /// bit-exact against the CPU.
 #[pyfunction]
@@ -563,6 +581,7 @@ pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult
     gpu.add_function(wrap_pyfunction!(vignette, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(highlight_rolloff, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(shadow_rolloff, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(blur, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(quantize_u8, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(quantize_u16, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(histogram, &gpu)?)?;

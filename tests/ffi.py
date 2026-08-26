@@ -736,6 +736,7 @@ def test_all_kernels_accept_any_layout(label, rgb_f32, grey_f32):
         ph.orient(grey, ph.Orientation.Rotate180),
         ph.highlight_rolloff(grey, ph.RolloffParams(0.7, 3.0)),
         ph.shadow_rolloff(grey, ph.ShadowRolloffParams(0.2, 0.5)),
+        ph.blur(grey, ph.BlurParams(2.0)),
     ):
         assert out.shape == grey.shape
         assert out.flags["C_CONTIGUOUS"], "output must be C-contiguous"
@@ -1238,3 +1239,71 @@ def test_a_real_frame_is_never_refused():
     crate's benchmark size."""
     frame = np.zeros((4323, 5764, 3), np.float32)
     assert ph.exposure(frame, 0.5).shape == frame.shape
+
+
+# ── blur ─────────────────────────────────────────────────────────────────────
+
+
+def test_blur_sigma_zero_is_the_exact_identity(rgb_f32):
+    np.testing.assert_array_equal(ph.blur(rgb_f32), rgb_f32)
+    np.testing.assert_array_equal(ph.blur(rgb_f32, ph.BlurParams(0.0)), rgb_f32)
+
+
+@pytest.mark.parametrize("sigma", [0.5, 1.5, 3.9, 4.0, 8.0])
+def test_blur_preserves_a_constant_image(sigma):
+    """Borders clamp, so this must hold at the edges too — the usual place
+    a blur leaks darkness in."""
+    img = np.full((17, 23, 1), 0.375, np.float32)
+    out = ph.blur(img, ph.BlurParams(sigma))
+    assert np.abs(out - 0.375).max() < 2e-6
+
+
+@pytest.mark.parametrize("sigma", [1.0, 2.0, 5.0])
+def test_blur_matches_an_independent_gaussian(sigma):
+    """Compared against a direct numpy convolution, in the interior where
+    border conventions cannot differ."""
+    rng = np.random.default_rng(9)
+    img = rng.random((96, 96, 1)).astype(np.float32)
+    r = int(np.ceil(4 * sigma))
+    k = np.exp(-(np.arange(-r, r + 1) ** 2) / (2 * sigma * sigma))
+    k /= k.sum()
+    pad = np.pad(img[:, :, 0].astype(np.float64), r, mode="edge")
+    tmp = np.apply_along_axis(lambda m: np.convolve(m, k, "valid"), 1, pad)
+    want = np.apply_along_axis(lambda m: np.convolve(m, k, "valid"), 0, tmp)
+    got = ph.blur(img, ph.BlurParams(sigma))[:, :, 0]
+    c = slice(24, 72)
+    # Below the crossover the direct path is exact; above it the box
+    # approximation is good to about 1e-2 of peak, which is invisible once
+    # a glow scales it by `amount`.
+    tol = 1e-6 if sigma < 4.0 else 2e-2
+    assert np.abs(got[c, c] - want[c, c]).max() < tol
+
+
+def test_blur_energy_is_preserved_while_the_kernel_fits():
+    sigma = 4.0
+    n = int(np.ceil(4 * sigma)) * 2 + 9
+    img = np.zeros((n, n, 1), np.float32)
+    img[n // 2, n // 2, 0] = 1.0
+    assert abs(float(ph.blur(img, ph.BlurParams(sigma)).sum()) - 1.0) < 2e-3
+
+
+def test_blur_larger_sigma_spreads_further():
+    n = 41
+    img = np.zeros((n, n, 1), np.float32)
+    img[n // 2, n // 2, 0] = 1.0
+    peaks = [float(ph.blur(img, ph.BlurParams(s))[n // 2, n // 2, 0]) for s in (0.5, 1.0, 2.0, 4.0, 6.0)]
+    assert all(b < a for a, b in zip(peaks, peaks[1:])), peaks
+
+
+@pytest.mark.parametrize("sigma", [-1.0, float("nan"), float("inf")])
+def test_blur_rejects_bad_sigma(grey_f32, sigma):
+    with pytest.raises(ValueError):
+        ph.blur(grey_f32, ph.BlurParams(sigma))
+
+
+def test_blur_params_repr_and_defaults():
+    p = ph.BlurParams()
+    assert p.sigma == 0.0
+    assert p.shape == ph.BlurShape.Gaussian
+    assert p == ph.BlurParams(0.0, ph.BlurShape.Gaussian)
+    assert "sigma=2" in repr(ph.BlurParams(2.0))

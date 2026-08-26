@@ -13,6 +13,7 @@ use numpy::{IntoPyArray, PyArray3, PyReadonlyArray3};
 use pyo3::prelude::*;
 
 mod alloc;
+pub mod blur;
 pub mod bw;
 #[cfg(feature = "cuda")]
 pub mod cuda;
@@ -727,6 +728,60 @@ pub fn shadow_rolloff_fn(
     Ok(result.into_pyarray(py).unbind())
 }
 
+// ── Blur binding ──────────────────────────────────────────────────────────────
+
+/// Blur an image with an isotropic Gaussian of standard deviation
+/// sigma, in pixels.
+///
+/// sigma = 0.0 is the exact identity. Borders clamp, so a constant
+/// image is preserved everywhere including its edges — and an impulse
+/// near an edge loses the tail that falls outside.
+///
+/// Below sigma 4 this is a direct separable convolution; at or above it,
+/// three box passes whose variances sum to sigma-squared, which costs
+/// the same at any radius.
+///
+/// The result is in **pixels of the image as given**, so a blur on a
+/// half-size preview is not the same picture as the same sigma on the
+/// full frame. Scale sigma with the image when previewing.
+///
+/// Order-sensitive, and which way depends on what the blur is for: as a
+/// capture-side effect (halation) it belongs early on linear data; as a
+/// print-side one (diffusion) after the tone stages. Light adds
+/// linearly, and only the linear frame gets that right.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape (H, W, C) for any channel count, dtype
+///     float32, any memory layout.
+/// params : BlurParams
+///     Sigma in pixels and kernel shape. Default: sigma 0, the identity.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape (H, W, C), dtype float32, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If sigma is negative or not finite.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
+#[pyfunction]
+#[pyo3(name = "blur", signature = (img, params = None))]
+pub fn blur_fn(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: Option<pyo3::PyRef<'_, blur::BlurParams>>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let owned = params.map_or_else(blur::BlurParams::default, |p| p.clone());
+    let result = py.detach(move || blur::blur(view, &owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── Local contrast binding ────────────────────────────────────────────────────
 
 /// Enhance local contrast using the He–Sun–Tang guided filter.
@@ -960,6 +1015,8 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<film_grain::GrainParams>()?;
     m.add_class::<split_toning::SplitToningParams>()?;
     m.add_class::<vignette::VignetteParams>()?;
+    m.add_class::<blur::BlurShape>()?;
+    m.add_class::<blur::BlurParams>()?;
     m.add_class::<highlight_rolloff::RolloffParams>()?;
     m.add_class::<shadow_rolloff::ShadowRolloffParams>()?;
     m.add_class::<quantize::Dither>()?;
@@ -986,6 +1043,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Tone
     m.add_function(wrap_pyfunction!(zone_system, m)?)?;
     m.add_function(wrap_pyfunction!(tone_curve, m)?)?;
+    m.add_function(wrap_pyfunction!(blur_fn, m)?)?;
     m.add_function(wrap_pyfunction!(highlight_rolloff_fn, m)?)?;
     m.add_function(wrap_pyfunction!(shadow_rolloff_fn, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_u8, m)?)?;

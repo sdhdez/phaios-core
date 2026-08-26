@@ -419,3 +419,17 @@ def test_gpu_upload_refuses_oversized_instead_of_aborting(ctx):
     huge = np.broadcast_to(np.float32(0.05), (100_000, 100_000, 3))
     with pytest.raises(MemoryError):
         ctx.upload(huge)
+
+
+@needs_device
+@pytest.mark.parametrize("sigma", [0.0, 1.5, 3.9, 4.0, 8.0])
+def test_gpu_blur_matches_cpu_within_bound(ctx, sigma):
+    rng = np.random.default_rng(61)
+    img = rng.random((37, 53, 3)).astype(np.float32)
+    params = ph.BlurParams(sigma)
+    got = gpu.blur(ctx.upload(img), params).download()
+    want = ph.blur(img, params)
+    if sigma == 0.0:
+        np.testing.assert_array_equal(got, want)   # identity is a copy
+    else:
+        assert np.abs(got - want).max() <= 1e-5 * np.abs(want).max() + 1e-7

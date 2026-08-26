@@ -173,6 +173,10 @@ name = "19_characteristic_curve"
 path = "examples/19_characteristic_curve.rs"
 
 [[example]]
+name = "20_blur"
+path = "examples/20_blur.rs"
+
+[[example]]
 name = "15_gpu_exposure"
 path = "examples/15_gpu_exposure.rs"
 required-features = ["cuda"]

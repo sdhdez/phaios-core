@@ -38,6 +38,7 @@ freshly allocated C-contiguous array.
 | `color_filter_bw` | Wratten-style filter simulation (Yellow, Orange, Red, Green, Blue) | v0.1 |
 | `hsl_bw` | Per-hue weighting across 8 bands, Gaussian-blended | v0.2 |
 | `zone_system` | Adams/Archer Zone System tone curve, 11 zones, Gaussian-blended | v0.1 |
+| `blur` | Separable Gaussian; direct below σ 6, three box passes above | v0.2 |
 | `local_contrast` | He–Sun–Tang guided filter for local contrast enhancement | v0.1 |
 | `film_grain` | Band-passed procedural grain, deterministic from an explicit seed | v0.2 |
 | `split_toning` | Shadow/highlight tinting in OKLab — returns `(H, W, 3)` | v0.2 |
