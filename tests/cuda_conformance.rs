@@ -1370,6 +1370,258 @@ fn shadow_rolloff_device_rejects_what_the_cpu_rejects() {
     }
 }
 
+/// Both backends must refuse the same input, with the same message.
+///
+/// Compared by rendered string rather than by variant: the message is
+/// what reaches a Python caller, and the whole reason validation is
+/// extracted into shared `validate*` helpers (CLAUDE.md §2) is that the
+/// two backends should be indistinguishable at that boundary.
+fn rejects_identically<T, U>(
+    label: &str,
+    cpu: Result<T, phaios_core::error::PhaiosError>,
+    gpu: Result<U, phaios_core::error::PhaiosError>,
+) {
+    let Err(cpu) = cpu else {
+        panic!("{label}: the CPU kernel accepted an input it is supposed to refuse");
+    };
+    let Err(gpu) = gpu else {
+        panic!("{label}: the device kernel accepted what the CPU refused");
+    };
+    assert_eq!(
+        cpu.to_string(),
+        gpu.to_string(),
+        "{label}: the backends must refuse identically"
+    );
+}
+
+/// Every fallible `_device` entry point refuses what the CPU refuses.
+///
+/// The `_device` forms are what the `phaios_core.gpu` submodule calls,
+/// and each carries its own guard. The per-call offload wrappers
+/// validate *separately*, so a test routed through those would not
+/// notice a `validate` deleted from the device form — every case below
+/// therefore uploads first and calls the device entry point directly.
+///
+/// Written because that guard was unpinned everywhere but one kernel:
+/// the `validate` call could be deleted from every device entry point
+/// except `shadow_rolloff` with the whole suite green, after which
+/// `blur_device(sigma = NaN)` returns `Ok` full of numbers, and the
+/// B&W entry points read a (H, W, 1) upload as if it held three
+/// channels — a 3x out-of-bounds device read.
+#[test]
+fn every_fallible_device_entry_point_rejects_what_the_cpu_rejects() {
+    use phaios_core::blur::{BlurParams, BlurShape};
+    use phaios_core::bw::{ColorFilter, HslWeightedParams, LuminanceStandard};
+    use phaios_core::film_grain::GrainParams;
+    use phaios_core::geometry::{CropParams, ResizeFilter, ResizeParams};
+    use phaios_core::glow::GlowParams;
+    use phaios_core::highlight_rolloff::RolloffParams;
+    use phaios_core::histogram::HistogramParams;
+    use phaios_core::local_contrast::GuidedFilterParams;
+    use phaios_core::lut::LutParams;
+    use phaios_core::shadow_rolloff::ShadowRolloffParams;
+    use phaios_core::split_toning::SplitToningParams;
+    use phaios_core::tone::{ToneCurveParams, ZoneParams};
+    use phaios_core::vignette::VignetteParams;
+    use std::collections::HashMap;
+
+    let Some(ctx) = try_context() else { return };
+
+    let rgb = pseudo_random_image(4, 4, 3);
+    let luma = pseudo_random_image(4, 4, 1);
+    let d_rgb = ctx.upload(rgb.view()).unwrap();
+    let d_luma = ctx.upload(luma.view()).unwrap();
+
+    // ── parameter guards ────────────────────────────────────────────
+
+    let p = BlurParams::new(f32::NAN, BlurShape::Gaussian);
+    rejects_identically(
+        "blur sigma=NaN",
+        phaios_core::blur::blur(rgb.view(), &p),
+        cuda::kernels::blur_device(&d_rgb, &p),
+    );
+
+    let p = GlowParams::new(0.8, 2.0, -1.0);
+    rejects_identically(
+        "glow amount=-1",
+        phaios_core::glow::glow(rgb.view(), &p),
+        cuda::kernels::glow_device(&d_rgb, &p),
+    );
+
+    rejects_identically(
+        "exposure stops=inf",
+        phaios_core::exposure::exposure(rgb.view(), f32::INFINITY),
+        cuda::kernels::exposure_device(&d_rgb, f32::INFINITY),
+    );
+
+    let p = ToneCurveParams::new(1.0, 0.0, 0.0);
+    rejects_identically(
+        "tone_curve power=0",
+        phaios_core::tone::tone_curve(rgb.view(), &p),
+        cuda::kernels::tone_curve_device(&d_rgb, &p),
+    );
+
+    let p = RolloffParams::new(1.5, 2.0);
+    rejects_identically(
+        "highlight_rolloff knee=1.5",
+        phaios_core::highlight_rolloff::highlight_rolloff(rgb.view(), &p),
+        cuda::kernels::highlight_rolloff_device(&d_rgb, &p),
+    );
+
+    let p = ShadowRolloffParams::new(1.5, 0.5);
+    rejects_identically(
+        "shadow_rolloff knee=1.5",
+        phaios_core::shadow_rolloff::shadow_rolloff(rgb.view(), &p),
+        cuda::kernels::shadow_rolloff_device(&d_rgb, &p),
+    );
+
+    let p = VignetteParams::new(0.4, 1.5, 0.5);
+    rejects_identically(
+        "vignette feather=1.5",
+        phaios_core::vignette::vignette(rgb.view(), &p),
+        cuda::kernels::vignette_device(&d_rgb, &p),
+    );
+
+    let p = GrainParams::new(-1.0, 2.0, 1);
+    rejects_identically(
+        "film_grain intensity=-1",
+        phaios_core::film_grain::film_grain(luma.view(), &p),
+        cuda::kernels::film_grain_device(&d_luma, &p),
+    );
+
+    let p = GuidedFilterParams::new(2, -1.0);
+    rejects_identically(
+        "local_contrast eps=-1",
+        phaios_core::local_contrast::local_contrast(luma.view(), &p, 0.5),
+        cuda::kernels::local_contrast_device(&d_luma, &p, 0.5),
+    );
+
+    let p = SplitToningParams::new([0.0; 3], [0.0; 3], 1.5, 0.0);
+    rejects_identically(
+        "split_toning pivot=1.5",
+        phaios_core::split_toning::split_toning(luma.view(), &p),
+        cuda::kernels::split_toning_device(&d_luma, &p),
+    );
+
+    let mut offsets = HashMap::new();
+    offsets.insert(11_i32, 1.0_f32);
+    let p = ZoneParams::new(offsets);
+    rejects_identically(
+        "zone_system zone=11",
+        phaios_core::tone::zone_system(luma.view(), &p),
+        cuda::kernels::zone_system_device(&d_luma, &p),
+    );
+
+    let p = HistogramParams::new(1, 0.0, 1.0);
+    rejects_identically(
+        "histogram bins=1",
+        phaios_core::histogram::histogram(rgb.view(), &p),
+        cuda::kernels::histogram_device(&d_rgb, &p),
+    );
+
+    let short = ndarray::Array1::<f32>::zeros(1);
+    let p = LutParams::new(0.0, 1.0);
+    rejects_identically(
+        "apply_lut lut.len()=1",
+        phaios_core::lut::apply_lut(rgb.view(), short.view(), &p),
+        cuda::kernels::apply_lut_device(&d_rgb, short.view(), &p),
+    );
+
+    let p = CropParams::new(0, 0, 100, 100);
+    rejects_identically(
+        "crop exceeds the frame",
+        phaios_core::geometry::crop(rgb.view(), &p),
+        cuda::kernels::crop_device(&d_rgb, &p),
+    );
+
+    let p = ResizeParams::new(0, 4, ResizeFilter::Area);
+    rejects_identically(
+        "resize width=0",
+        phaios_core::geometry::resize(rgb.view(), &p),
+        cuda::kernels::resize_device(&d_rgb, &p),
+    );
+
+    let p = HslWeightedParams::new([0.0; 8], LuminanceStandard::Bt709, 0.0);
+    rejects_identically(
+        "hsl_bw sigma_deg=0",
+        phaios_core::bw::hsl_bw(rgb.view(), &p),
+        cuda::kernels::hsl_bw_device(&d_rgb, &p),
+    );
+
+    // ── shape guards ────────────────────────────────────────────────
+    //
+    // The B&W entry points duplicate the channel check inline in the
+    // .cu-facing Rust rather than calling `bw::validate_rgb`, so the
+    // two messages agree only by both being written out by hand. That
+    // is exactly what needs pinning: without it, a (H, W, 1) upload is
+    // read as if it held three channels.
+
+    rejects_identically(
+        "luminance_bw on (H, W, 1)",
+        phaios_core::bw::luminance_bw(luma.view(), LuminanceStandard::Bt709),
+        cuda::kernels::luminance_bw_device(&d_luma, LuminanceStandard::Bt709),
+    );
+
+    rejects_identically(
+        "channel_mixer_bw on (H, W, 1)",
+        phaios_core::bw::channel_mixer_bw(luma.view(), [0.3, 0.6, 0.1]),
+        cuda::kernels::channel_mixer_bw_device(&d_luma, [0.3, 0.6, 0.1]),
+    );
+
+    rejects_identically(
+        "color_filter_bw on (H, W, 1)",
+        phaios_core::bw::color_filter_bw(
+            luma.view(),
+            ColorFilter::Red25A,
+            LuminanceStandard::Bt709,
+        ),
+        cuda::kernels::color_filter_bw_device(
+            &d_luma,
+            ColorFilter::Red25A,
+            LuminanceStandard::Bt709,
+        ),
+    );
+
+    let p = HslWeightedParams::new([0.0; 8], LuminanceStandard::Bt709, 30.0);
+    rejects_identically(
+        "hsl_bw on (H, W, 1)",
+        phaios_core::bw::hsl_bw(luma.view(), &p),
+        cuda::kernels::hsl_bw_device(&d_luma, &p),
+    );
+
+    // The luminance-only kernels, given RGB.
+
+    let p = GrainParams::new(0.2, 2.0, 1);
+    rejects_identically(
+        "film_grain on (H, W, 3)",
+        phaios_core::film_grain::film_grain(rgb.view(), &p),
+        cuda::kernels::film_grain_device(&d_rgb, &p),
+    );
+
+    let p = GuidedFilterParams::new(2, 0.01);
+    rejects_identically(
+        "local_contrast on (H, W, 3)",
+        phaios_core::local_contrast::local_contrast(rgb.view(), &p, 0.5),
+        cuda::kernels::local_contrast_device(&d_rgb, &p, 0.5),
+    );
+
+    let p = SplitToningParams::new([0.0; 3], [0.0; 3], 0.5, 0.0);
+    rejects_identically(
+        "split_toning on (H, W, 3)",
+        phaios_core::split_toning::split_toning(rgb.view(), &p),
+        cuda::kernels::split_toning_device(&d_rgb, &p),
+    );
+
+    let mut offsets = HashMap::new();
+    offsets.insert(5_i32, 1.0_f32);
+    let p = ZoneParams::new(offsets);
+    rejects_identically(
+        "zone_system on (H, W, 3)",
+        phaios_core::tone::zone_system(rgb.view(), &p),
+        cuda::kernels::zone_system_device(&d_rgb, &p),
+    );
+}
+
 /// Gaussian blur, across the crossover in both directions.
 ///
 /// The committed bound is (1e-5, 1e-7) — the crate's tolerance for a
