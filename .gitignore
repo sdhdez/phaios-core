@@ -1,6 +1,11 @@
 # Rust build artefacts
 /target/
 
+# Local cache: scratch build trees, audit worktrees and other working
+# residuals. Anchored like /target/ so it only matches the repo root.
+# Never contains anything the crate needs; safe to delete at any time.
+/.cache/
+
 # Python
 __pycache__/
 *.py[cod]

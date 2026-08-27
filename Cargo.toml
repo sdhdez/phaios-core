@@ -13,6 +13,7 @@ categories = ["multimedia::images", "science"]
 exclude = [
     "tools/",
     ".claude/",
+    ".cache/",
     "02-phaios-bootstrap.md",
     "03-phase3-prompt.md",
     "phase2-design-brief.md",
