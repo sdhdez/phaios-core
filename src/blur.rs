@@ -623,6 +623,81 @@ mod tests {
         }
     }
 
+    /// The realised standard deviation of a blur, measured from its own
+    /// impulse response: √(Σ v·d² / Σ v) about the centre.
+    ///
+    /// A single-row image keeps this cheap — under clamping the vertical
+    /// pass over one row is the identity — and 12σ of width keeps the
+    /// finite support of three box passes (roughly ±3σ) clear of the
+    /// edges, so no weight is lost to clamping.
+    fn realised_sigma(sigma: f32) -> f32 {
+        let n = ((12.0 * sigma).ceil() as usize) | 1;
+        let mut img = Array3::<f32>::zeros((1, n, 1));
+        img[[0, n / 2, 0]] = 1.0;
+        let out = blur(img.view(), &BlurParams::new(sigma, BlurShape::Gaussian)).unwrap();
+
+        let centre = (n / 2) as f64;
+        let (mut m0, mut m2) = (0.0_f64, 0.0_f64);
+        for x in 0..n {
+            let v = f64::from(out[[0, x, 0]]);
+            let d = x as f64 - centre;
+            m0 += v;
+            m2 += v * d * d;
+        }
+        (m2 / m0).sqrt() as f32
+    }
+
+    #[test]
+    fn the_realised_sigma_matches_the_request_on_both_paths() {
+        // `blur`'s doc comment promises the box path lands "within 1% of
+        // the request". Nothing asserted it. That matters more than an
+        // ordinary untested claim, because `box_widths` is host-side
+        // Rust the CUDA path also calls, so both backends would realise
+        // the *same* wrong σ and the cross-backend conformance suite
+        // could never see it. An oracle on the output is the only thing
+        // that can.
+        //
+        // Both paths are covered, the direct convolution included: it is
+        // exact by construction, so if it ever drifted the fault would be
+        // in this measurement rather than in the kernel.
+        //
+        // Measured at HEAD: the conv path is within 0.04%, and the box
+        // path is exact except at the σ = 6 crossover, where the nearest
+        // odd-width triple gives 6.0553 — 0.92%, the whole margin the 1%
+        // promise has.
+        for sigma in [1.0_f32, 2.0, 4.0, 5.9] {
+            let ratio = realised_sigma(sigma) / sigma;
+            assert!(
+                (ratio - 1.0).abs() < 0.01,
+                "conv path: sigma {sigma} realised as {} ({:.4}x)",
+                realised_sigma(sigma),
+                ratio
+            );
+        }
+        for sigma in [BOX_CROSSOVER_SIGMA, 8.0, 12.0, 32.0, 64.0, 200.0] {
+            let ratio = realised_sigma(sigma) / sigma;
+            assert!(
+                (ratio - 1.0).abs() < 0.01,
+                "box path: sigma {sigma} realised as {} ({:.4}x)",
+                realised_sigma(sigma),
+                ratio
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_paths_agree_across_the_crossover() {
+        // The crossover must not be a visible seam: σ just below it uses
+        // the direct convolution and just above it three box passes, and
+        // a caller sweeping a slider through 6.0 should see no step.
+        let below = realised_sigma(BOX_CROSSOVER_SIGMA - 0.01);
+        let above = realised_sigma(BOX_CROSSOVER_SIGMA);
+        assert!(
+            (above - below).abs() < 0.1,
+            "realised sigma steps from {below} to {above} across the crossover"
+        );
+    }
+
     #[test]
     fn a_larger_sigma_blurs_further() {
         let n = 41;
