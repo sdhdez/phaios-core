@@ -520,6 +520,36 @@ fn channel_mixer_negative_weights_subtract() {
     assert!(out < 0.0, "this combination is genuinely negative: {out}");
 }
 
+#[test]
+fn channel_mixer_stays_linear_beyond_the_conventional_range() {
+    // `channel_mixer_bw`'s doc offers -2..+2 as "conventional, enabling
+    // infrared-like inversions", but the kernel is an unconstrained dot
+    // product and nothing pinned what happens outside the values the
+    // suite happens to use. Every weight triple anywhere in the crate --
+    // Rust tests, ffi.py, ffi_gpu.py, conformance, benches, examples --
+    // had |w| <= 1.2, so a clamp introduced at |2| would go unnoticed:
+    // the outputs inside that band are identical either way.
+    //
+    // It would not be caught cross-backend either, unless the clamp
+    // landed on only one side; the GPU computes the same dot product
+    // from its own kernel, so a shared misconception stays invisible.
+    let img = rgb(0.7, 0.4, 0.25);
+    for w in [
+        [3.0_f32, 0.0, 0.0],
+        [3.0, -2.5, 0.4],
+        [-2.0, 2.0, 0.0],
+        [0.0, 0.0, -5.0],
+        [10.0, -10.0, 10.0],
+    ] {
+        let got = channel_mixer_bw(img.view(), w).unwrap()[[0, 0, 0]];
+        let want = w[0] * 0.7 + w[1] * 0.4 + w[2] * 0.25;
+        assert!(
+            (got - want).abs() < 1e-6,
+            "weights {w:?} must apply verbatim: got {got}, want {want}"
+        );
+    }
+}
+
 // ── Highlight roll-off tests ─────────────────────────────────────────────────
 
 use phaios_core::highlight_rolloff::{RolloffParams, highlight_rolloff};

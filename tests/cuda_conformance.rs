@@ -503,7 +503,17 @@ fn encode_srgb_agrees_within_powf_bound() {
 fn mixer_and_filter_are_bit_exact() {
     let Some(ctx) = try_context() else { return };
     let img = pseudo_random_image(257, 389, 3);
-    for weights in [[1.0_f32, 0.0, 0.0], [0.3, 0.59, 0.11], [-0.5, 1.2, 0.3]] {
+    // The last two leave the -2..+2 the doc calls conventional: every
+    // weight used anywhere else in the crate is within |1.2|, so a clamp
+    // introduced on one backend and not the other would show up only out
+    // here.
+    for weights in [
+        [1.0_f32, 0.0, 0.0],
+        [0.3, 0.59, 0.11],
+        [-0.5, 1.2, 0.3],
+        [3.0, -2.5, 0.4],
+        [10.0, -10.0, 10.0],
+    ] {
         let cpu = phaios_core::bw::channel_mixer_bw(img.view(), weights).unwrap();
         let gpu = cuda::kernels::channel_mixer_bw(&ctx, img.view(), weights).unwrap();
         assert_eq!(cpu, gpu, "channel_mixer diverged at {weights:?}");
