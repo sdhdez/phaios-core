@@ -344,6 +344,30 @@ library, so warnings in examples, benches and tests go unseen until CI.
 the `rustsec/audit-check` action instead, so a fresh clone will not have
 the local command until it is installed.
 
+### Working files stay inside the repo
+
+Scratch files, throwaway scripts, generated reports, disposable worktrees
+and any other residual of a piece of work go in **`.cache/`** at the repo
+root — never `/tmp`, never `~/.cache`, never a home directory. `.cache/`
+is gitignored (anchored, like `/target/`) and listed in `Cargo.toml`'s
+`exclude`, so nothing in it can reach a commit or a published crate. It
+holds nothing the crate needs and is safe to delete wholesale.
+
+Layout: `.cache/scratch/` for one-off files, `.cache/worktrees/` for
+disposable `git worktree` checkouts — the way to test a deliberate
+mutation without touching the working tree.
+
+Two reasons beyond tidiness. A system temp directory here is a small
+tmpfs with a quota: a `cargo` build in one dies partway with `Disk quota
+exceeded`, and it is cleared without warning mid-session, which has
+already lost working data. And a path under `$HOME` is invisible to
+`git status` — residuals accumulate there unnoticed, where `.cache/` can
+be inspected and removed like any other build artefact.
+
+**Exception: Claude Code's own files.** Its memory, workflow journals and
+task outputs live under `~/.claude/` because the harness owns those paths.
+That is expected; don't try to relocate them.
+
 ## 8. Examples (`examples/`)
 
 The `examples/` directory is the public face of this crate for
