@@ -961,6 +961,60 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn an_oversized_resize_target_is_refused_rather_than_aborting() {
+        // `resize` is the only kernel whose output size comes purely from
+        // caller parameters: a 2x2 input may ask for 200000x200000, and
+        // `validate_resize` bounds only *zero* dimensions. `alloc::zeros3`
+        // is therefore the sole guard between a caller and a request the
+        // allocator cannot meet — and a failed `Vec` allocation *aborts*
+        // through `handle_alloc_error`, which no Python `except` can catch
+        // (CLAUDE.md section 2).
+        //
+        // That makes this the one abort the oversized-input sweep in
+        // tests/ffi.py cannot reach: there the oversize is in the input
+        // view, here it is in the parameters. Both passes allocate, so
+        // both are covered, and both sizes are refused on the shape alone
+        // without materialising anything.
+        let img = Array3::<f32>::zeros((2, 2, 3));
+
+        // The output buffer: 200000 x 200000 x 3 f32 is 480 GB. The
+        // horizontal pass ahead of it is only (2, 200000, 3) = 4.8 MB, so
+        // it is the *output* allocation being refused here, not scratch.
+        let err = resize(
+            img.view(),
+            &ResizeParams::new(200_000, 200_000, ResizeFilter::Area),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PhaiosError::Allocation(_)),
+            "a 480 GB target must be refused, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("above the"),
+            "the error should name the limit it exceeded: {err}"
+        );
+
+        // The scratch buffer: an extreme width alone is enough, and is
+        // refused before any resampling happens at all. The horizontal
+        // pass allocates (in_h, out_w, c) = (2, 400000000, 3) = 9.6 GB,
+        // while the *output* it feeds is only (1, 400000000, 3) = 4.8 GB
+        // and would pass — so this reaches the scratch guard specifically.
+        let err = resize(
+            img.view(),
+            &ResizeParams::new(400_000_000, 1, ResizeFilter::Area),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PhaiosError::Allocation(_)),
+            "a 9.6 GB scratch buffer must be refused, got {err:?}"
+        );
+
+        // The guard must be nowhere near an ordinary enlargement.
+        let ok = resize(img.view(), &ResizeParams::new(64, 48, ResizeFilter::Area)).unwrap();
+        assert_eq!(ok.dim(), (48, 64, 3));
+    }
+
     // ── straighten ───────────────────────────────────────────────────────────
 
     #[test]

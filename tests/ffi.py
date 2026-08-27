@@ -1242,6 +1242,40 @@ def test_a_real_frame_is_never_refused():
     assert ph.exposure(frame, 0.5).shape == frame.shape
 
 
+def test_resize_refuses_an_oversized_target_instead_of_aborting():
+    """`resize` is the only kernel the sweep above cannot cover.
+
+    Every other kernel's oversize arrives in the *input* view, which the
+    sweep supplies as a zero-stride broadcast. `resize` takes its output
+    size from its *parameters*, so a 2x2 image can ask for 200000x200000
+    — 480 GB — with a perfectly ordinary input. Nothing in the parameter
+    validation bounds the target; only the allocation guard does.
+
+    If this regresses the interpreter is killed by SIGABRT rather than
+    raising, so the test process dies instead of failing. That is itself
+    the signal.
+    """
+    small = np.zeros((2, 2, 3), dtype=np.float32)
+    with pytest.raises(MemoryError) as e:
+        ph.resize(small, ph.ResizeParams(200_000, 200_000))
+    assert "above the" in str(e.value)
+
+
+def test_resize_scratch_buffer_is_bounded_too():
+    """Both passes allocate. An extreme width alone overruns the
+    intermediate (in_h, out_w, c) buffer while the final output would
+    still fit, so the guard has to sit on both."""
+    small = np.zeros((2, 2, 3), dtype=np.float32)
+    with pytest.raises(MemoryError):
+        ph.resize(small, ph.ResizeParams(400_000_000, 1))
+
+
+def test_resize_within_the_limit_is_unaffected():
+    """The guard must be nowhere near an ordinary enlargement."""
+    small = np.zeros((2, 2, 3), dtype=np.float32)
+    assert ph.resize(small, ph.ResizeParams(64, 48)).shape == (48, 64, 3)
+
+
 # ── blur ─────────────────────────────────────────────────────────────────────
 
 
