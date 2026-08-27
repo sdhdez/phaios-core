@@ -354,6 +354,55 @@ mod tests {
     }
 
     #[test]
+    fn a_nan_sample_is_contained_and_does_not_spread() {
+        // `scatter_weight` is written `if excess > 0.0 { excess } else
+        // { 0.0 }` rather than with `max`, specifically so that a NaN
+        // sample fails the test and contributes 0 to the blur. The same
+        // reasoning, and the same shape of expression, is repeated in
+        // src/cuda/ptx/glow.cu — where it is likewise the only thing
+        // standing between one dead pixel and a ruined frame.
+        //
+        // Nothing exercised it on either backend: every glow test used
+        // finite input, and the non-finite values in this module's other
+        // tests are out-of-domain *parameters*, not samples.
+        //
+        // Invert the comparison and the NaN enters the blur. Because the
+        // blur is separable, it becomes a NaN row after the horizontal
+        // pass and a NaN frame after the vertical one — a single dead
+        // sensor pixel would destroy the whole image.
+        assert_eq!(scatter_weight(f32::NAN, 0.2), 0.0, "NaN must scatter 0");
+        assert_eq!(
+            scatter_weight(f32::NEG_INFINITY, 0.2),
+            0.0,
+            "-inf is below any threshold"
+        );
+
+        let mut img = Array3::<f32>::from_elem((9, 9, 1), 0.5);
+        img[[4, 4, 0]] = f32::NAN;
+        let out = glow(img.view(), &GlowParams::new(0.2, 2.0, 1.0)).unwrap();
+
+        let non_finite = out.iter().filter(|v| !v.is_finite()).count();
+        assert_eq!(
+            non_finite, 1,
+            "the NaN spread: {non_finite} of 81 outputs are non-finite"
+        );
+        assert!(out[[4, 4, 0]].is_nan(), "the poisoned sample stays NaN");
+
+        // +inf is deliberately *not* contained: it passes `> 0`, which is
+        // arithmetically right — it really is light above the threshold —
+        // and `docs/ffi.md` §1 leaves any non-finite sample unspecified.
+        // Containment here is a property of NaN specifically, which is
+        // what makes the `>` form load-bearing rather than incidental.
+        let mut img = Array3::<f32>::from_elem((9, 9, 1), 0.5);
+        img[[4, 4, 0]] = f32::INFINITY;
+        let out = glow(img.view(), &GlowParams::new(0.2, 2.0, 1.0)).unwrap();
+        assert!(
+            !out[[0, 0, 0]].is_finite(),
+            "an infinite sample is expected to scatter, unlike a NaN"
+        );
+    }
+
+    #[test]
     fn output_may_exceed_one_by_design() {
         // Headroom is carried to highlight_rolloff, not clamped here.
         let img = Array3::<f32>::from_elem((9, 9, 1), 1.0);

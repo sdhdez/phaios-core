@@ -1762,6 +1762,48 @@ fn glow_agrees_within_bound() {
     }
 }
 
+/// A NaN sample stays where it is, on both backends.
+///
+/// `glow::scatter_weight` tests `excess > 0.0` rather than taking a
+/// `max` so that a NaN fails the test and contributes 0 to the blur.
+/// That reasoning is written out *twice* — once in Rust and once in
+/// `src/cuda/ptx/glow.cu` — so either copy can rot alone, and no test
+/// on either backend ever passed glow a non-finite sample.
+///
+/// It matters because the blur is separable: a NaN that gets in becomes
+/// a NaN row after the horizontal pass and a NaN frame after the
+/// vertical one, so one dead sensor pixel would take the whole image
+/// with it.
+///
+/// `docs/ffi.md` §1 leaves non-finite samples unspecified in general.
+/// This is the deliberate exception, and the exception is the thing
+/// worth pinning.
+#[test]
+fn glow_contains_a_nan_sample_on_both_backends() {
+    use phaios_core::glow::{GlowParams, glow};
+
+    let Some(ctx) = try_context() else { return };
+
+    let mut img = Array3::<f32>::from_elem((9, 9, 1), 0.5);
+    img[[4, 4, 0]] = f32::NAN;
+    let params = GlowParams::new(0.2, 2.0, 1.0);
+
+    let cpu = glow(img.view(), &params).unwrap();
+    let gpu = cuda::kernels::glow(&ctx, img.view(), &params).unwrap();
+
+    for (backend, out) in [("cpu", &cpu), ("gpu", &gpu)] {
+        let spread = out.iter().filter(|v| !v.is_finite()).count();
+        assert_eq!(
+            spread, 1,
+            "{backend}: the NaN spread to {spread} of 81 outputs"
+        );
+        assert!(
+            out[[4, 4, 0]].is_nan(),
+            "{backend}: the poisoned sample itself must stay NaN"
+        );
+    }
+}
+
 /// `amount = 0` is a copy on both backends, so it must be bit-exact.
 #[test]
 fn glow_identity_is_bit_exact() {
