@@ -209,6 +209,53 @@ def test_luminance_bw_explicit_standards(rgb_f32):
         assert_valid_output(out, (H, W, 1))
 
 
+# Retyped from the ITU-R recommendations, deliberately not imported from
+# the extension: an oracle that reads the same table it is checking
+# asserts nothing. BT.601-7 (2011) 2.5.1; BT.709-6 (2015) 3;
+# BT.2020-2 (2015) Table 4.
+LUMINANCE_WEIGHTS = {
+    "Bt601": (0.2990, 0.5870, 0.1140),
+    "Bt709": (0.2126, 0.7152, 0.0722),
+    "Bt2020": (0.2627, 0.6780, 0.0593),
+}
+
+
+@pytest.mark.parametrize("name", sorted(LUMINANCE_WEIGHTS))
+def test_luminance_bw_weight_values(name):
+    """Each standard must apply its own coefficients, not merely return
+    the right shape.
+
+    `test_luminance_bw_explicit_standards` above sweeps all three and
+    checks only dtype and shape, so before this every coefficient
+    outside BT.709 could be transposed with the whole suite green — on
+    *both* backends, because `LuminanceStandard::weights()` is host-side
+    Rust that the CUDA path also calls. The two backends move together,
+    so cross-backend conformance cannot see it either.
+    """
+    weights = LUMINANCE_WEIGHTS[name]
+    std = getattr(ph.LuminanceStandard, name)
+
+    for channel in range(3):
+        pure = np.zeros((1, 1, 3), np.float32)
+        pure[0, 0, channel] = 1.0
+        got = float(ph.luminance_bw(pure, standard=std)[0, 0, 0])
+        assert abs(got - weights[channel]) < 1e-6, (
+            f"{name} on pure channel {channel}: got {got}, want {weights[channel]}"
+        )
+
+
+@pytest.mark.parametrize("name", sorted(LUMINANCE_WEIGHTS))
+def test_luminance_bw_preserves_neutrals(name):
+    """Every row sums to 1, so a neutral grey survives conversion. This
+    catches a transposed digit even where the coefficient itself still
+    looks plausible."""
+    std = getattr(ph.LuminanceStandard, name)
+    assert abs(sum(LUMINANCE_WEIGHTS[name]) - 1.0) < 1e-6
+    grey = np.full((1, 1, 3), 0.18, np.float32)
+    got = float(ph.luminance_bw(grey, standard=std)[0, 0, 0])
+    assert abs(got - 0.18) < 1e-6, f"{name} shifted 18% grey to {got}"
+
+
 def test_channel_mixer_bw_shape_dtype(rgb_f32):
     out = ph.channel_mixer_bw(rgb_f32, 0.3, 0.59, 0.11)
     assert_valid_output(out, (H, W, 1))

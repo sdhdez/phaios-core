@@ -477,6 +477,66 @@ mod tests {
         assert!((sum - 1.0).abs() < 1e-5, "BT.709 weights sum = {sum}");
     }
 
+    /// The coefficients of all three standards, retyped from the ITU-R
+    /// recommendations rather than read from `weights()`.
+    ///
+    /// Only BT.709 was pinned anywhere before this. BT.601 and BT.2020
+    /// were swept by tests that check shape and dtype alone, so any
+    /// coefficient in either row could be transposed with the whole
+    /// suite green — and `weights()` is host-side Rust that the CUDA
+    /// path also calls (`cuda/kernels/elementwise.rs`, `hsl.rs`), so
+    /// both backends move together and cross-backend comparison cannot
+    /// see it either. Nothing but an independent table can.
+    ///
+    /// Reference: ITU-R BT.601-7 (2011) §2.5.1; BT.709-6 (2015) §3;
+    /// BT.2020-2 (2015) Table 4.
+    const REFERENCE_WEIGHTS: [(LuminanceStandard, [f32; 3]); 3] = [
+        (LuminanceStandard::Bt601, [0.2990, 0.5870, 0.1140]),
+        (LuminanceStandard::Bt709, [0.2126, 0.7152, 0.0722]),
+        (LuminanceStandard::Bt2020, [0.2627, 0.6780, 0.0593]),
+    ];
+
+    #[test]
+    fn each_standard_applies_its_own_coefficients() {
+        for (standard, want) in REFERENCE_WEIGHTS {
+            assert_eq!(standard.weights(), want, "{standard:?} table");
+
+            // And the kernel must actually use them: a pure primary
+            // converts to exactly its own coefficient.
+            for (channel, w) in want.iter().enumerate() {
+                let mut rgb = [0.0_f32; 3];
+                rgb[channel] = 1.0;
+                let img = rgb_pixel(rgb[0], rgb[1], rgb[2]);
+                let got = luminance_bw(img.view(), standard).unwrap()[[0, 0, 0]];
+                assert!(
+                    (got - w).abs() < 1e-6,
+                    "{standard:?} on pure channel {channel}: got {got}, want {w}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_standard_is_neutral_preserving() {
+        // Each row sums to 1, so a neutral grey survives conversion
+        // unchanged. This catches a transposed digit even where the
+        // individual coefficient still looks plausible.
+        for (standard, _) in REFERENCE_WEIGHTS {
+            let sum: f32 = standard.weights().iter().sum();
+            assert!(
+                (sum - 1.0).abs() < 1e-5,
+                "{standard:?} weights sum to {sum}, expected 1"
+            );
+
+            let grey = rgb_pixel(0.18, 0.18, 0.18);
+            let got = luminance_bw(grey.view(), standard).unwrap()[[0, 0, 0]];
+            assert!(
+                (got - 0.18).abs() < 1e-6,
+                "{standard:?} shifted 18% grey to {got}"
+            );
+        }
+    }
+
     #[test]
     fn bt709_red_luminance() {
         let img = rgb_pixel(1.0, 0.0, 0.0);
