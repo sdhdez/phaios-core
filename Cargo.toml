@@ -99,6 +99,13 @@ criterion = { version = "0.8", features = ["html_reports"] }
 name = "kernels"
 harness = false
 
+# The CUDA backend, benchmarked on the same 24 MP image. Skips with a
+# message when built without `cuda` or run without a device, so a plain
+# `cargo bench` on any machine still succeeds.
+[[bench]]
+name = "gpu"
+harness = false
+
 # Explicit example declarations prevent examples/shared/mod.rs from being
 # misidentified as an example binary by cargo's auto-discovery.
 [[example]]
