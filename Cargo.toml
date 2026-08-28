@@ -192,3 +192,13 @@ path = "examples/21_glow.rs"
 name = "15_gpu_exposure"
 path = "examples/15_gpu_exposure.rs"
 required-features = ["cuda"]
+
+[[example]]
+name = "22_gpu_pipeline"
+path = "examples/22_gpu_pipeline.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "23_gpu_selftest"
+path = "examples/23_gpu_selftest.rs"
+required-features = ["cuda"]

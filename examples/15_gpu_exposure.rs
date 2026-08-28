@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Example 13 — Exposure on the CUDA backend.
+//! Example 15 — Exposure on the CUDA backend.
 //!
 //! Demonstrates the optional GPU path (build with `--features cuda`):
 //! device enumeration, opening a context, running a kernel, and the two
