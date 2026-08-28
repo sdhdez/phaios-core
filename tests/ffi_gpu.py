@@ -492,6 +492,95 @@ def test_gpu_blur_matches_cpu_within_bound(ctx, sigma):
     else:
         assert np.abs(got - want).max() <= 1e-5 * np.abs(want).max() + 1e-7
 
+# ── the six kernels covered only by the composed pipeline ────────────────────
+#
+# `test_full_pipeline_resident` runs all nine stages CPU-against-GPU at
+# rtol 1e-3, which exercises every binding but only in composition: a
+# transposed parameter in one stage can be masked by the loose end-to-end
+# tolerance or by a compensating error downstream. The Rust conformance
+# suite pins the maths per kernel; what these add is the binding, which is
+# the layer that has actually rotted here before — `gpu.GpuImage(ctx, arr)`
+# and `img.to_numpy()` shipped in the module docstring for a whole release
+# naming APIs that never existed, referenced by no test.
+#
+# Tolerances follow docs/ffi.md §6 rather than being invented here.
+
+
+@needs_device
+def test_gpu_zone_system_matches_cpu(ctx):
+    rng = np.random.default_rng(71)
+    img = rng.random((23, 31, 1)).astype(np.float32)
+    zones = ph.ZoneParams({3: -0.3, 5: 0.4, 8: 0.2})
+    got = gpu.zone_system(ctx.upload(img), zones).download()
+    want = ph.zone_system(img, zones)
+    # log2/exp: bounded, not bit-exact.
+    np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-7)
+
+
+@needs_device
+def test_gpu_hsl_bw_matches_cpu(ctx):
+    rng = np.random.default_rng(72)
+    img = rng.random((23, 31, 3)).astype(np.float32)
+    params = ph.HslWeightedParams([0.3, -0.2, 0.5, 0.0, 0.1, -0.4, 0.2, 0.0])
+    got = gpu.hsl_bw(ctx.upload(img), params).download()
+    np.testing.assert_allclose(got, ph.hsl_bw(img, params), rtol=1e-5, atol=1e-7)
+
+
+@needs_device
+def test_gpu_film_grain_matches_cpu(ctx):
+    rng = np.random.default_rng(73)
+    img = rng.random((23, 31, 1)).astype(np.float32)
+    params = ph.GrainParams(0.25, 1.8, 20260828)
+    got = gpu.film_grain(ctx.upload(img), params).download()
+    # The integer hash must reproduce bit-for-bit across backends; the
+    # Box-Muller transform on top of it is what widens this to a bound.
+    np.testing.assert_allclose(got, ph.film_grain(img, params), rtol=1e-3, atol=1e-5)
+
+
+@needs_device
+def test_gpu_film_grain_uses_the_seed_it_is_given(ctx):
+    """A seed that reached the kernel as a constant would still agree with
+    the CPU if the CPU binding dropped it the same way. Two seeds must
+    differ, and the same seed must repeat."""
+    img = np.full((16, 16, 1), 0.5, dtype=np.float32)
+    a = gpu.film_grain(ctx.upload(img), ph.GrainParams(0.3, 2.0, 1)).download()
+    b = gpu.film_grain(ctx.upload(img), ph.GrainParams(0.3, 2.0, 2)).download()
+    again = gpu.film_grain(ctx.upload(img), ph.GrainParams(0.3, 2.0, 1)).download()
+    assert not np.array_equal(a, b), "different seeds produced identical grain"
+    np.testing.assert_array_equal(a, again)
+
+
+@needs_device
+def test_gpu_split_toning_matches_cpu(ctx):
+    rng = np.random.default_rng(74)
+    img = rng.random((23, 31, 1)).astype(np.float32)
+    params = ph.SplitToningParams([0.01, -0.03, -0.04], [0.0, 0.03, 0.05], 0.45, 0.2)
+    got = gpu.split_toning(ctx.upload(img), params).download()
+    assert got.shape == (23, 31, 3), "split_toning restores three channels"
+    np.testing.assert_allclose(got, ph.split_toning(img, params), rtol=1e-5, atol=1e-7)
+
+
+@needs_device
+def test_gpu_tone_curve_matches_cpu(ctx):
+    rng = np.random.default_rng(75)
+    img = rng.random((23, 31, 3)).astype(np.float32)
+    params = ph.ToneCurveParams(1.15, -0.02, 0.85)
+    got = gpu.tone_curve(ctx.upload(img), params).download()
+    np.testing.assert_allclose(got, ph.tone_curve(img, params), rtol=1e-5, atol=1e-7)
+
+
+@needs_device
+def test_gpu_encode_srgb_matches_cpu(ctx):
+    # Straddle the 0.0031308 breakpoint deliberately: the transfer is C0
+    # there but not C1, so a binding that took the wrong branch would show
+    # up only near it.
+    img = np.array(
+        [[[0.0, 0.001, 0.0031308], [0.0031309, 0.5, 1.0]]], dtype=np.float32
+    )
+    got = gpu.encode_srgb(ctx.upload(img)).download()
+    np.testing.assert_allclose(got, ph.encode_srgb(img), rtol=1e-5, atol=1e-7)
+
+
 
 @needs_device
 @pytest.mark.parametrize(
