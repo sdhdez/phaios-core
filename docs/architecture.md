@@ -1295,6 +1295,13 @@ contrast, grain, toning, vignette, curve, encode — is therefore around
 Machine: AMD Ryzen 9 9950X 16-Core (32 threads), Linux, `cargo bench`
 (optimised profile, rayon parallelism enabled).
 
+The CPU column of the GPU table below comes from a **later** run on the
+same machine, and a few kernels disagree with this table by as much as
+30% — `split_toning` 29.8 ms against 23.4, `crop` 9.7 against 7.7,
+`orient` 136 against 113, the box blur 74 against 90. That is
+run-to-run spread, not a change in the code. Compare within a table, not
+across the two.
+
 `local_contrast` remains SAT-dominated: four prefix-sum passes each
 touch every pixel once, setting a memory-bandwidth floor of roughly
 200 MB per f64 table. Making those passes parallel (§8) took the kernel
@@ -1312,25 +1319,130 @@ input, the three B&W kernels measured 10.1 ms rather than 15 ms.
 
 ### GPU
 
-Device-resident, single channel, same frame, timed with the stream
-synchronised — an unsynchronised measurement reports launch overhead and
-impossible numbers, which is how the figures below were nearly wrong.
+Measured with `cargo bench --bench gpu --features cuda` on the same
+4323 × 5765 frame, from the same generator and seed, and with the same
+channel count per kernel as the CPU benchmark above — three channels
+where the CPU runs three, one where it runs one. Benchmark ids are the
+CPU ids under a `gpu/` prefix, so a reader can divide one row by the
+other. Not CI gates — informational only, exactly as for the CPU table.
+
+Machine: NVIDIA GeForce RTX 5070 Ti, driver 610.57.04, in the 32-thread
+machine described above; idle, measured 2026-08-28. Both columns of the
+table come from that one session.
+
+**What the timer contains.** Launches are asynchronous, so a naive timer
+measures the launch queue rather than the work — which is how an earlier
+set of figures was nearly published as impossible numbers. Each
+benchmark therefore issues its launches and drains the stream once,
+which is also how a real pipeline behaves: many kernels, one
+synchronisation at the end.
+
+The drain is a download of a **1 × 1 × 1** image. Any download
+synchronises the stream, and this one moves four bytes. Draining by
+downloading the actual result instead puts 299 MB of PCIe traffic inside
+the timer: measured that way the cheap kernels read roughly four times
+their true cost, being about 75% bus traffic rather than kernel time.
+
+So every row below is per call on an image that is **already
+device-resident**, and excludes PCIe — with two exceptions. `quantize`
+and `histogram` return host data by contract: quantisation is terminal
+and a histogram is a reduction, so neither has a device-resident result
+to chain, and the copy back cannot be factored out of what a caller
+pays. Their rows include it. `quantize` moves 24.9 MB of `u8` codes for
+this single-channel frame (75 MB for a three-channel one), and it is the
+one kernel in the table where the GPU is not far ahead.
 
 | Kernel | GPU | CPU | Notes |
 |---|---|---|---|
-| `exposure` | 2.0 ms | 29.3 ms | element-wise reference point |
-| `local_contrast` r=8 | 12.5 ms | 178 ms | f64 L/L² sums; see below |
-| `blur` σ=2 / 5.9 (direct) | 6.0 / 10.7 ms | 50 / 71 ms | one thread per output element |
-| `blur` σ=6 / 64 (box) | 7.5 / 8.8 ms | 90 ms | segmented; see below |
-| `glow` halation / glare | 8.3 / 17.9 ms | 106 / 117 ms | |
+| `crop` centre-half | **0.269 ms** | 9.71 ms | 3 ch; a copy of the half-area rectangle, device to device |
+| `orient` rotate90 | **1.838 ms** | 136.19 ms | 3 ch; the transposing access the CPU cache is worst at |
+| `resize` to 2048 (area) | **1.460 ms** | 30.58 ms | 3 ch; separable, two passes |
+| `straighten` 2° | **2.269 ms** | 56.18 ms | 3 ch; 16-tap Catmull-Rom per pixel |
+| `exposure` +1 EV | **0.878 ms** | 29.12 ms | 3 ch in *and* out; the element-wise reference point |
+| `luminance_bw` BT.709 | **0.493 ms** | 13.42 ms | 3 ch in, 1 out |
+| `channel_mixer_bw` | **0.493 ms** | 13.45 ms | same traffic, same time |
+| `color_filter_bw` Red25A | **0.493 ms** | 13.36 ms | same again — all three are one dot product |
+| `hsl_bw` 8 bands | **0.712 ms** | 54.73 ms | 8 `expf` per pixel; the largest ratio in the table |
+| `zone_system` | **0.652 ms** | 15.17 ms | `exp2f` + `log2f` per pixel |
+| `tone_curve` | **0.345 ms** | 9.80 ms | one `powf` per pixel |
+| `highlight_rolloff` | **0.325 ms** | 9.57 ms | shoulder branch exercised, not the default clip |
+| `shadow_rolloff` | **0.305 ms** | 9.53 ms | toe branch exercised |
+| `vignette` | **0.423 ms** | 10.35 ms | `sqrtf` per pixel |
+| `encode_srgb` | **0.346 ms** | 9.92 ms | `powf` per pixel |
+| `apply_lut` 256-entry | **0.319 ms** | 9.71 ms | one interpolated lookup per pixel |
+| `film_grain` size = 2 | **1.167 ms** | 60.57 ms | splitmix64 + Box–Muller per pixel, then a SAT |
+| `split_toning` | **0.559 ms** | 29.82 ms | 1 ch in, 3 out; one cube root in, three cubes out |
+| `blur` σ = 2 (direct) | **4.248 ms** | 38.69 ms | one thread per output element |
+| `blur` σ = 16 (box) | **7.925 ms** | 74.07 ms | segmented; see below |
+| `blur` σ = 64 (box) | **8.510 ms** | 73.77 ms | near-flat in σ, as on the CPU |
+| `glow` halation | **8.538 ms** | 96.63 ms | the blur plus two element-wise passes |
+| `local_contrast` r = 8 | **11.999 ms** | 170.14 ms | f64 L/L² sums; see below |
+| `quantize` u8, plain | **3.373 ms** | 5.77 ms | **includes** the 24.9 MB readback |
+| `histogram` 256 bins, 3 ch | **0.471 ms** | 9.80 ms | **includes** the counts readback (3 KB) |
+
+The pairing is by benchmark id, not by identical arguments: `glow` runs
+σ = 8 on the CPU and σ = 12 on the GPU, `hsl_bw` uses different band
+weights and a different band width, and `film_grain` a different seed
+and intensity. None of those change the work done — the box blur is flat
+in σ (§16), the HSL bands cost the same whatever their weights, and the
+grain hash costs the same whatever it is seeded with — but the two rows
+are not literally the same call.
+
+Three shapes are visible in the ratios. The plain per-pixel kernels sit
+at 21–36×, and that number is bandwidth rather than arithmetic:
+`exposure` moves 598 MB — three channels in and three out — in 0.878 ms,
+which is 681 GB/s, against 20.5 GB/s for the same traffic on the CPU;
+`luminance_bw` reaches 809 GB/s against 29.7. Both backends are running
+at their memory system's speed, and the ratio between those two speeds
+is the whole of the speed-up.
+
+Four kernels run further ahead — `film_grain` 52×, `split_toning` 53×,
+`orient` 74×, `hsl_bw` 77× — and they are exactly the four where the CPU
+is paying for something other than traffic: Box–Muller per pixel, a cube
+root and three cubes, a cache-hostile transpose, eight `exp` per pixel.
+
+Spatial kernels settle at 9–14×, because a blur reads each pixel many
+times and both backends are then bound by the same re-reads. `quantize`
+is 1.7×, the honest number for a kernel contractually obliged to hand
+24.9 MB back to the host; `histogram`, which returns 3 KB, keeps 21×
+despite its own readback.
+
+The v0.2 pipeline the CPU section totals — exposure, HSL conversion,
+zone system, local contrast, grain, toning, vignette, curve, encode — is
+**17.1 ms** device-side against 390 ms on the CPU in the same session,
+about 23×. `local_contrast` is 70% of the device-side total, a sharper
+domination than the 44% it holds on the CPU: everything around it got
+faster and it did not, for the reason set out below.
+
+Neither figure includes getting the frame onto the device and the result
+off it, and that is not a rounding error. `quantize` is the only row here
+that measures a transfer: its 3.373 ms against roughly 0.32 ms for the
+comparable single-channel element-wise kernels leaves about 3 ms for
+24.9 MB, of the order of 8 GB/s. At that rate a 299 MB upload alone is
+tens of milliseconds — more than the whole device-side pipeline above,
+and the conclusion survives being wrong by a factor of two in the
+crate's favour. Offload pays when the frame stays resident for the
+entire run; it does not pay per call, which is the point
+`examples/15_gpu_exposure.rs` exists to print.
+
+The three paired comparisons that follow — segmented against naive, f32
+against f64 — come from the ad-hoc measurements that preceded
+`benches/gpu.rs`. They were taken back to back on this machine, so the
+ratios stand; the absolute figures sit a few percent from the table
+above, which is the gap between any two runs. The σ values differ too:
+the box figures below are σ = 6 and σ = 64, and the direct path they are
+measured against is σ = 5.9, immediately under the crossover — a point
+`benches/gpu.rs` does not cover. That same run put `glow` glare
+(σ = 400) at 17.9 ms, roughly twice halation; the bench target covers
+halation only.
 
 **The box kernel had to be segmented to get there.** Written the obvious
 way — one thread per row or column, sliding a window along it — it
-measured **40 ms**, four times the direct path and worse than
-`local_contrast`, which does far more work. The cause is that a 24 MP
-frame has only about five thousand rows or columns, so a thread per lane
-leaves a modern device around 95% idle with each thread grinding through
-thousands of serial steps.
+measured **40 ms**: four times what the direct path cost just under the
+crossover, and worse than `local_contrast`, which does far more work.
+The cause is that a 24 MP frame has only about five thousand rows or
+columns, so a thread per lane leaves a modern device around 95% idle
+with each thread grinding through thousands of serial steps.
 
 Cutting each lane into segments and giving one thread to each takes it to
 **7.5 ms**, a 5.4× improvement, at the cost of every segment recomputing
