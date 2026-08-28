@@ -18,7 +18,8 @@
 //! read roughly four times their true cost, being about 75% bus traffic.
 //!
 //! Two kernels return host data by contract and so cannot avoid the
-//! transfer — `quantize` copies back 75 MB of integer codes per call and
+//! transfer — `quantize` copies back 24.9 MB of integer codes per call for
+//! this single-channel frame (75 MB for a three-channel one) and
 //! `histogram` a few KiB of counts. Their numbers include it, which is
 //! what a caller actually pays.
 //!
