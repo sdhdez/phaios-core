@@ -62,10 +62,10 @@ import numpy as np, phaios_core as ph
 from phaios_core import gpu
 
 ctx = gpu.GpuContext(0)              # explicit — no global device state
-img = gpu.GpuImage(ctx, array)       # upload once
+img = ctx.upload(array)              # upload once
 img = gpu.exposure(img, 0.5)         # chain on-device, no round trips
 img = gpu.luminance_bw(img)
-out = img.to_numpy()                 # download once
+out = img.download()                 # download once
 ```
 
 Determinism is promised **per backend**: bit-identical output within a

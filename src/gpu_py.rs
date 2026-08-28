@@ -564,10 +564,10 @@ pipeline uploads once and downloads once rather than round-tripping
 per stage::
 
     ctx = gpu.GpuContext(0)
-    img = gpu.GpuImage(ctx, array)
+    img = ctx.upload(array)
     img = gpu.exposure(img, 0.5)
     img = gpu.luminance_bw(img)
-    out = img.to_numpy()
+    out = img.download()
 
 The context is explicit: there is no global device state, and a context
 the caller drops releases its device memory. Determinism is promised

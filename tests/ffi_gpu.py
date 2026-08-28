@@ -29,6 +29,64 @@ HAS_DEVICE = gpu.available()
 needs_device = pytest.mark.skipif(not HAS_DEVICE, reason="no supported CUDA device")
 
 
+def test_documented_example_names_apis_that_exist():
+    """The gpu module docstring and the README ship the same five-line
+    example. Two of its lines named APIs that never existed: `GpuImage`
+    is frozen with no constructor, so `gpu.GpuImage(ctx, array)` raises
+    TypeError, and the download method is `download`, not `to_numpy`.
+
+    Nothing in the suite referenced either name, so the shipped example
+    — the first thing a reader would type — was also the first thing to
+    fail. This test needs no hardware: it checks names, not kernels.
+    """
+    assert hasattr(gpu, "GpuContext")
+    assert hasattr(gpu.GpuContext, "upload"), "the example uploads via the context"
+    assert hasattr(gpu.GpuImage, "download"), "the example downloads via the image"
+    assert not hasattr(gpu.GpuImage, "to_numpy"), "stale name back in the API"
+    for name in ("exposure", "luminance_bw"):
+        assert hasattr(gpu, name), f"the example calls gpu.{name}"
+
+    # A GpuImage comes from ctx.upload(); it is deliberately not
+    # constructible, which is exactly what the old example got wrong.
+    with pytest.raises(TypeError):
+        gpu.GpuImage(None, None)
+
+
+def test_shipped_docstring_example_matches_the_real_api():
+    """Pin the docstring itself, not just the API it describes.
+
+    The test above would notice the API drifting away from the docs; this
+    one notices the docs drifting away from the API, which is the
+    direction that actually happened — the example named `GpuImage(ctx,
+    array)` and `to_numpy()`, neither of which ever existed.
+    """
+    doc = gpu.__doc__ or ""
+    assert doc, "the gpu submodule ships a module docstring"
+
+    for stale in ("to_numpy", "gpu.GpuImage("):
+        assert stale not in doc, f"the docstring example names {stale!r}, which does not exist"
+    for real in ("ctx.upload(", "img.download()"):
+        assert real in doc, f"the docstring example should show {real!r}"
+
+
+@needs_device
+def test_documented_example_runs_end_to_end():
+    """Run the documented example verbatim, so it cannot rot silently."""
+    array = np.zeros((8, 8, 3), dtype=np.float32)
+    array[2:6, 2:6, :] = 0.4
+
+    ctx = gpu.GpuContext(0)
+    img = ctx.upload(array)
+    img = gpu.exposure(img, 0.5)
+    img = gpu.luminance_bw(img)
+    out = img.download()
+
+    assert out.shape == (8, 8, 1)
+    assert out.dtype == np.float32
+    want = ph.luminance_bw(ph.exposure(array, 0.5))
+    np.testing.assert_allclose(out, want, rtol=1e-6, atol=1e-7)
+
+
 # ── The no-hardware contract (runs everywhere) ────────────────────────────────
 
 
