@@ -750,6 +750,516 @@ fn resampling_is_bit_exact() {
     }
 }
 
+// ── resampling accuracy: an f64 oracle, because the backends agree by
+//    construction and therefore cannot audit each other ──────────────────────
+
+/// Unit roundoff for `f32`: 2⁻²⁴. `f32::EPSILON` is 2⁻²³, twice this.
+const F32_UNIT_ROUNDOFF: f64 = 5.960_464_477_539_063e-8;
+
+/// `geometry::filter_eval`, transcribed. It is `pub(crate)`, and an
+/// integration test only sees the public API — but the oracle below has
+/// to use the *shipped* weights, bit for bit, so this is a copy on
+/// purpose rather than a reimplementation.
+fn filter_eval_f32(filter: phaios_core::geometry::ResizeFilter, t: f32) -> f32 {
+    use phaios_core::geometry::ResizeFilter;
+    let t = t.abs();
+    match filter {
+        ResizeFilter::Area => {
+            if t <= 0.5 {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        ResizeFilter::Bilinear => (1.0 - t).max(0.0),
+        ResizeFilter::CatmullRom => {
+            if t <= 1.0 {
+                ((1.5 * t - 2.5) * t) * t + 1.0
+            } else if t < 2.0 {
+                ((-0.5 * t + 2.5) * t - 4.0) * t + 2.0
+            } else {
+                0.0
+            }
+        }
+    }
+}
+
+/// The taps `(source index, weight)` the shipped kernel visits for
+/// output index `i`, in its order — centre, support and every weight
+/// computed in f32 exactly as `resample_axis1` does.
+///
+/// Sharing the geometry with the kernel is the point. Re-deriving the
+/// sample positions in f64 would move them by ~`in_len·2⁻²⁴` of a pixel,
+/// and on an edge that steps from 1e-4 to 1e8 that shift changes the
+/// true answer by far more than any accumulator error — it would measure
+/// the wrong thing.
+fn resize_taps(
+    filter: phaios_core::geometry::ResizeFilter,
+    scale: f32,
+    i: usize,
+) -> Vec<(i64, f32)> {
+    use phaios_core::geometry::ResizeFilter;
+    let centre = (i as f32 + 0.5) * scale - 0.5;
+    let denom = scale.max(1.0);
+    let base = match filter {
+        ResizeFilter::Area => 0.5_f32,
+        ResizeFilter::Bilinear => 1.0,
+        ResizeFilter::CatmullRom => 2.0,
+    };
+    let support = base * scale.max(1.0);
+    let area_minify = filter == ResizeFilter::Area && scale > 1.0;
+    let k0 = (centre - support).floor() as i64;
+    let k1 = (centre + support).ceil() as i64;
+
+    let mut taps = Vec::new();
+    for k in k0..=k1 {
+        let w = if area_minify {
+            let lo = (k as f32 - 0.5).max(centre - scale * 0.5);
+            let hi = (k as f32 + 0.5).min(centre + scale * 0.5);
+            (hi - lo).max(0.0)
+        } else {
+            filter_eval_f32(filter, (k as f32 - centre) / denom)
+        };
+        if w != 0.0 {
+            taps.push((k, w));
+        }
+    }
+    taps
+}
+
+/// One pass of the separable resample along axis 1, accumulated in f64.
+///
+/// Carries a second plane, `mass`, holding Σ|wᵢ·xᵢ| / |Σwᵢ| — the
+/// quantity the textbook forward-error bound for a floating-point dot
+/// product is stated against. Propagating it through both passes gives
+/// the composed operator's condition, which is what makes an assertion
+/// on a cancelling output pixel meaningful at all.
+///
+/// Returns `(values, mass, worst tap count)`.
+fn resample_axis1_f64(
+    val: &ndarray::Array2<f64>,
+    mass: &ndarray::Array2<f64>,
+    scale: f32,
+    filter: phaios_core::geometry::ResizeFilter,
+    out_len: usize,
+) -> (ndarray::Array2<f64>, ndarray::Array2<f64>, usize) {
+    let (rows, in_len) = val.dim();
+    let mut out_val = ndarray::Array2::<f64>::zeros((rows, out_len));
+    let mut out_mass = ndarray::Array2::<f64>::zeros((rows, out_len));
+    let mut worst_taps = 0_usize;
+
+    for i in 0..out_len {
+        let taps = resize_taps(filter, scale, i);
+        worst_taps = worst_taps.max(taps.len());
+        let wsum: f64 = taps.iter().map(|&(_, w)| f64::from(w)).sum();
+        if wsum == 0.0 {
+            continue; // the kernel writes 0.0 here; zeros already are.
+        }
+        for r in 0..rows {
+            let mut acc = 0.0_f64;
+            let mut m = 0.0_f64;
+            for &(k, w) in &taps {
+                let kc = k.clamp(0, in_len as i64 - 1) as usize;
+                acc += f64::from(w) * val[[r, kc]];
+                m += f64::from(w).abs() * mass[[r, kc]];
+            }
+            out_val[[r, i]] = acc / wsum;
+            out_mass[[r, i]] = m / wsum.abs();
+        }
+    }
+    (out_val, out_mass, worst_taps)
+}
+
+/// `geometry::resize` recomputed in f64: horizontal then vertical, the
+/// shipped pass order and the shipped taps.
+///
+/// Returns `(values, mass, n)` where `n` is the number of rounding steps
+/// the f32 kernel takes on the worst output pixel, so `n · u · mass`
+/// is its forward-error bound (u = 2⁻²⁴).
+fn resize_f64_oracle(
+    img: &Array3<f32>,
+    params: &phaios_core::geometry::ResizeParams,
+) -> (ndarray::Array2<f64>, ndarray::Array2<f64>, f64) {
+    let (in_h, in_w, _) = img.dim();
+    let (out_w, out_h) = (params.width as usize, params.height as usize);
+
+    let src_val =
+        ndarray::Array2::<f64>::from_shape_fn((in_h, in_w), |(y, x)| f64::from(img[[y, x, 0]]));
+    let src_mass = src_val.mapv(f64::abs);
+
+    let scale_x = in_w as f32 / out_w as f32;
+    let (mid_val, mid_mass, taps_x) =
+        resample_axis1_f64(&src_val, &src_mass, scale_x, params.filter, out_w);
+
+    // The vertical pass is the same routine on the transposed view, as
+    // on both backends.
+    let scale_y = in_h as f32 / out_h as f32;
+    let (out_t, mass_t, taps_y) = resample_axis1_f64(
+        &mid_val.t().to_owned(),
+        &mid_mass.t().to_owned(),
+        scale_y,
+        params.filter,
+        out_h,
+    );
+
+    // Per pass: m products each rounded once, m−1 additions, an m-term
+    // weight sum, and the division — ≤ (2m+1)·u·mass. Two passes plus
+    // the one f32 rounding of the intermediate plane.
+    let n = (2 * (taps_x + taps_y) + 3) as f64;
+    (out_t.t().to_owned(), mass_t.t().to_owned(), n)
+}
+
+/// `geometry::straighten` recomputed in f64, 4×4 Catmull-Rom in the
+/// shipped j-then-i order, with the same host-computed f32 sin/cos.
+///
+/// Returns `(values, mass)`.
+fn straighten_f64_oracle(
+    img: &Array3<f32>,
+    degrees: f32,
+    out_h: usize,
+    out_w: usize,
+) -> (ndarray::Array2<f64>, ndarray::Array2<f64>) {
+    let (in_h, in_w, _) = img.dim();
+    let r = f64::from(degrees).to_radians();
+    let (sin_a, cos_a) = (r.sin() as f32, r.cos() as f32);
+
+    let (cx_out, cy_out) = (out_w as f32 * 0.5, out_h as f32 * 0.5);
+    let (cx_in, cy_in) = (in_w as f32 * 0.5, in_h as f32 * 0.5);
+
+    let mut val = ndarray::Array2::<f64>::zeros((out_h, out_w));
+    let mut mass = ndarray::Array2::<f64>::zeros((out_h, out_w));
+
+    for oy in 0..out_h {
+        for ox in 0..out_w {
+            let dx = ox as f32 + 0.5 - cx_out;
+            let dy = oy as f32 + 0.5 - cy_out;
+            let sx = cos_a * dx + sin_a * dy + cx_in - 0.5;
+            let sy = -sin_a * dx + cos_a * dy + cy_in - 0.5;
+
+            let (fx, fy) = (sx.floor(), sy.floor());
+            let (tx, ty) = (sx - fx, sy - fy);
+            let (ix, iy) = (fx as i64, fy as i64);
+
+            let weights = |t: f32| {
+                use phaios_core::geometry::ResizeFilter::CatmullRom as Cr;
+                [
+                    filter_eval_f32(Cr, t + 1.0),
+                    filter_eval_f32(Cr, t),
+                    filter_eval_f32(Cr, 1.0 - t),
+                    filter_eval_f32(Cr, 2.0 - t),
+                ]
+            };
+            let wx = weights(tx);
+            let wy = weights(ty);
+
+            let mut acc = 0.0_f64;
+            let mut m = 0.0_f64;
+            for (j, &wyj) in wy.iter().enumerate() {
+                let yj = (iy - 1 + j as i64).clamp(0, in_h as i64 - 1) as usize;
+                let mut row_acc = 0.0_f64;
+                let mut row_m = 0.0_f64;
+                for (i, &wxi) in wx.iter().enumerate() {
+                    let xi = (ix - 1 + i as i64).clamp(0, in_w as i64 - 1) as usize;
+                    let s = f64::from(img[[yj, xi, 0]]);
+                    row_acc += f64::from(wxi) * s;
+                    row_m += f64::from(wxi).abs() * s.abs();
+                }
+                acc += f64::from(wyj) * row_acc;
+                m += f64::from(wyj).abs() * row_m;
+            }
+            val[[oy, ox]] = acc;
+            mass[[oy, ox]] = m;
+        }
+    }
+    (val, mass)
+}
+
+/// A flat field with a brighter bar across it: linear scene-referred
+/// data with a specular highlight, the same shape of input that exposed
+/// the box blur and `local_contrast`.
+fn field_with_bar(h: usize, w: usize, field: f32, bar: f32) -> Array3<f32> {
+    let mut img = Array3::<f32>::from_elem((h, w, 1), field);
+    let (y0, y1) = (h * 4 / 10, h * 4 / 10 + 4);
+    let (x0, x1) = (w / 10, w - w / 10);
+    img.slice_mut(s![y0..y1, x0..x1, ..]).fill(bar);
+    img
+}
+
+/// The three content regimes the resampling oracles below sweep.
+///
+/// **dark field** is the input that broke `blur` and `local_contrast`:
+/// a 12-decade step. One side of every window dominates so completely
+/// that Catmull-Rom's negative lobes have nothing to cancel against, and
+/// the operator stays well conditioned — measured worst Σ|wᵢxᵢ| / |out|
+/// is 6.1e1 for `resize` and 9.3e1 for `straighten`. A step edge simply cannot make this filter singular,
+/// which is worth recording because it is the opposite of what a
+/// summation audit would guess.
+///
+/// **cancelling field** narrows the step to a ratio of 9, where the
+/// cubic's undershoot is deepest relative to the signal. It stresses the
+/// accumulator measurably harder than the 12-decade step (0.32 → 0.39 of
+/// the bound for `straighten`) but is still well conditioned, for the
+/// same reason: with taps `[B, B, F, F]` the bright pair's weights sum
+/// to something in `[0, 1]`, never to the −1/8 that would zero the
+/// output. Measured conditioning 4.4e0 (`resize`) and 5.6e0
+/// (`straighten`) — lower than the 12-decade step, not higher.
+///
+/// **cancelling comb** is the geometry that *does* make it singular, and
+/// it is why the assertion is stated against the tap mass rather than
+/// against the output. One-pixel lines every third row put bright
+/// samples on the two *outer* taps of a 4-tap window, whose weights sum
+/// to exactly −0.125 at the half-pixel phase against the inner pair's
+/// +1.125; a surround at 1/9 of the line level then cancels to zero. The
+/// residue is only the f32 rounding of 1/9, so the output is ~1e-8 of a
+/// tap mass of ~0.3·B. The period is 3 rather than a single pair so that
+/// *some* window lands on the singular alignment whatever phase the
+/// output grid happens to have — with one pair it depends on the parity
+/// of the scale factor, and the 512 → 768 case missed it entirely.
+///
+/// Measured conditioning there: 3.355e8 on both kernels, at which the
+/// relative error reaches 1500% (`resize`) and 1900% (`straighten`). No
+/// relative bound could survive that pixel and none should be asserted;
+/// `n·u·Σ|wᵢxᵢ|` does, with room to spare.
+///
+/// Fine periodic structure against a mid-grey surround — a picket fence,
+/// a distant balustrade, a moiré-prone textile — is not a synthetic
+/// input, and this is the aliasing-adjacent content a resize is most
+/// often asked to handle.
+fn resampling_content(h: usize, w: usize, highlight: f32) -> [(&'static str, Array3<f32>); 3] {
+    let field = highlight / 9.0;
+
+    // Full-width lines, so the horizontal pass sees a uniform row and
+    // the cancellation happens once, cleanly, in the vertical pass —
+    // which is the 1-D case the weights above were reasoned about.
+    let mut comb = Array3::<f32>::from_elem((h, w, 1), field);
+    for y in (0..h).step_by(3) {
+        comb.slice_mut(s![y..y + 1, .., ..]).fill(highlight);
+    }
+
+    [
+        ("dark field", field_with_bar(h, w, 1e-4, highlight)),
+        ("cancelling field", field_with_bar(h, w, field, highlight)),
+        ("cancelling comb", comb),
+    ]
+}
+
+/// Is `resize`'s f32 accumulator accurate enough on high-dynamic-range
+/// content? A cross-backend test cannot answer that.
+///
+/// `src/cuda/ptx/geometry.cu` calls these kernels "operation-for-operation
+/// transcriptions", and `resampling_is_bit_exact` holds them to
+/// `assert_eq!`. Both backends therefore accumulate the weighted sum in
+/// **f32**, deliberately, and an HDR conformance sweep of the kind
+/// `blur` and `local_contrast` now have would pass here while proving
+/// nothing: there is no divergence to find, by design. The open question
+/// is not whether the two agree but whether what they agree on is right.
+///
+/// So the reference is an independent oracle — the same taps, the same
+/// f32 weights, an f64 accumulator — and the assertion is the textbook
+/// forward-error bound for a floating-point dot product, `n·u·Σ|wᵢxᵢ|`
+/// with u = 2⁻²⁴ (Higham, *Accuracy and Stability of Numerical
+/// Algorithms*, 2nd ed., SIAM 2002, §3.1). Stating it against the tap
+/// mass rather than against the output value is the whole point: at a
+/// Catmull-Rom output pixel where the negative lobes cancel a 1e8 tap
+/// down to near zero, no *relative* bound can hold and none should be
+/// asserted.
+///
+/// MEASURED (RTX 5070 Ti, highlights 1e0…1e8, the two backends
+/// identical throughout): worst **0.2358x** the `n·u·mass` bound, at
+/// Catmull-Rom 512 → 768 on the dark field. In absolute terms the worst
+/// departure is 2.759e-7 of the scene peak — about 1/55 of a 16-bit
+/// quantisation step, so it cannot reach a shipped file. The answer to
+/// the question is therefore *yes, f32 accumulation is accurate enough
+/// here*, and this test exists to keep it that way.
+///
+/// The worst **relative** error over the same sweep is 1500%, at a
+/// `cancelling comb` pixel conditioned 3.4e8 where the true value is
+/// ~1e-8 of the tap mass. Both numbers describe the same well-behaved
+/// kernel; only one of them could have been asserted.
+#[test]
+fn resize_f32_accumulation_stays_within_its_error_bound() {
+    use phaios_core::geometry::{ResizeFilter, ResizeParams, resize};
+
+    let Some(ctx) = try_context() else { return };
+
+    let mut worst_ratio = 0.0_f64;
+    let mut worst_full_scale = 0.0_f64;
+    let mut worst_relative = 0.0_f64;
+    let mut worst_where = String::new();
+    // Worst Σ|wᵢxᵢ| / |output| reached, per content regime — the number
+    // that decides whether a relative bound was ever an option.
+    let mut conditioning: [(&'static str, f64); 3] = [("", 0.0); 3];
+
+    for highlight in [1.0_f32, 1e2, 1e4, 1e6, 1e8] {
+        for (r, (regime, img)) in resampling_content(512, 512, highlight)
+            .into_iter()
+            .enumerate()
+        {
+            let peak = f64::from(highlight);
+
+            for (w, h, filter) in [
+                // Large downscales: at 512 → 8 the Area filter sums
+                // 4096 source samples per output pixel across the two
+                // passes, at 512 → 64 it sums 64. That is where a
+                // running f32 total has the most to lose.
+                (8_u32, 8_u32, ResizeFilter::Area),
+                (64, 64, ResizeFilter::Area),
+                (8, 8, ResizeFilter::CatmullRom),
+                (64, 64, ResizeFilter::CatmullRom),
+                (64, 64, ResizeFilter::Bilinear),
+                // And an upscale, the only geometry here whose 4-tap
+                // window spans four *adjacent* source pixels — so it is
+                // the only one that still resolves the one-pixel comb
+                // when the negative lobes reach it.
+                (768, 768, ResizeFilter::CatmullRom),
+            ] {
+                let params = ResizeParams::new(w, h, filter);
+                let cpu = resize(img.view(), &params).unwrap();
+                let gpu = cuda::kernels::resize(&ctx, img.view(), &params).unwrap();
+                // The premise of this test, restated where it is used: the
+                // two backends have nothing to tell us apart from each other.
+                assert_eq!(cpu, gpu, "{filter:?} {w}x{h}: the backends diverged");
+
+                let (oracle, mass, n) = resize_f64_oracle(&img, &params);
+                for y in 0..h as usize {
+                    for x in 0..w as usize {
+                        let err = (f64::from(cpu[[y, x, 0]]) - oracle[[y, x]]).abs();
+                        let bound = n * F32_UNIT_ROUNDOFF * mass[[y, x]];
+                        let ratio = if bound > 0.0 {
+                            err / bound
+                        } else {
+                            assert_eq!(err, 0.0, "zero mass with a non-zero error");
+                            0.0
+                        };
+                        if ratio > worst_ratio {
+                            worst_ratio = ratio;
+                            worst_where = format!("{filter:?} {w}x{h}, {regime} at {highlight:e}");
+                        }
+                        worst_full_scale = worst_full_scale.max(err / peak);
+                        let truth = oracle[[y, x]].abs();
+                        if truth > 0.0 {
+                            worst_relative = worst_relative.max(err / truth);
+                            conditioning[r] = (regime, conditioning[r].1.max(mass[[y, x]] / truth));
+                        }
+                        assert!(
+                            ratio <= 1.0,
+                            "resize {filter:?} {w}x{h}, {regime} at {highlight:e}, \
+                             pixel ({y}, {x}): f32 accumulation is {ratio:.3}x \
+                             its {n}·u·mass error bound (err {err:e}, mass {:e})",
+                            mass[[y, x]]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "resize oracle: worst {worst_ratio:.4}x the n·u·mass bound ({worst_where}); \
+         worst absolute error {worst_full_scale:.3e} of the scene peak; \
+         worst relative error {worst_relative:.3e}"
+    );
+    for (regime, cond) in conditioning {
+        eprintln!("resize oracle: {regime} reached a conditioning of {cond:.3e}");
+    }
+}
+
+/// The same question for `straighten`, whose 16 Catmull-Rom taps are
+/// where the negative lobes cancel hardest.
+///
+/// Only 16 taps, so the summation itself is short — but the two outer
+/// lobes carry weight −0.5·t(1−t)² and the bar is 12 orders above the
+/// field, so an output pixel a pixel outside the bar is a difference of
+/// two ~1e8 quantities. That is not a defect: it is what a cubic does,
+/// and the f64 oracle says so too. What is worth pinning is that the
+/// f32 accumulator adds nothing beyond the rounding the arithmetic
+/// forces.
+///
+/// MEASURED (RTX 5070 Ti, highlights 1e0…1e8, the two backends
+/// identical throughout): worst **0.3899x** the `12·u·mass` bound, at
+/// −45° on the `cancelling field`. Worst absolute departure 2.831e-7 of
+/// the scene peak, ~1/54 of a 16-bit quantisation step. Worst relative
+/// error 1900%, at a `cancelling comb` pixel conditioned 3.4e8.
+///
+/// So: accurate enough, with the 16 f32 taps costing about a third of
+/// the rounding the arithmetic already allows them.
+#[test]
+fn straighten_f32_accumulation_stays_within_its_error_bound() {
+    use phaios_core::geometry::{StraightenParams, straighten};
+
+    // Products rounded once each and summed 4-wide, the row total
+    // rounded, then the same again across the four rows: ≤ 12 rounding
+    // steps on the worst pixel.
+    const N_ROUNDINGS: f64 = 12.0;
+
+    let Some(ctx) = try_context() else { return };
+
+    let mut worst_ratio = 0.0_f64;
+    let mut worst_full_scale = 0.0_f64;
+    let mut worst_relative = 0.0_f64;
+    let mut worst_where = String::new();
+    // Worst Σ|wᵢxᵢ| / |output| reached, per content regime — the number
+    // that decides whether a relative bound was ever an option.
+    let mut conditioning: [(&'static str, f64); 3] = [("", 0.0); 3];
+
+    for highlight in [1.0_f32, 1e2, 1e4, 1e6, 1e8] {
+        for (r, (regime, img)) in resampling_content(257, 389, highlight)
+            .into_iter()
+            .enumerate()
+        {
+            let peak = f64::from(highlight);
+
+            for degrees in [0.35_f32, 1.5, -7.3, 30.0, -45.0] {
+                let params = StraightenParams::new(degrees);
+                let cpu = straighten(img.view(), &params).unwrap();
+                let gpu = cuda::kernels::straighten(&ctx, img.view(), &params).unwrap();
+                assert_eq!(cpu, gpu, "{degrees} deg: the backends diverged");
+
+                let (out_h, out_w, _) = cpu.dim();
+                let (oracle, mass) = straighten_f64_oracle(&img, degrees, out_h, out_w);
+                for y in 0..out_h {
+                    for x in 0..out_w {
+                        let err = (f64::from(cpu[[y, x, 0]]) - oracle[[y, x]]).abs();
+                        let bound = N_ROUNDINGS * F32_UNIT_ROUNDOFF * mass[[y, x]];
+                        let ratio = if bound > 0.0 {
+                            err / bound
+                        } else {
+                            assert_eq!(err, 0.0, "zero mass with a non-zero error");
+                            0.0
+                        };
+                        if ratio > worst_ratio {
+                            worst_ratio = ratio;
+                            worst_where = format!("{degrees} deg, {regime} at {highlight:e}");
+                        }
+                        worst_full_scale = worst_full_scale.max(err / peak);
+                        let truth = oracle[[y, x]].abs();
+                        if truth > 0.0 {
+                            worst_relative = worst_relative.max(err / truth);
+                            conditioning[r] = (regime, conditioning[r].1.max(mass[[y, x]] / truth));
+                        }
+                        assert!(
+                            ratio <= 1.0,
+                            "straighten {degrees} deg, {regime} at {highlight:e}, \
+                             pixel ({y}, {x}): f32 accumulation is {ratio:.3}x \
+                             its 12·u·mass error bound (err {err:e}, mass {:e})",
+                            mass[[y, x]]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "straighten oracle: worst {worst_ratio:.4}x the 12·u·mass bound ({worst_where}); \
+         worst absolute error {worst_full_scale:.3e} of the scene peak; \
+         worst relative error {worst_relative:.3e}"
+    );
+    for (regime, cond) in conditioning {
+        eprintln!("straighten oracle: {regime} reached a conditioning of {cond:.3e}");
+    }
+}
+
 // ── the resident pipeline ────────────────────────────────────────────────────
 
 /// The full nine-stage v0.2 pipeline, resident end to end — one upload,
@@ -1770,6 +2280,75 @@ fn glow_agrees_within_bound() {
             "glow threshold={threshold} sigma={sigma} amount={amount}: {v:.2}x the bound"
         );
     }
+}
+
+/// The same agreement, on input that actually spans a scene's dynamic
+/// range.
+///
+/// `glow` is the crate's third kernel with an accumulator over many
+/// samples — it *is* a blur, wrapped in two element-wise halves — and
+/// when the audit found the box path wrong by 2.8e7x and
+/// `local_contrast` by 51.8x, this one had never been shown anything
+/// above 2.0. `glow_agrees_within_bound` draws from
+/// `pseudo_random_image`, so no sliding window here has ever held a
+/// bright sample and a dark one at the same time.
+///
+/// Two things make this more than the blur's sweep relabelled. The
+/// threshold subtraction happens *before* the blur, so `threshold = 0`
+/// (veiling glare, where every part of the scene scatters) is the only
+/// setting that leaves the 1e-4 field in the accumulator at all — a
+/// threshold above the field zeroes it exactly, and the sweep covers
+/// both so the two cannot be confused. And the final `in + amount·spread`
+/// puts the blur's error over an output that includes the *unblurred*
+/// input, so the ratio a violation is scored against is not the blur's.
+///
+/// Measured worst case across the sweep: 0.0510x the (1e-5, 1e-7)
+/// bound, at threshold 0, σ = 12, amount 0.35 and a 1e8 highlight —
+/// the box path with the 1e-4 field still in the accumulator, which is
+/// exactly the combination the paragraph above predicts — and since
+/// that is the sweep's maximum, the thresholded settings scored no
+/// higher, as they must.
+#[test]
+fn glow_agrees_within_bound_across_the_dynamic_range() {
+    use phaios_core::glow::{GlowParams, glow};
+
+    let Some(ctx) = try_context() else { return };
+    let mut worst = 0.0_f32;
+    let mut worst_where = String::new();
+
+    for highlight in [1.0_f32, 1e2, 1e4, 1e6, 1e8] {
+        let mut img = ndarray::Array3::<f32>::from_elem((97, 131, 1), 1e-4);
+        img.slice_mut(ndarray::s![40..44, 20..110, ..])
+            .fill(highlight);
+
+        // σ = 3 is the direct convolution; 12, 30 and 400 are the box
+        // path — the one that could not survive a bright sample leaving
+        // a running f32 total.
+        for (threshold, sigma, amount) in [
+            (0.0_f32, 3.0_f32, 0.35_f32), // halation, direct path
+            (0.0, 12.0, 0.35),            // halation, box path
+            (0.0, 30.0, 0.4),             // diffusion
+            (0.0, 400.0, 0.06),           // veiling glare, σ beyond the frame
+            (0.5, 12.0, 0.4),             // threshold above the field: the safe case
+            (0.5, 400.0, 0.06),
+        ] {
+            let params = GlowParams::new(threshold, sigma, amount);
+            let cpu = glow(img.view(), &params).unwrap();
+            let gpu = cuda::kernels::glow(&ctx, img.view(), &params).unwrap();
+            let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+            if v > worst {
+                worst = v;
+                worst_where = format!("t={threshold} sigma={sigma} a={amount} hl={highlight:e}");
+            }
+            assert!(
+                v <= 1.0,
+                "glow threshold={threshold} sigma={sigma} amount={amount} \
+                 with a {highlight:e} highlight: {v:.4}x the (1e-5, 1e-7) bound"
+            );
+        }
+    }
+
+    eprintln!("glow HDR sweep: worst {worst:.4}x the bound ({worst_where})");
 }
 
 /// A NaN sample stays where it is, on both backends.
