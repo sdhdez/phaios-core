@@ -202,3 +202,98 @@ required-features = ["cuda"]
 name = "23_gpu_selftest"
 path = "examples/23_gpu_selftest.rs"
 required-features = ["cuda"]
+
+[[example]]
+name = "24_gpu_luminance"
+path = "examples/24_gpu_luminance.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "25_gpu_channel_mixer"
+path = "examples/25_gpu_channel_mixer.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "26_gpu_color_filter"
+path = "examples/26_gpu_color_filter.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "27_gpu_zone_system"
+path = "examples/27_gpu_zone_system.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "28_gpu_local_contrast"
+path = "examples/28_gpu_local_contrast.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "29_gpu_srgb_encode"
+path = "examples/29_gpu_srgb_encode.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "30_gpu_hsl_weighted"
+path = "examples/30_gpu_hsl_weighted.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "31_gpu_tone_curve"
+path = "examples/31_gpu_tone_curve.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "32_gpu_vignette"
+path = "examples/32_gpu_vignette.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "33_gpu_split_toning"
+path = "examples/33_gpu_split_toning.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "34_gpu_film_grain"
+path = "examples/34_gpu_film_grain.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "35_gpu_geometry"
+path = "examples/35_gpu_geometry.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "36_gpu_resample"
+path = "examples/36_gpu_resample.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "37_gpu_highlight_rolloff"
+path = "examples/37_gpu_highlight_rolloff.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "38_gpu_quantize"
+path = "examples/38_gpu_quantize.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "39_gpu_histogram_lut"
+path = "examples/39_gpu_histogram_lut.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "40_gpu_characteristic_curve"
+path = "examples/40_gpu_characteristic_curve.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "41_gpu_blur"
+path = "examples/41_gpu_blur.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "42_gpu_glow"
+path = "examples/42_gpu_glow.rs"
+required-features = ["cuda"]
