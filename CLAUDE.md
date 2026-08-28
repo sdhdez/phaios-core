@@ -413,6 +413,15 @@ dev tool: no CI.
   check (`Cargo.toml` version == `pyproject.toml` version).
 
 **Cutting a release:**
+0. Verify the CUDA backend on a machine that has one:
+   `./scripts/gpu-verify.sh`. Neither `ci.yml` nor `release.yml` builds
+   `--features cuda` — the hosted runner has no nvcc and no device — so
+   nothing else in the pipeline would notice a GPU backend that fails to
+   compile, and `cargo publish` ships the source to crates.io regardless.
+   The script is the mirror image of the CI job: it runs the targets CI
+   skips, under `PHAIOS_REQUIRE_GPU=1` so a green result cannot mean the
+   suite quietly skipped 54 tests for want of a device. The PyPI wheels
+   are built without the feature and are unaffected either way.
 1. Bump the version in `Cargo.toml`, `pyproject.toml`, **and**
    `Cargo.lock` in a single commit (`chore: bump version to vX.Y.Z`).
    (`Cargo.lock` updates automatically after any `cargo` command;
