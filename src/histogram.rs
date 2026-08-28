@@ -682,9 +682,26 @@ mod tests {
             ((y * 131 + x * 7 + c) % 1000) as f32 / 999.0
         });
         let p = HistogramParams::new(64, 0.0, 1.0);
-        let a = histogram(img.view(), &p).unwrap();
-        let b = histogram(img.view(), &p).unwrap();
-        assert_eq!(a.counts(), b.counts());
+
+        // Calling twice in the ambient pool asserts only that the kernel
+        // is pure. This one has to build the pools: `chunk_rows` is a
+        // function of `rayon::current_num_threads()`, so the work split
+        // genuinely differs per pool, and an accumulator that saturates
+        // — an f32 holding more than 2^24 counts, say — reads correctly
+        // at 32 threads and wrongly at 1.
+        let reference = histogram(img.view(), &p).unwrap();
+        for threads in [1, 2, 5, 16] {
+            let out = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| histogram(img.view(), &p).unwrap());
+            assert_eq!(
+                out.counts(),
+                reference.counts(),
+                "histogram changed on {threads} threads"
+            );
+        }
     }
 
     #[test]

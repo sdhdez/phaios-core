@@ -617,9 +617,20 @@ fn rolloff_is_thread_count_independent() {
         ((y * 131 + x + c) % 400) as f32 / 100.0
     });
     let params = RolloffParams::new(0.6, 5.0);
-    let a = highlight_rolloff(img.view(), &params).unwrap();
-    let b = highlight_rolloff(img.view(), &params).unwrap();
-    assert_eq!(a, b);
+
+    // Calling twice in the ambient pool only asserts the kernel is a
+    // pure function; the thread count never varied, so the name was a
+    // claim the body did not make. Build the pools, as the grain tests
+    // already do.
+    let reference = highlight_rolloff(img.view(), &params).unwrap();
+    for threads in [1, 2, 5, 16] {
+        let out = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| highlight_rolloff(img.view(), &params).unwrap());
+        assert_eq!(out, reference, "rolloff changed on {threads} threads");
+    }
 }
 
 // ── Quantisation tests ───────────────────────────────────────────────────────
