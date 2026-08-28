@@ -125,10 +125,22 @@ impl ColorFilter {
 /// Validate `(H, W, 3)` shape. Shared by CPU and CUDA backends so both
 /// reject the same inputs with the same message.
 pub(crate) fn validate_rgb(img: ArrayView3<f32>) -> Result<(), PhaiosError> {
-    if img.shape()[2] != 3 {
+    validate_rgb_shape(img.shape())
+}
+
+/// Shape-only form of [`validate_rgb`], for callers holding a device
+/// image rather than a host array.
+///
+/// The CUDA entry points cannot pass an `ArrayView3`, and used to repeat
+/// this check by hand — three copies whose messages agreed only because
+/// `{:?}` on a slice and `[{h}, {w}, {c}]` happen to render the same.
+/// CLAUDE.md §2 asks that both backends reject identical inputs with
+/// identical messages; one implementation is how that is guaranteed
+/// rather than merely observed.
+pub(crate) fn validate_rgb_shape(shape: &[usize]) -> Result<(), PhaiosError> {
+    if shape[2] != 3 {
         return Err(PhaiosError::Shape(format!(
-            "expected (H, W, 3) RGB array, got shape {:?}",
-            img.shape()
+            "expected (H, W, 3) RGB array, got shape {shape:?}"
         )));
     }
     Ok(())

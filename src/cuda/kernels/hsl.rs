@@ -28,11 +28,7 @@ pub fn hsl_bw_device(
     params: &HslWeightedParams,
 ) -> Result<DeviceImage, PhaiosError> {
     let (h, w, c) = img.shape();
-    if c != 3 {
-        return Err(PhaiosError::Shape(format!(
-            "expected (H, W, 3) RGB array, got shape [{h}, {w}, {c}]"
-        )));
-    }
+    crate::bw::validate_rgb_shape(&[h, w, c])?;
     crate::bw::validate_hsl(params)?;
 
     let ctx = img.context().clone();

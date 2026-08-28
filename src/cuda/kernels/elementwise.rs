@@ -338,11 +338,7 @@ pub fn luminance_bw_device(
     standard: LuminanceStandard,
 ) -> Result<DeviceImage, PhaiosError> {
     let (h, w, c) = img.shape();
-    if c != 3 {
-        return Err(PhaiosError::Shape(format!(
-            "expected (H, W, 3) RGB array, got shape [{h}, {w}, {c}]"
-        )));
-    }
+    crate::bw::validate_rgb_shape(&[h, w, c])?;
     let ctx = img.context().clone();
     let npix = h * w;
     let mut out = ctx.alloc_image((h, w, 1))?;
@@ -370,11 +366,7 @@ pub fn luminance_bw_device(
 /// classic B&W methods compile to. One PTX serves them all.
 fn dot3_device(img: &DeviceImage, weights: [f32; 3]) -> Result<DeviceImage, PhaiosError> {
     let (h, w, c) = img.shape();
-    if c != 3 {
-        return Err(PhaiosError::Shape(format!(
-            "expected (H, W, 3) RGB array, got shape [{h}, {w}, {c}]"
-        )));
-    }
+    crate::bw::validate_rgb_shape(&[h, w, c])?;
     let ctx = img.context().clone();
     let npix = h * w;
     let mut out = ctx.alloc_image((h, w, 1))?;
