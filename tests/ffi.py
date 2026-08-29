@@ -10,6 +10,9 @@ Verifies that each PyO3 binding:
 Run with: pytest tests/ffi.py
 """
 
+import math
+import os
+
 import numpy as np
 import pytest
 
@@ -1321,7 +1324,51 @@ def test_characteristic_curve_composes_from_three_kernels():
 # ── Oversized allocations must raise, never abort ────────────────────────────
 
 
-OVERSIZED = (100_000, 100_000, 3)  # 4 bytes of storage, 120 GB logical
+def _oversized_shape():
+    """A logical shape that exceeds both the crate's allocation cap and
+    this machine's memory.
+
+    Two constraints, and only the first is obvious:
+
+    1. It must exceed `phaios_core`'s 8 GiB single-allocation cap, or the
+       guard these tests exist to check never fires.
+    2. If that guard ever regresses, the allocation that follows must be
+       *refused* outright rather than granted. Linux's heuristic overcommit
+       refuses a single request larger than RAM + swap; one that merely fits
+       is granted, and the process then faults pages in until the OOM killer
+       picks a victim — which on a desktop is whatever the user was doing,
+       not this test process.
+
+    A fixed constant cannot satisfy the second everywhere, and this is not
+    hypothetical: the previous 120 GB constant is refused on a 64 GB laptop
+    but *granted* on a machine with 65 GB of RAM and 137 GB of swap, where
+    it takes the desktop down instead of failing. The floor covers hosts
+    where the query is unavailable (Windows has no `sysconf`), and is set
+    high enough to be refused by any machine that currently exists.
+    """
+    floor = 16 << 40  # 16 TiB
+    try:
+        total = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, ValueError, OSError):  # pragma: no cover - non-POSIX
+        total = 0
+    try:
+        with open("/proc/meminfo", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("SwapTotal:"):
+                    total += int(line.split()[1]) * 1024
+                    break
+    except OSError:  # pragma: no cover - not Linux
+        pass
+
+    want = max(floor, 2 * total)
+    side = math.isqrt(want // (4 * 3))
+    return (side, side, 3)
+
+
+# 4 bytes of real storage behind a shape too large for any allocator to
+# satisfy. Printed on failure so a bug report from another machine is
+# interpretable.
+OVERSIZED = _oversized_shape()
 
 
 @pytest.mark.parametrize(

@@ -1093,19 +1093,28 @@ mod tests {
             "the error should name the limit it exceeded: {err}"
         );
 
-        // The scratch buffer: an extreme width alone is enough, and is
-        // refused before any resampling happens at all. The horizontal
-        // pass allocates (in_h, out_w, c) = (2, 400000000, 3) = 9.6 GB,
-        // while the *output* it feeds is only (1, 400000000, 3) = 4.8 GB
-        // and would pass — so this reaches the scratch guard specifically.
+        // The scratch buffer, which is guarded separately from the output.
+        // A tall, narrow input asked to widen: the horizontal pass allocates
+        // (in_h, out_w, c) = (1000000, 1000000, 3) = 12 TB, while the output
+        // it feeds is only (1, 1000000, 3) = 12 MB and would pass — so this
+        // reaches the scratch guard specifically.
+        //
+        // The size is chosen to be refused by the *allocator* as well as by
+        // the guard. An earlier version used 9.6 GB, which clears the 8 GiB
+        // cap but which Linux would happily grant on any ordinary machine:
+        // had the guard regressed, the test would have allocated it and
+        // paged it in rather than failing. A request larger than RAM plus
+        // swap is refused outright, so the failure stays inside this
+        // process. The tall input costs 24 MB of real storage.
+        let tall = Array3::<f32>::zeros((1_000_000, 2, 3));
         let err = resize(
-            img.view(),
-            &ResizeParams::new(400_000_000, 1, ResizeFilter::Area),
+            tall.view(),
+            &ResizeParams::new(1_000_000, 1, ResizeFilter::Area),
         )
         .unwrap_err();
         assert!(
             matches!(err, PhaiosError::Allocation(_)),
-            "a 9.6 GB scratch buffer must be refused, got {err:?}"
+            "a 12 TB scratch buffer must be refused, got {err:?}"
         );
 
         // The guard must be nowhere near an ordinary enlargement.
