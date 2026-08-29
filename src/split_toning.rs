@@ -405,6 +405,61 @@ mod tests {
     }
 
     #[test]
+    fn oklab_chroma_axes_are_not_interchangeable() {
+        // Audit finding F19: transposing the `a` and `b` rows in *both*
+        // `linear_srgb_to_oklab` and `oklab_to_linear_srgb` passed the
+        // entire suite. A consistent swap survives a round trip, leaves
+        // neutrals achromatic, leaves lightness alone, and is invisible
+        // to every tint test whose two chroma components are equal or
+        // whose assertion only compares the axes with each other. The
+        // axes were pinned to be mutually consistent, never to be
+        // themselves.
+        //
+        // In OKLab the axes are named, not interchangeable: `a` runs
+        // green (negative) to red (positive), `b` runs blue (negative)
+        // to yellow (positive) — Björn Ottosson, "A perceptual color
+        // space for image processing" (2020). So each sRGB primary must
+        // carry its chroma on the axis that names it, with that axis's
+        // sign.
+        //
+        // Measured with the shipped coefficients, as (L, a, b):
+        //   red    (1, 0, 0) → (0.6280,  0.2249,  0.1259)
+        //   green  (0, 1, 0) → (0.8664, -0.2339,  0.1795)
+        //   blue   (0, 0, 1) → (0.4520, -0.0325, -0.3115)
+        //   yellow (1, 1, 0) → (0.9680, -0.0714,  0.1986)
+        // Transposed, red reports a = 0.1259 against b = 0.2249 and
+        // every dominance assertion below flips.
+        let chroma = |r, g, b| {
+            let [_, a, b] = linear_srgb_to_oklab(r, g, b);
+            (a, b)
+        };
+
+        let (a, b) = chroma(1.0, 0.0, 0.0);
+        assert!(
+            a > 0.0 && a.abs() > b.abs(),
+            "red belongs at the +a end of the green–red axis, got a = {a}, b = {b}"
+        );
+
+        let (a, b) = chroma(0.0, 1.0, 0.0);
+        assert!(
+            a < 0.0 && a.abs() > b.abs(),
+            "green belongs at the −a end of the green–red axis, got a = {a}, b = {b}"
+        );
+
+        let (a, b) = chroma(0.0, 0.0, 1.0);
+        assert!(
+            b < 0.0 && b.abs() > a.abs(),
+            "blue belongs at the −b end of the blue–yellow axis, got a = {a}, b = {b}"
+        );
+
+        let (a, b) = chroma(1.0, 1.0, 0.0);
+        assert!(
+            b > 0.0 && b.abs() > a.abs(),
+            "yellow belongs at the +b end of the blue–yellow axis, got a = {a}, b = {b}"
+        );
+    }
+
+    #[test]
     fn neutral_shortcut_matches_the_full_transform() {
         // The kernel skips two cube roots by exploiting l == m == s for
         // neutrals. If that ever stops holding, this catches it.
@@ -462,6 +517,100 @@ mod tests {
             highlight[2] > highlight[0],
             "highlight should be cool (b > r): {highlight:?}"
         );
+    }
+
+    #[test]
+    fn a_tints_pink_and_b_tints_yellow() {
+        // The inverse half of audit finding F19 (see
+        // `oklab_chroma_axes_are_not_interchangeable`): the kernel's own
+        // output has to distinguish the two axes, because that is what a
+        // photographer sees. +a is pink, +b is yellow; a transposition
+        // renders a warm shadow tint cool and the previous tests, whose
+        // tints were symmetric in a and b, said nothing.
+        //
+        // The expectations are read off the OKLab definition — a is the
+        // green–red axis, b the blue–yellow one, Ottosson (2020) — not
+        // off the current output:
+        //
+        //   +a magenta → red brightest, green darkest
+        //   −a green   → green brightest, red darkest
+        //   +b yellow  → red and green above blue, so blue darkest
+        //   −b blue    → blue brightest, red darkest
+        //
+        // The second pair of expectations comes from the inverse
+        // matrix's short-wavelength row, `s_ = L - 0.0894 a - 1.2915 b`:
+        // b drives the blue cone fourteen times as hard as a does, so a
+        // b-axis tint must move the blue channel more than any other and
+        // an a-axis tint must move it least. Measured at grey 0.18 with
+        // a 0.06 tint, |ΔR|, |ΔG|, |ΔB| are 0.115, 0.044, 0.005 for +a
+        // and 0.049, 0.004, 0.107 for +b — the two signatures share no
+        // ordering, which is what makes a swap detectable here.
+        const R: usize = 0;
+        const G: usize = 1;
+        const B: usize = 2;
+        // Smallest measured gap over these greys is 0.037; f32 noise
+        // here is ~1e-7.
+        const MARGIN: f32 = 0.01;
+
+        let greys = [0.18_f32, 0.5, 0.9];
+        let img = grey(&greys);
+        let neutral = split_toning(img.view(), &SplitToningParams::default()).unwrap();
+
+        // label, (a, b), brightest, darkest, most-moved, least-moved
+        let cases = [
+            ("+a magenta", (0.06_f32, 0.0_f32), R, G, R, B),
+            ("−a green", (-0.06, 0.0), G, R, R, B),
+            ("+b yellow", (0.0, 0.06), R, B, B, G),
+            ("−b blue", (0.0, -0.06), B, R, B, G),
+        ];
+
+        for (label, (a, b), brightest, darkest, most_moved, least_moved) in cases {
+            // The same tint at both ends makes the crossfade a no-op, so
+            // this measures the axis alone and not the pivot or balance.
+            let tint = [0.0, a, b];
+            let params = SplitToningParams::new(tint, tint, 0.5, 0.0);
+            let out = split_toning(img.view(), &params).unwrap();
+
+            for (x, y) in greys.iter().enumerate() {
+                let px = [out[[0, x, R]], out[[0, x, G]], out[[0, x, B]]];
+                let moved = [
+                    (px[R] - neutral[[0, x, R]]).abs(),
+                    (px[G] - neutral[[0, x, G]]).abs(),
+                    (px[B] - neutral[[0, x, B]]).abs(),
+                ];
+
+                for other in [R, G, B] {
+                    if other != brightest {
+                        assert!(
+                            px[brightest] > px[other] + MARGIN,
+                            "{label} at grey {y}: channel {brightest} should be brightest, \
+                             got {px:?}"
+                        );
+                    }
+                    if other != darkest {
+                        assert!(
+                            px[darkest] + MARGIN < px[other],
+                            "{label} at grey {y}: channel {darkest} should be darkest, \
+                             got {px:?}"
+                        );
+                    }
+                    if other != most_moved {
+                        assert!(
+                            moved[most_moved] > moved[other] + MARGIN,
+                            "{label} at grey {y}: channel {most_moved} should move most, \
+                             got |Δ| {moved:?}"
+                        );
+                    }
+                    if other != least_moved {
+                        assert!(
+                            moved[least_moved] + MARGIN < moved[other],
+                            "{label} at grey {y}: channel {least_moved} should move least, \
+                             got |Δ| {moved:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

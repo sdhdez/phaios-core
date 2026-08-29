@@ -944,6 +944,104 @@ mod tests {
     }
 
     #[test]
+    fn catmull_rom_taps_are_the_keys_cubic_with_negative_lobes() {
+        // Audit finding F18: making `ResizeFilter::CatmullRom` evaluate
+        // the Bilinear profile left the whole suite green, including the
+        // ramp test above — a triangle filter reproduces a linear ramp
+        // exactly too, so that test cannot tell the two apart. Nothing
+        // pinned the cubic itself.
+        //
+        // Keys' a = -0.5 kernel is negative on 1 < |t| < 2; a triangle
+        // (or any non-negative kernel) cannot produce that sign. The
+        // taps below are dyadic rationals — every mul/add in the Horner
+        // form is exact in f32 — so they are compared bit-for-bit, which
+        // also fixes the polynomial's coefficients against a typo.
+        //
+        // Reference: Robert G. Keys, "Cubic Convolution Interpolation
+        // for Digital Image Processing", IEEE Transactions on Acoustics,
+        // Speech, and Signal Processing 29(6), 1981, eq. (4) with
+        // a = -0.5.
+        for (t, expected) in [
+            (0.5_f32, [-0.0625_f32, 0.5625, 0.5625, -0.0625]),
+            (0.25, [-0.0703125, 0.8671875, 0.2265625, -0.0234375]),
+        ] {
+            let taps = catmull_weights(t);
+            assert_eq!(taps, expected, "Keys taps wrong at t = {t}");
+            // Partition of unity: an interpolating kernel must leave a
+            // constant image constant before any normalisation.
+            assert_eq!(
+                taps[0] + taps[1] + taps[2] + taps[3],
+                1.0,
+                "Keys taps must sum to 1 at t = {t}"
+            );
+            // The discriminating property: outer lobes are negative.
+            assert!(
+                taps[0] < 0.0 && taps[3] < 0.0,
+                "outer taps must be negative at t = {t}, got {taps:?}"
+            );
+        }
+
+        // And the profile itself, at the two distances that separate the
+        // filters: inside the first lobe Catmull-Rom is above the
+        // triangle, outside it the triangle is already zero.
+        assert_eq!(filter_eval(ResizeFilter::CatmullRom, 0.5), 0.5625);
+        assert_eq!(filter_eval(ResizeFilter::Bilinear, 0.5), 0.5);
+        assert_eq!(filter_eval(ResizeFilter::CatmullRom, 1.5), -0.0625);
+        assert_eq!(filter_eval(ResizeFilter::Bilinear, 1.5), 0.0);
+        // Support must cover the second lobe, or the negative taps are
+        // never reached and the kernel degenerates back to a triangle.
+        assert_eq!(filter_support(ResizeFilter::CatmullRom, 1.0), 2.0);
+    }
+
+    #[test]
+    fn catmull_upscale_overshoots_a_step_edge_where_bilinear_cannot() {
+        // The visible consequence of the negative lobes, and the second
+        // half of the F18 guard: on a 0 -> 1 step, Catmull-Rom rings
+        // outside the input range. Bilinear's weights are non-negative
+        // and normalised, so every output is a convex combination of its
+        // taps and provably stays within [0, 1] — it cannot fake this.
+        //
+        // Measured on this 8 -> 32 upscale: Catmull-Rom reaches
+        // -0.0732 and 1.0732, roughly 7% of the step height, which is
+        // the ringing a photographer trades for the extra acutance.
+        let img = Array3::from_shape_fn((1, 8, 1), |(_, x, _)| if x < 4 { 0.0 } else { 1.0 });
+
+        let cr = resize(
+            img.view(),
+            &ResizeParams::new(32, 1, ResizeFilter::CatmullRom),
+        )
+        .unwrap();
+        let (cr_min, cr_max) = cr
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &v| {
+                (a.min(v), b.max(v))
+            });
+        assert!(
+            cr_min < -0.03,
+            "Catmull-Rom must undershoot a step edge, min was {cr_min}"
+        );
+        assert!(
+            cr_max > 1.03,
+            "Catmull-Rom must overshoot a step edge, max was {cr_max}"
+        );
+
+        let bl = resize(
+            img.view(),
+            &ResizeParams::new(32, 1, ResizeFilter::Bilinear),
+        )
+        .unwrap();
+        let (bl_min, bl_max) = bl
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &v| {
+                (a.min(v), b.max(v))
+            });
+        assert!(
+            bl_min >= 0.0 && bl_max <= 1.0,
+            "Bilinear has non-negative weights and must not ring: [{bl_min}, {bl_max}]"
+        );
+    }
+
+    #[test]
     fn resize_rejects_zero_targets_and_empty_input() {
         let img = numbered(4, 4, 1);
         for (w, h) in [(0_u32, 4_u32), (4, 0)] {

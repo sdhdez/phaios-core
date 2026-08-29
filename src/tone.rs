@@ -388,6 +388,11 @@ mod tests {
         // Middle grey at Zone V → +1 stop should approximately double the value.
         // The Gaussian blend means the multiplier is slightly less than 2.0
         // (Gaussian peak is 1.0 at zone_pos == 5, so total_offset ≈ 1.0).
+        // Audit finding F05: this assertion is blind to both constants it
+        // appears to test. zone_pos == 5 puts it on the Gaussian's peak, so
+        // SIGMA cancels, and the ratio divides by the same MIDDLE_GREY it fed
+        // in, so the anchor cancels too. It is kept as an on-centre sanity
+        // check; the constants are pinned by the two tests below.
         let img = array![[[MIDDLE_GREY]]];
         let mut offsets = HashMap::new();
         offsets.insert(5_i32, 1.0_f32);
@@ -400,6 +405,122 @@ mod tests {
             (ratio - 2.0).abs() < 0.05,
             "expected ~2×, got ratio {ratio:.4} (value {})",
             out[[0, 0, 0]]
+        );
+    }
+
+    /// Zone position for a luminance, spelled out with literal constants.
+    ///
+    /// Deliberately does *not* reuse [`MIDDLE_GREY`]: audit finding F05 was
+    /// that `zone_v_plus_one_stop_doubles_middle_grey` feeds `MIDDLE_GREY`
+    /// into a ratio that then divides by `MIDDLE_GREY`, so it holds for any
+    /// anchor whatsoever. An independent literal makes the 18% anchor
+    /// observable as well as the Gaussian's width.
+    fn zone_position(l: f32) -> f32 {
+        5.0 + (l / 0.18_f32).log2()
+    }
+
+    #[test]
+    fn gaussian_blend_width_is_observable_off_the_zone_centre() {
+        // Audit findings F05 and F16. Every assertion in this module used to
+        // sit on a zone centre, where the blending Gaussian evaluates to
+        // exp(0) = 1 however wide it is, which left SIGMA unobservable:
+        // replacing 0.8 with 100.0 — every offset applied to every pixel,
+        // abolishing the Zone System's selectivity entirely — kept the whole
+        // suite green. Measured at L = 0.72 with +1 stop on Zone V:
+        // sigma = 0.8 gives a ratio of 1.03092325, sigma = 100 gives
+        // 1.99972284.
+        //
+        // These three pixels sit half, one and a half, and two and a half
+        // zones above Zone V, so d != 0 and the width shows up in the answer.
+        // The expected ratios are hard-coded from
+        //     ratio = 2^(offset * exp(-d^2 / (2 * 0.8^2)))
+        // rather than recomputed from SIGMA, which would track the mutation
+        // and reproduce the vacuity.
+        let img = array![[[0.2545584_f32], [0.5091169_f32], [1.0182338_f32]]];
+        let mut offsets = HashMap::new();
+        offsets.insert(5_i32, 1.0_f32);
+        let out = zone_system(img.view(), &ZoneParams::new(offsets)).unwrap();
+
+        // (zones above Zone V, expected output/input ratio)
+        let cases: [(f32, f32); 3] = [(0.5, 1.7685634), (1.5, 1.1269486), (2.5, 1.0052649)];
+        for (i, &(d, want)) in cases.iter().enumerate() {
+            let l = img[[0, i, 0]];
+            let zone_pos = zone_position(l);
+            assert!(
+                (zone_pos - zone_pos.round()).abs() > 0.4,
+                "vacuous input: L = {l} lands at zone position {zone_pos}, on a \
+                 zone centre where the Gaussian is 1 for every sigma"
+            );
+            assert!(
+                ((zone_pos - 5.0) - d).abs() < 1e-4,
+                "L = {l} is {} zones from Zone V, expected {d}",
+                zone_pos - 5.0
+            );
+
+            let ratio = out[[0, i, 0]] / l;
+            assert!(
+                (ratio - want).abs() < 1e-5,
+                "at d = {d} zones a +1 stop offset on Zone V must multiply by \
+                 {want}, got {ratio}"
+            );
+
+            // Invert the Gaussian and read its width straight back out:
+            //   log2(ratio) = exp(-d^2 / (2 * sigma^2))
+            //   => sigma = d / sqrt(-2 * ln(log2 ratio)).
+            // Measured recoveries: sigma = 0.8 gives 0.80000025, sigma = 1.6
+            // gives 1.60000014, sigma = 100 gives roughly 100. A widened
+            // Gaussian also drives log2(ratio) towards 1, where the logarithm
+            // vanishes and the recovery diverges — either way the assertion
+            // fails rather than passing on a NaN.
+            let recovered = d / (-2.0 * ratio.log2().ln()).sqrt();
+            assert!(
+                (recovered - 0.8).abs() < 1e-3,
+                "the blend width implied by the output is sigma = {recovered}, \
+                 expected the Davis (1999) sigma = 0.8"
+            );
+        }
+    }
+
+    #[test]
+    fn a_distant_zone_offset_barely_reaches_a_shadow_pixel() {
+        // The other half of findings F05 and F16: selectivity. With sigma = 0.8
+        // an offset four and a half zones away is inert, which is the reason a
+        // zone offset is a zone offset and not an exposure slider. Measured
+        // leak into this pixel: sigma = 0.8 leaks 2.4e-7, sigma = 1.6 leaks
+        // 2.7e-2, sigma = 100 leaks 3.0 (a 3.99x multiplier).
+        //
+        // The control pixel sits exactly on Zone VIII and must take the full
+        // +2 stops. Without it a kernel that dropped every offset on the floor
+        // would satisfy the "barely moves" assertion just as happily.
+        let shadow = 0.06363961_f32; // 0.18 * 2^-1.5 — Zone III and a half
+        let control = 1.44_f32; // 0.18 * 2^3 — Zone VIII exactly
+        let img = array![[[shadow], [control]]];
+        let mut offsets = HashMap::new();
+        offsets.insert(8_i32, 2.0_f32);
+        let out = zone_system(img.view(), &ZoneParams::new(offsets)).unwrap();
+
+        let zone_pos = zone_position(shadow);
+        assert!(
+            (zone_pos - zone_pos.round()).abs() > 0.4,
+            "vacuous input: the shadow pixel lands at zone position {zone_pos}"
+        );
+        assert!(
+            (zone_pos - 3.5).abs() < 1e-4,
+            "shadow pixel at zone position {zone_pos}, expected 3.5"
+        );
+
+        let leak = (out[[0, 0, 0]] / shadow - 1.0).abs();
+        assert!(
+            leak < 1e-4,
+            "a +2 stop offset on Zone VIII moved a pixel 4.5 zones away by \
+             {leak}; at sigma = 0.8 the leak is 2.4e-7"
+        );
+
+        let gain = out[[0, 1, 0]] / control;
+        assert!(
+            (gain - 4.0).abs() < 1e-4,
+            "the Zone VIII control pixel must take the full +2 stops (x4), \
+             got x{gain}"
         );
     }
 

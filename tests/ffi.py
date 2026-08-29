@@ -749,66 +749,154 @@ def _layout_variants(arr):
     # exactly why an oversized broadcast could abort the interpreter
     # unnoticed: every other variant has the storage its shape implies.
     yield "broadcast", np.broadcast_to(arr[:1], arr.shape)
+    # A second zero-stride case, because the first is degenerate for a
+    # value check: broadcasting row 0 makes every row identical, so a
+    # kernel that reordered rows would still return the right numbers.
+    # Broadcasting column 0 keeps the rows distinct and the stride zero.
+    yield "broadcast_cols", np.broadcast_to(arr[:, :1], arr.shape)
 
 
-@pytest.mark.parametrize("label", [v[0] for v in _layout_variants(np.zeros((4, 4, 1), np.float32))])
+_LAYOUT_LABELS = [v[0] for v in _layout_variants(np.zeros((4, 4, 1), np.float32))]
+
+# A monotonic 17-entry table, steep enough that a misread sample lands on
+# a visibly different output value.
+_LAYOUT_LUT = np.linspace(0.0, 1.0, 17, dtype=np.float32) ** 2
+
+# The kernels the layout matrix covers, grouped by what each does to the
+# shape. Both the shape test and the value test below consume these
+# tables, so the two lists cannot drift apart.
+
+_BW_KERNELS = {  # (H, W, 3) in, (H, W, 1) out
+    "luminance_bw": lambda x: ph.luminance_bw(x),
+    "channel_mixer_bw": lambda x: ph.channel_mixer_bw(x, 0.3, 0.59, 0.11),
+    "color_filter_bw": lambda x: ph.color_filter_bw(x, ph.ColorFilter.Yellow8K2),
+    "hsl_bw": lambda x: ph.hsl_bw(x, ph.HslWeightedParams([0.2] * 8)),
+}
+
+_SAME_SHAPE_KERNELS = {  # shape-preserving, RGB and luminance alike
+    "zone_system": lambda x: ph.zone_system(x, ph.ZoneParams({5: 0.5})),
+    "local_contrast": lambda x: ph.local_contrast(x, ph.GuidedFilterParams(4, 0.01), 0.5),
+    "encode_srgb": lambda x: ph.encode_srgb(x),
+    "exposure": lambda x: ph.exposure(x, 0.5),
+    "tone_curve": lambda x: ph.tone_curve(x, ph.ToneCurveParams(1.2, 0.0, 1.0)),
+    "vignette": lambda x: ph.vignette(x, ph.VignetteParams(0.4, 0.7)),
+    "film_grain": lambda x: ph.film_grain(x, ph.GrainParams(0.2, 2.0, 99)),
+    "orient": lambda x: ph.orient(x, ph.Orientation.Rotate180),
+    "highlight_rolloff": lambda x: ph.highlight_rolloff(x, ph.RolloffParams(0.7, 3.0)),
+    "shadow_rolloff": lambda x: ph.shadow_rolloff(x, ph.ShadowRolloffParams(0.2, 0.5)),
+    "blur": lambda x: ph.blur(x, ph.BlurParams(2.0)),
+    "glow": lambda x: ph.glow(x, ph.GlowParams(0.3, 3.0, 0.4)),
+    # The three kernels whose own strided tests use a C-order view only,
+    # which takes the same code path as its contiguous copy.
+    "apply_lut": lambda x: ph.apply_lut(x, _LAYOUT_LUT, ph.LutParams()),
+    "quantize_u8": lambda x: ph.quantize_u8(x, ph.QuantizeParams(ph.Dither.Tpdf, 11)),
+    "quantize_u16": lambda x: ph.quantize_u16(x),
+}
+
+_SHAPE_CHANGING_KERNELS = {  # the output shape is not the input shape
+    "split_toning": lambda x: ph.split_toning(
+        x, ph.SplitToningParams([0.0, -0.02, -0.04], [0.0, 0.03, 0.03])
+    ),
+    "crop": lambda x: ph.crop(
+        x, ph.CropParams(0, 0, max(x.shape[1] // 2, 1), max(x.shape[0] // 2, 1))
+    ),
+    "resize": lambda x: ph.resize(x, ph.ResizeParams(7, 5, ph.ResizeFilter.Area)),
+    "straighten": lambda x: ph.straighten(x, ph.StraightenParams(3.0)),
+}
+
+
+@pytest.mark.parametrize("label", _LAYOUT_LABELS)
 def test_all_kernels_accept_any_layout(label, rgb_f32, grey_f32):
     """No kernel may panic on a non-C-contiguous input, whatever its layout."""
     rgb = dict(_layout_variants(rgb_f32))[label]
     grey = dict(_layout_variants(grey_f32))[label]
 
-    for out in (
-        ph.luminance_bw(rgb),
-        ph.channel_mixer_bw(rgb, 0.3, 0.59, 0.11),
-        ph.color_filter_bw(rgb, ph.ColorFilter.Yellow8K2),
-    ):
-        assert out.shape == rgb.shape[:2] + (1,)
-        assert out.flags["C_CONTIGUOUS"], "output must be C-contiguous"
+    for name, kernel in _BW_KERNELS.items():
+        out = kernel(rgb)
+        assert out.shape == rgb.shape[:2] + (1,), name
+        assert out.flags["C_CONTIGUOUS"], f"{name}: output must be C-contiguous"
 
-    for out in (
-        ph.hsl_bw(rgb, ph.HslWeightedParams([0.2] * 8)),
-    ):
-        assert out.shape == rgb.shape[:2] + (1,)
-        assert out.flags["C_CONTIGUOUS"], "output must be C-contiguous"
-
-    # Same-shape kernels, RGB and luminance alike.
-    for out in (
-        ph.zone_system(grey, ph.ZoneParams({5: 0.5})),
-        ph.local_contrast(grey, ph.GuidedFilterParams(4, 0.01), 0.5),
-        ph.encode_srgb(grey),
-        ph.exposure(grey, 0.5),
-        ph.tone_curve(grey, ph.ToneCurveParams(1.2, 0.0, 1.0)),
-        ph.vignette(grey, ph.VignetteParams(0.4, 0.7)),
-        ph.film_grain(grey, ph.GrainParams(0.2, 2.0, 99)),
-        ph.orient(grey, ph.Orientation.Rotate180),
-        ph.highlight_rolloff(grey, ph.RolloffParams(0.7, 3.0)),
-        ph.shadow_rolloff(grey, ph.ShadowRolloffParams(0.2, 0.5)),
-        ph.blur(grey, ph.BlurParams(2.0)),
-        ph.glow(grey, ph.GlowParams(0.3, 3.0, 0.4)),
-    ):
-        assert out.shape == grey.shape
-        assert out.flags["C_CONTIGUOUS"], "output must be C-contiguous"
-
-    # split_toning is the one kernel that grows a channel.
-    toned = ph.split_toning(grey, ph.SplitToningParams([0.0, -0.02, -0.04], [0.0, 0.03, 0.03]))
-    assert toned.shape == grey.shape[:2] + (3,)
-    assert toned.flags["C_CONTIGUOUS"], "output must be C-contiguous"
+    for name, kernel in _SAME_SHAPE_KERNELS.items():
+        out = kernel(grey)
+        assert out.shape == grey.shape, name
+        assert out.flags["C_CONTIGUOUS"], f"{name}: output must be C-contiguous"
 
     # Geometry kernels change the shape by construction, so they assert
     # the contract rather than shape preservation: no panic, C-contiguous
     # out, and the dimensions the parameters ask for.
     gh, gw = grey.shape[:2]
-    cropped = ph.crop(grey, ph.CropParams(0, 0, max(gw // 2, 1), max(gh // 2, 1)))
-    assert cropped.shape == (max(gh // 2, 1), max(gw // 2, 1), 1)
-    assert cropped.flags["C_CONTIGUOUS"]
+    out = {name: kernel(grey) for name, kernel in _SHAPE_CHANGING_KERNELS.items()}
+    for name, arr in out.items():
+        assert arr.flags["C_CONTIGUOUS"], f"{name}: output must be C-contiguous"
 
-    resized = ph.resize(grey, ph.ResizeParams(7, 5, ph.ResizeFilter.Area))
-    assert resized.shape == (5, 7, 1)
-    assert resized.flags["C_CONTIGUOUS"]
+    # split_toning is the one kernel that grows a channel.
+    assert out["split_toning"].shape == grey.shape[:2] + (3,)
+    assert out["crop"].shape == (max(gh // 2, 1), max(gw // 2, 1), 1)
+    assert out["resize"].shape == (5, 7, 1)
+    assert out["straighten"].ndim == 3 and out["straighten"].shape[2] == 1
 
-    straightened = ph.straighten(grey, ph.StraightenParams(3.0))
-    assert straightened.ndim == 3 and straightened.shape[2] == 1
-    assert straightened.flags["C_CONTIGUOUS"]
+
+@pytest.mark.parametrize("label", _LAYOUT_LABELS)
+def test_all_kernels_are_layout_agnostic_by_value(label, rgb_f32, grey_f32):
+    """Every kernel must return the same *numbers* for a given layout as it
+    does for the contiguous copy of the same logical input.
+
+    v0.2 audit finding F10: the matrix above asserts only shape and
+    C-contiguity, so a kernel could scramble every pixel of a Fortran-order
+    or reversed input and the suite would stay green. Measured with a flat
+    `as_slice_memory_order` fast path spliced into `exposure` — a plausible
+    optimisation — on a (3, 2, 1) array holding 0..5 at gain 2.0:
+
+        C order:  [0, 2, 4, 6, 8, 10]
+        F order:  [0, 4, 8, 2, 6, 10]   <- wrong, and nothing failed
+
+    `test_strided_matches_contiguous_copy` cannot cover this. It passes one
+    C-order strided view, whose logical order matches its memory order, so
+    view and copy take the same path through such a fast path and agree
+    however wrong both are. Here the reference is the kernel's output on
+    `np.ascontiguousarray` of the variant, and the Fortran, reversed and
+    zero-stride variants reach it by a different route.
+
+    CLAUDE.md section 2 makes layout-agnostic input a hard constraint:
+    `PyReadonlyArray3` accepts strided, Fortran-order and negative-stride
+    arrays, and a consumer passing `img[::2, ::2]` is normal.
+
+    Equality is exact, not approximate: every kernel here was measured
+    bit-identical between each variant and its contiguous copy.
+    """
+    rgb = dict(_layout_variants(rgb_f32))[label]
+    grey = dict(_layout_variants(grey_f32))[label]
+
+    for src, table in ((rgb, _BW_KERNELS), (grey, _SAME_SHAPE_KERNELS),
+                       (grey, _SHAPE_CHANGING_KERNELS)):
+        reference_input = np.ascontiguousarray(src)
+        for name, kernel in table.items():
+            np.testing.assert_array_equal(
+                kernel(src), kernel(reference_input),
+                err_msg=f"{name} on the {label} layout disagrees with its contiguous copy",
+            )
+
+    # `histogram` is the crate's one reduction: it returns tallies rather
+    # than an image, so the array comparison above cannot reach it.
+    for src in (rgb, grey):
+        got, want = ph.histogram(src), ph.histogram(np.ascontiguousarray(src))
+        np.testing.assert_array_equal(got.counts(), want.counts())
+        np.testing.assert_array_equal(got.cdf(), want.cdf())
+        assert (got.below(), got.above(), got.non_finite()) == (
+            want.below(),
+            want.above(),
+            want.non_finite(),
+        ), f"histogram tallies differ on the {label} layout"
+
+    # One oracle that does not go through the kernel twice, so the matrix
+    # is not purely kernel-against-kernel: 2^1 is exact in binary floating
+    # point, so one stop of exposure is a bit-exact doubling of every
+    # sample, in whatever layout the caller hands it over.
+    for src in (rgb, grey):
+        np.testing.assert_array_equal(
+            ph.exposure(src, 1.0), np.asarray(src) * np.float32(2.0),
+            err_msg=f"exposure is not an exact doubling on the {label} layout",
+        )
 
 
 def test_resampling_is_layout_agnostic(rgb_f32):

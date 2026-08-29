@@ -446,6 +446,144 @@ fn guided_identity_radius_zero() {
     }
 }
 
+/// The guided filter must lift fine texture *upwards* and leave a step
+/// edge un-haloed — the two behaviours it exists for.
+///
+/// Audit findings F01, F14, F15 and F25. Before this test every
+/// value-level exercise of `local_contrast`, here and in the unit tests,
+/// fed it either a constant image or radius 0. On a constant image the
+/// detail term `L − q` is identically zero, and at radius 0 the filter is
+/// the identity, so the whole edge-preserving model could be arbitrarily
+/// wrong and the suite still passed. Four mutations of
+/// `src/local_contrast.rs` were each confirmed to change the output and
+/// each left the suite green: dropping the `− mean(L)²` term from the
+/// variance (F01), flipping the sign of the detail term (F14), forcing
+/// `a = 0` so the filter collapses to a box mean (F15), and returning the
+/// input unchanged (F25).
+///
+/// Measured on the image below at radius 4, ε = 0.01, strength 1.0, over
+/// the plateau interiors (`—` where an earlier assertion fires first and
+/// the halo is never reached):
+///
+/// | source | texture p2p | signed lift at a peak | block-mean halo |
+/// |---|---|---|---|
+/// | input  | 0.100000024 | —            | 0.0         |
+/// | HEAD   | 0.179990250 | +0.039995134 | 0.030549347 |
+/// | F01    | 0.119045120 | +0.009522557 | —           |
+/// | F14    | 0.020009756 | −0.039995120 | —           |
+/// | F15    | 0.199984760 | +0.049992383 | 0.237037120 |
+/// | F25    | 0.099999994 |  0.0         | —           |
+///
+/// F14 is why the texture assertion is signed rather than a magnitude:
+/// under the sign flip `max|out − in|` is 0.047312379, bit-identical to
+/// HEAD, so a test measuring size alone is blind to it by construction.
+/// F15 is why the halo assertion is here: a box-mean unsharp mask
+/// amplifies texture *more* than the guided filter does, and only edge
+/// preservation tells the two apart.
+///
+/// Reference: Kaiming He, Jian Sun, Xiaoou Tang, "Guided Image
+/// Filtering", *ECCV 2010*, LNCS 6311, pp. 1–14.
+#[test]
+fn guided_filter_lifts_texture_and_preserves_the_edge() {
+    const N: usize = 64;
+    const PLATEAU_LO: f32 = 0.2;
+    const PLATEAU_HI: f32 = 0.8;
+    const CHECKER: f32 = 0.05;
+    const RADIUS: u32 = 4;
+
+    // A step edge down the middle carrying a ±0.05 checkerboard: an edge
+    // to preserve and a texture to lift, in one image. None of 0.2, 0.8
+    // and 0.05 is exactly representable in binary32, which matters — an
+    // earlier attempt to break this kernel by hand was a no-op because
+    // the test input happened to be exact in f32.
+    let img = ndarray::Array3::from_shape_fn((N, N, 1), |(y, x, _)| {
+        let plateau = if x < N / 2 { PLATEAU_LO } else { PLATEAU_HI };
+        let checker = if (x + y) % 2 == 0 { CHECKER } else { -CHECKER };
+        plateau + checker
+    });
+    let params = GuidedFilterParams::new(RADIUS, 0.01);
+    let out = local_contrast(img.view(), &params, 1.0).unwrap();
+
+    // Interiors of the two plateaus. The coefficients a and b are averaged
+    // through a second window pass, so a pixel draws on input up to 2r
+    // away; these columns and rows are 2r clear of both the step and the
+    // image border, and so are free of edge and window-clamping effects.
+    let reach = 2 * RADIUS as usize;
+    let interiors = [reach..(N / 2 - reach), (N / 2 + reach)..(N - reach)];
+    let input_p2p = 2.0 * CHECKER;
+
+    for cols in interiors {
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        let (mut least_lift, mut least_drop) = (f32::INFINITY, f32::INFINITY);
+        for y in reach..(N - reach) {
+            for x in cols.clone() {
+                let (i, o) = (img[[y, x, 0]], out[[y, x, 0]]);
+                lo = lo.min(o);
+                hi = hi.max(o);
+                // Signed and per pixel: a checker cell that is a local
+                // maximum must move up, a local minimum down. This is the
+                // assertion the detail-sign flip cannot survive.
+                if (x + y) % 2 == 0 {
+                    least_lift = least_lift.min(o - i);
+                } else {
+                    least_drop = least_drop.min(i - o);
+                }
+            }
+        }
+        assert!(
+            least_lift > 0.015,
+            "every checker peak must be pushed up; the smallest lift was {least_lift}"
+        );
+        assert!(
+            least_drop > 0.015,
+            "and every trough pulled down; the smallest drop was {least_drop}"
+        );
+        // And the texture as a whole gains amplitude: HEAD reaches 1.80×,
+        // where the three mutations that survive the sign test land at
+        // 1.19× (F01), 0.20× (F14) and 1.00× (F25).
+        assert!(
+            hi - lo > 1.5 * input_p2p,
+            "strength 1.0 must amplify the ±{CHECKER} texture past 1.5×: \
+             {input_p2p} in, {} out",
+            hi - lo
+        );
+    }
+
+    // Edge preservation. A 2×2 block holds two checker peaks and two
+    // troughs, so its mean cancels the texture and leaves the step alone:
+    // every block mean of the input is 0.2 or 0.8. A guided filter keeps
+    // them near that (HEAD strays 0.031); a box-mean unsharp mask rings
+    // instead, and with a = 0 the halo reaches 0.237 — past both plateaus
+    // and, at the dark side, out of [0, 1] altogether.
+    let mut worst_halo = 0.0_f32;
+    for y in (0..N).step_by(2) {
+        for x in (0..N).step_by(2) {
+            let mean =
+                (out[[y, x, 0]] + out[[y, x + 1, 0]] + out[[y + 1, x, 0]] + out[[y + 1, x + 1, 0]])
+                    / 4.0;
+            worst_halo = worst_halo.max(mean - PLATEAU_HI).max(PLATEAU_LO - mean);
+        }
+    }
+    assert!(
+        worst_halo < 0.1,
+        "the step edge must not halo: a 2×2 block mean overshoots a plateau by {worst_halo}"
+    );
+
+    // Strength is a plain scalar on the residual, so twice the strength is
+    // twice the residual. The bound covers the f32 rounding of the final
+    // add only; the worst deviation measured at HEAD is 3.0e-8.
+    let doubled = local_contrast(img.view(), &params, 2.0).unwrap();
+    let mut worst_nonlinearity = 0.0_f32;
+    for ((&i, &o), &d) in img.iter().zip(out.iter()).zip(doubled.iter()) {
+        worst_nonlinearity = worst_nonlinearity.max(((d - i) - 2.0 * (o - i)).abs());
+    }
+    assert!(
+        worst_nonlinearity < 1e-6,
+        "strength 2.0 must apply exactly twice the residual of strength 1.0; \
+         worst deviation {worst_nonlinearity}"
+    );
+}
+
 // ── sRGB encode tests ─────────────────────────────────────────────────────────
 
 use phaios_core::encode::encode_srgb;
