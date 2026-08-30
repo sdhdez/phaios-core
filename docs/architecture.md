@@ -686,6 +686,11 @@ constant-chroma sweep visibly towards purple.
 OKLab was fitted to fix exactly that, and costs two 3×3 matrices with a
 cube root between them.
 
+One number worth having when choosing a `pivot`, which splits shadows
+from highlights on lightness: 18% middle grey sits at an OKLab lightness
+of roughly 0.565, not 0.18 — the space is perceptual, so the default
+pivot of 0.5 falls a little below middle grey rather than above it.
+
 ### Algorithm
 
 1. Take the OKLab lightness `L` of the luminance sample. For a neutral

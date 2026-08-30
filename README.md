@@ -238,6 +238,20 @@ for manylinux_2_17, Windows x86_64 and macOS arm64 and publishes them.
 Nothing is built until `verify` is green, because neither PyPI nor
 crates.io allows a version to be re-uploaded.
 
+Before tagging, verify the CUDA backend on a machine that has a device:
+
+```sh
+./scripts/gpu-verify.sh
+```
+
+Neither `ci.yml` nor `release.yml` builds `--features cuda` — the hosted
+runner has no `nvcc` and no GPU — so nothing else in the pipeline would
+notice a backend that fails to compile, while `cargo publish` ships the
+source to crates.io regardless. The script runs the targets CI skips,
+under `PHAIOS_REQUIRE_GPU=1` so a green result cannot mean the suite
+quietly skipped for want of a device. The wheels are built without the
+feature and are unaffected either way.
+
 ```sh
 # Bump Cargo.toml, pyproject.toml and Cargo.lock in one commit, then:
 git tag v0.2.0
