@@ -876,6 +876,117 @@ fn resample_axis1_f64(
 /// Returns `(values, mass, n)` where `n` is the number of rounding steps
 /// the f32 kernel takes on the worst output pixel, so `n · u · mass`
 /// is its forward-error bound (u = 2⁻²⁴).
+/// The resample computed *entirely* in f64 — scale, tap geometry, weights
+/// and accumulation — as a reference independent of the shipped kernel.
+///
+/// [`resize_f64_oracle`] deliberately reuses the kernel's f32 tap
+/// geometry, so it isolates accumulation error and nothing else. This one
+/// shares no arithmetic with the kernel at all, so what it measures is the
+/// total distance from the mathematically intended answer, weight
+/// evaluation included.
+fn filter_eval_f64(filter: phaios_core::geometry::ResizeFilter, t: f64) -> f64 {
+    use phaios_core::geometry::ResizeFilter;
+    let t = t.abs();
+    match filter {
+        ResizeFilter::Area => {
+            if t <= 0.5 {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        ResizeFilter::Bilinear => (1.0 - t).max(0.0),
+        ResizeFilter::CatmullRom => {
+            if t <= 1.0 {
+                ((1.5 * t - 2.5) * t) * t + 1.0
+            } else if t < 2.0 {
+                ((-0.5 * t + 2.5) * t - 4.0) * t + 2.0
+            } else {
+                0.0
+            }
+        }
+    }
+}
+
+fn resize_taps_f64(
+    filter: phaios_core::geometry::ResizeFilter,
+    scale: f64,
+    i: usize,
+) -> Vec<(i64, f64)> {
+    use phaios_core::geometry::ResizeFilter;
+    let centre = (i as f64 + 0.5) * scale - 0.5;
+    let denom = scale.max(1.0);
+    let base = match filter {
+        ResizeFilter::Area => 0.5_f64,
+        ResizeFilter::Bilinear => 1.0,
+        ResizeFilter::CatmullRom => 2.0,
+    };
+    let support = base * scale.max(1.0);
+    let area_minify = filter == ResizeFilter::Area && scale > 1.0;
+    let k0 = (centre - support).floor() as i64;
+    let k1 = (centre + support).ceil() as i64;
+
+    let mut taps = Vec::new();
+    for k in k0..=k1 {
+        let w = if area_minify {
+            let lo = (k as f64 - 0.5).max(centre - scale * 0.5);
+            let hi = (k as f64 + 0.5).min(centre + scale * 0.5);
+            (hi - lo).max(0.0)
+        } else {
+            filter_eval_f64(filter, (k as f64 - centre) / denom)
+        };
+        if w != 0.0 {
+            taps.push((k, w));
+        }
+    }
+    taps
+}
+
+fn resample_axis1_all_f64(
+    val: &ndarray::Array2<f64>,
+    scale: f64,
+    filter: phaios_core::geometry::ResizeFilter,
+    out_len: usize,
+) -> ndarray::Array2<f64> {
+    let (rows, in_len) = val.dim();
+    let mut out = ndarray::Array2::<f64>::zeros((rows, out_len));
+    for i in 0..out_len {
+        let taps = resize_taps_f64(filter, scale, i);
+        let wsum: f64 = taps.iter().map(|&(_, w)| w).sum();
+        if wsum == 0.0 {
+            continue;
+        }
+        for r in 0..rows {
+            let mut acc = 0.0_f64;
+            for &(k, w) in &taps {
+                let kc = k.clamp(0, in_len as i64 - 1) as usize;
+                acc += w * val[[r, kc]];
+            }
+            out[[r, i]] = acc / wsum;
+        }
+    }
+    out
+}
+
+fn resize_reference_f64(
+    img: &Array3<f32>,
+    params: &phaios_core::geometry::ResizeParams,
+) -> ndarray::Array2<f64> {
+    let (in_h, in_w, _) = img.dim();
+    let (out_w, out_h) = (params.width as usize, params.height as usize);
+    let src =
+        ndarray::Array2::<f64>::from_shape_fn((in_h, in_w), |(y, x)| f64::from(img[[y, x, 0]]));
+    // The scale is f64 here too; the kernel computes it in f32.
+    let mid = resample_axis1_all_f64(&src, in_w as f64 / out_w as f64, params.filter, out_w);
+    let out_t = resample_axis1_all_f64(
+        &mid.t().to_owned(),
+        in_h as f64 / out_h as f64,
+        params.filter,
+        out_h,
+    );
+    out_t.t().to_owned()
+}
+
 fn resize_f64_oracle(
     img: &Array3<f32>,
     params: &phaios_core::geometry::ResizeParams,
@@ -2453,4 +2564,108 @@ fn blur_non_finite_is_documented_as_divergent() {
         1e-7,
     );
     assert!(v <= 1.0, "finite input must still agree: {v:.2}x the bound");
+}
+
+/// How far the shipped f32 resample sits from the mathematically intended
+/// answer, measured against a reference that shares no arithmetic with it.
+///
+/// `resize_f32_accumulation_stays_within_its_error_bound` deliberately
+/// reuses the kernel's own f32 tap geometry, so it isolates accumulation
+/// error and can hold it to a derived `n·u·mass` bound. That is the right
+/// question for "is the running total wide enough", and the wrong one for
+/// "is the answer right": an error in the *weights* is invisible to an
+/// oracle that computes the weights the same way.
+///
+/// This one shares nothing — scale, tap positions, support, weights and
+/// accumulation are all f64 — so it measures the total distance from the
+/// intended result. The bound is empirical rather than derived: a forward
+/// bound covering weight evaluation as well as summation would be far
+/// looser than what the kernel achieves and would assert almost nothing.
+///
+/// It is the *weaker* detector of the two, which is worth stating plainly
+/// because the opposite is the natural assumption. Measured by mutating
+/// `filter_eval`: perturbing the Keys `a` coefficient to 1.5001 fails
+/// both, but adding 1e-6 to the constant term fails only the accumulation
+/// test. That test re-implements the weights in f32 and compares against a
+/// tight derived bound, so a weight that disagrees with the intended
+/// formula shows up immediately; here the same error hides inside the
+/// 9.44e-6 of honest f32 weight error this bound must tolerate. (The
+/// constant term also largely cancels in the division by the weight sum,
+/// which is why it is small to begin with.)
+///
+/// What it adds instead is the answer to a question the other cannot
+/// reach: how far the shipped result sits from the true one. Both oracles
+/// could agree while both were wrong, since the f32 one mirrors the
+/// kernel's formula by hand; only a reference computed differently
+/// throughout can say the f32 pipeline is accurate rather than merely
+/// self-consistent.
+///
+/// Measured at HEAD: worst 9.44e-6 of the scene peak, on a Catmull-Rom
+/// upscale of the cancelling comb, whose conditioning reaches 3.4e8. The
+/// two other regimes and every downscale stay far below it. The bound is
+/// set at roughly twice that, which still catches a wrong filter (error
+/// ~1e-1), a dropped or misplaced tap (~1e-2), or any material loss of
+/// accumulator width, while leaving room for a different rounding
+/// elsewhere. Nothing here is transcendental, so the figure is
+/// reproducible on any IEEE-754 host.
+#[test]
+fn resize_agrees_with_a_fully_independent_f64_reference() {
+    use phaios_core::geometry::{ResizeFilter, ResizeParams, resize};
+
+    let mut worst_rel = 0.0_f64;
+    let mut worst_where = String::new();
+    let mut worst_tapset = 0_usize;
+
+    for highlight in [1.0_f32, 1e4, 1e8] {
+        for (regime, img) in resampling_content(256, 256, highlight) {
+            for (w, h, filter) in [
+                (8_u32, 8_u32, ResizeFilter::Area),
+                (64, 64, ResizeFilter::Area),
+                (64, 64, ResizeFilter::CatmullRom),
+                (64, 64, ResizeFilter::Bilinear),
+                (384, 384, ResizeFilter::CatmullRom),
+            ] {
+                let params = ResizeParams::new(w, h, filter);
+                let got = resize(img.view(), &params).unwrap();
+                let want = resize_reference_f64(&img, &params);
+
+                // Does the f32 geometry even select the same taps as f64?
+                let scale = img.dim().1 as f64 / w as f64;
+                for i in [0_usize, (w / 3) as usize, (w - 1) as usize] {
+                    let a = resize_taps(filter, img.dim().1 as f32 / w as f32, i).len();
+                    let b = resize_taps_f64(filter, scale, i).len();
+                    worst_tapset = worst_tapset.max(a.abs_diff(b));
+                }
+
+                let peak = f64::from(highlight);
+                for y in 0..h as usize {
+                    for x in 0..w as usize {
+                        let err = (f64::from(got[[y, x, 0]]) - want[[y, x]]).abs();
+                        let rel = err / peak;
+                        if rel > worst_rel {
+                            worst_rel = rel;
+                            worst_where = format!("{filter:?} {w}x{h}, {regime} at {highlight:e}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "independent f64 reference: worst {worst_rel:.3e} of the scene peak ({worst_where}); \
+         largest tap-count difference {worst_tapset}"
+    );
+    // The f32 geometry must select the same taps as the f64 geometry.
+    // A difference here would mean the two are not merely different in
+    // precision but structurally different at the window edges, and the
+    // error figure below would be comparing two different resamples.
+    assert_eq!(
+        worst_tapset, 0,
+        "f32 and f64 tap geometry disagree on the number of taps"
+    );
+    assert!(
+        worst_rel < 2.0e-5,
+        "resize sits {worst_rel:.3e} from the f64 reference ({worst_where}); \
+         HEAD measures 9.44e-6"
+    );
 }
