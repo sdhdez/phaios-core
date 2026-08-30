@@ -8,6 +8,77 @@ The Rust crate and the Python wheel always carry the same version.
 
 ## [Unreleased] — 0.2.0-dev
 
+### Fixed — two CUDA kernels on high-dynamic-range input
+
+Both were found by widening the test inputs, not by reading the code. Every
+conformance test and every sweep had drawn from `[0, 1)`, so no
+accumulator's dynamic range was ever stressed. On a dark field with a
+specular highlight — ordinary linear scene-referred data, a lamp or a
+sun-glint in an otherwise dim frame — two kernels missed the agreement
+bound `docs/ffi.md` §6 commits to.
+
+- **The CUDA box blur (σ ≥ 6) lost dark detail beside a highlight.** It
+  missed its bound by up to 2.8e7×, and was 164% wrong in relative terms
+  next to a 1e4 highlight. A sliding window subtracts as it advances, so
+  the small samples are the difference of two large ones; Kahan
+  compensation does not help, because its error bound is `2ε·Σ|xᵢ|`, which
+  the large values dominate. The device accumulator is now f64, matching
+  the host. The kernel is bandwidth-bound, so this costs nothing
+  measurable.
+- **`local_contrast` read noise as an edge beside a highlight.** It missed
+  its bound by 51.8×. The local variance is `mean(L²) − mean(L)²`, a
+  cancelling subtraction of two large numbers, and it was computed in f32
+  from Kahan-compensated f32 sums — Kahan compensates a sum, never a
+  cancelling difference. On a uniformly bright region the result was
+  noise, `a = var/(var+ε)` read that noise as an edge, and the filter
+  smoothed where it should have sharpened. Only the L and L² path moved to
+  f64; the coefficient sums stay f32, which is measured rather than
+  assumed. This one is not free — the guided filter is compute-bound, so
+  at 24 MP and r = 8 it costs 4.4 → 12.0 ms on the device, still 14× the
+  CPU.
+
+Both now have a dynamic-range conformance test sweeping highlights from
+1e0 to 1e8, as does `glow`, the third kernel that accumulates over many
+samples.
+
+### Fixed — the cross-backend oracle scored NaN as perfect agreement
+
+`worst_violation`, which every bounded conformance assertion goes through,
+reduced with `.fold(0.0, f32::max)`. Rust's `f32::max` returns the *other*
+operand when one is NaN, so every NaN violation was silently dropped: a
+GPU kernel returning nothing but NaN scored 0.000, and so did an empty or
+truncated output, because `zip` stops at the shorter side. All tests still
+passed once it was fixed, so nothing had been leaning on the leniency —
+but a lenient oracle is invisible from reading any test that uses it.
+
+### Added — verifying the CUDA backend without the maintainer
+
+The hosted CI runner has neither `nvcc` nor a device, so `ci.yml` skips
+every target gated behind `required-features = ["cuda"]` and never builds
+the backend at all. That is not going to change, so the answer is to let
+anyone with a device verify it themselves and say so.
+
+- `scripts/gpu-verify.sh` — the mirror image of the CI job: it runs
+  exactly the targets CI skips, under `PHAIOS_REQUIRE_GPU=1` so a green
+  result cannot mean the suite quietly skipped 54 tests for want of a
+  device. It ends by printing a device/driver/version block meant to be
+  pasted into an issue. `.github/workflows/gpu.yml` invokes the same
+  script on a self-hosted runner, so the hand-run command and the CI job
+  cannot drift apart.
+- `examples/23_gpu_selftest.rs` — every device entry point against the CPU
+  function that is its specification, 112 cases, tolerances taken from
+  `docs/ffi.md` §6 rather than invented, exiting non-zero on any failure.
+- **A GPU twin for every CPU example**, 19 of them, plus
+  `22_gpu_pipeline.rs` for the device-resident chain the backend exists
+  for. Each mirrors its counterpart's input and parameters and writes the
+  same PPM stems, so the two directories diff file by file.
+- `benches/gpu.rs` — the backend shipped with no benchmark at all, so
+  `cargo bench` never opened the device. Ids mirror the CPU ones under a
+  `gpu/` prefix, on the same image with the same channel count, so the two
+  can simply be divided. `docs/architecture.md` §18's GPU table is now
+  sourced from it.
+
+
 ### Added — histogram and lookup tables
 
 Two primitives that are dull alone and cover a family together.
