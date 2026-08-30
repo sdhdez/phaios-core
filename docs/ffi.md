@@ -454,8 +454,14 @@ What is promised across backends:
   (rtol 1e-5, atol 1e-7) for `blur`, whose direct path makes the
   f64-to-Kahan-f32 substitution — sound there because every weight is
   positive and nothing is subtracted — while its box path keeps f64,
-  a sliding window being a subtraction. (rtol 1e-3,
-  atol 1e-5) for `film_grain`'s Box–Muller half.
+  a sliding window being a subtraction, (rtol 1e-5, atol 1e-7) for
+  `glow`, which inherits the blur's bound because the blur is the only
+  inexact part of it — the threshold subtraction and the weighted add
+  either side are correctly rounded. (rtol 1e-3, atol 1e-5) for
+  `film_grain`'s Box–Muller half, whose splitmix64 hash underneath is
+  exact and is asserted over a coordinate grid by `hash_grid`, not by
+  the identity case in `examples/23_gpu_selftest.rs` — that one is a
+  device-to-device copy and never launches the grain kernel.
   A driver update that regresses accuracy fails the suite rather than
   being absorbed.
 

@@ -76,8 +76,15 @@ const GUIDED_FILTER: Bound = Bound {
     label: "1e-4/1e-6",
 };
 
-/// §6: `film_grain`'s Box–Muller half. Its integer hash is exact and is
-/// covered by the bit-exact identity case in the same row.
+/// §6: `film_grain`'s Box–Muller half.
+///
+/// The splitmix64 hash underneath it is exact, but nothing in this file
+/// exercises it: the row's bit-exact case is `intensity = 0`, which
+/// `film_grain_device` answers with a device-to-device copy
+/// (`src/cuda/kernels/grain.rs`) without launching the grain kernel at
+/// all, so `pixel_hash` never runs here. The hash is asserted over a
+/// coordinate grid by `hash_grid` in `tests/cuda_conformance.rs`, which
+/// is where to look for it.
 const BOX_MULLER: Bound = Bound {
     rtol: 1e-3,
     atol: 1e-5,
@@ -105,10 +112,18 @@ const EXTRA_NOTES: &[(&str, &str)] = &[
     ),
     (
         "film_grain",
-        "intensity 0 also required bit-exact; the bound covers Box-Muller",
+        "the bound covers Box-Muller; the splitmix64 hash is asserted by \
+         hash_grid in tests/cuda_conformance.rs, not here",
     ),
-    ("vignette", "amount 0 identity included"),
-    ("shadow_rolloff", "strength 0 identity included"),
+    (
+        "vignette",
+        "amount 0 included — a device copy, not a launch, so it tests the \
+         identity path rather than the kernel",
+    ),
+    (
+        "shadow_rolloff",
+        "strength 0 included — likewise a device copy, not a launch",
+    ),
     (
         "tone_curve",
         "power == 1 also required bit-exact; the bound covers power != 1",
@@ -186,6 +201,7 @@ struct Row {
     kernel: &'static str,
     promise: &'static str,
     cases: usize,
+    compared: usize,
     bit_exact: bool,
     /// Worst violation as a multiple of the bound used. `None` for
     /// integer-output kernels, where no such ratio exists.
@@ -201,6 +217,14 @@ struct Row {
 /// separately and both must hold for the row to pass.
 struct Check {
     cases: usize,
+    /// Elements actually compared across every case in this row.
+    ///
+    /// A comparison over an empty array reports a worst violation of
+    /// 0.000, which is indistinguishable in the table from "agreed
+    /// everywhere". `crop` to a 0x0 output is a legitimate case and does
+    /// exactly that, so the row footer says how much was really looked at
+    /// rather than leaving the reader to assume.
+    compared: usize,
     bit_exact: bool,
     worst: Option<f32>,
     passed: bool,
@@ -211,6 +235,7 @@ impl Check {
     fn new() -> Self {
         Self {
             cases: 0,
+            compared: 0,
             bit_exact: true,
             worst: None,
             passed: true,
@@ -235,6 +260,7 @@ impl Check {
     /// A case §6 promises bit-exact. Byte equality or nothing.
     fn exact(&mut self, label: &str, cpu: &Array3<f32>, gpu: &Array3<f32>) {
         self.cases += 1;
+        self.compared += cpu.len().min(gpu.len());
         let v = worst_violation(cpu, gpu, DIAGNOSTIC.rtol, DIAGNOSTIC.atol);
         self.record_worst(v);
         if cpu != gpu {
@@ -250,6 +276,7 @@ impl Check {
     /// A case §6 gives a committed bound rather than exactness.
     fn bounded(&mut self, label: &str, cpu: &Array3<f32>, gpu: &Array3<f32>, bound: Bound) {
         self.cases += 1;
+        self.compared += cpu.len().min(gpu.len());
         let v = worst_violation(cpu, gpu, bound.rtol, bound.atol);
         self.record_worst(v);
         if cpu != gpu {
@@ -273,6 +300,7 @@ impl Check {
         T: Copy + PartialEq + Into<i64>,
     {
         self.cases += 1;
+        self.compared += cpu.len().min(gpu.len());
         if cpu.dim() != gpu.dim() {
             self.bit_exact = false;
             self.passed = false;
@@ -298,8 +326,9 @@ impl Check {
 
     /// A case whose comparison is not over an array — `histogram`
     /// returns counts, edges and non-finite tallies, all integers.
-    fn exact_flag(&mut self, label: &str, agrees: bool, what: &str) {
+    fn exact_flag(&mut self, label: &str, agrees: bool, compared: usize, what: &str) {
         self.cases += 1;
+        self.compared += compared;
         if !agrees {
             self.bit_exact = false;
             self.passed = false;
@@ -312,6 +341,7 @@ impl Check {
             kernel,
             promise,
             cases: self.cases,
+            compared: self.compared,
             bit_exact: self.bit_exact,
             worst: self.worst,
             pass: self.passed,
@@ -799,9 +829,12 @@ fn check_all(ctx: &cuda::Context) -> Vec<Row> {
                 && cpu.below() == gpu.below()
                 && cpu.above() == gpu.above()
                 && cpu.non_finite() == gpu.non_finite();
+            // Bin counts plus the three out-of-range tallies: what this
+            // case actually compares, since it is not an array comparison.
             ck.exact_flag(
                 &format!("{bins} bins"),
                 agrees,
+                cpu.counts().len() + 3,
                 "counts, below, above or non_finite differ",
             );
         }
@@ -824,6 +857,7 @@ fn check_all(ctx: &cuda::Context) -> Vec<Row> {
         ck.exact_flag(
             "NaN and infinity classification",
             agrees,
+            cpu.counts().len() + 3,
             "classified differently",
         );
         Ok(())
@@ -959,7 +993,21 @@ fn main() -> ExitCode {
     println!("  worst*bnd  worst element as a multiple of the bound; <= 1.000 passes.");
     println!("             for a bit-exact row this is diagnostic only, measured against");
     println!("             (1e-5, 1e-7), and reads 0.000 whenever the row passes.");
+    println!("  elements   how many were actually compared. A comparison over an empty");
+    println!("             array also reports 0.000, so this is what separates \"agreed");
+    println!("             everywhere\" from \"looked at nothing\" — `crop` to a 0x0");
+    println!("             output is a legitimate case that compares no elements.");
 
+    let compared: usize = rows.iter().map(|r| r.compared).sum();
+    println!("\nelements compared: {compared}");
+    let thin: Vec<&str> = rows
+        .iter()
+        .filter(|r| r.compared == 0)
+        .map(|r| r.kernel)
+        .collect();
+    if !thin.is_empty() {
+        println!("rows that compared nothing at all: {}", thin.join(", "));
+    }
     println!(
         "\nsummary: {} kernels, {} pass, {} fail, {cases} cases, {exact} bit-exact",
         rows.len(),
