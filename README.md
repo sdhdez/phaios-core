@@ -226,6 +226,12 @@ Corresponding source is available at the repository URL above
 
 ---
 
+## Contributing
+
+Conventions, what a complete kernel looks like, the dependency rules and
+how to verify the CUDA backend on your own hardware are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Releasing
 
 Version history is in [CHANGELOG.md](CHANGELOG.md).

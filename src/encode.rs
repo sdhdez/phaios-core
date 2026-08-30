@@ -13,6 +13,12 @@
 //! f(x) = 1.055 · x^(1/2.4) − 0.055      if x > 0.0031308
 //! ```
 //!
+//! The two segments meet continuously at the threshold but their slopes
+//! do not: 12.920 below against 12.703 above. The transfer is C⁰ there
+//! and **not** C¹, so anything assuming differentiability across the
+//! join — a smooth inverse, a gradient, a spline fitted through it —
+//! has to treat the two segments separately.
+//!
 //! Values are **not** clamped by this kernel — pass values in [0, 1]
 //! if downstream code requires display-referred values in that range.
 //!

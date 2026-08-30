@@ -1,10 +1,19 @@
-# phaios-core
+# phaios-core — working notes for Claude Code
 
 Numerical kernels for black-and-white RAW image processing: a Rust crate
-with PyO3 bindings, GUI-free and I/O-free, that any front-end can build
-on. What the crate contains is in `README.md` and `CHANGELOG.md`; the
-derivations and citations are in `docs/architecture.md`. This file is the
-part you need while writing code.
+with PyO3 bindings, GUI-free and I/O-free.
+
+This file is loaded into context on every task, so it holds only what
+changes what you write. Everything else has a home:
+
+| | |
+|---|---|
+| What the crate contains, dev setup, releasing | `README.md` |
+| Conventions, the kernel checklist, dependency rules | `CONTRIBUTING.md` |
+| Why a kernel works as it does, with citations | `docs/architecture.md` |
+| The FFI contract and CPU/GPU agreement classes | `docs/ffi.md` |
+| What a finished image must look like in a file | `docs/export.md` |
+| Version history | `CHANGELOG.md` |
 
 ## 1. Scope
 
@@ -19,7 +28,7 @@ U-Point-style edit propagation) and the Newson et al. (2017) stochastic
 grain model. Both are research territory; do not start either without an
 explicit decision.
 
-If a request conflicts with any of this, surface the conflict before
+If a request conflicts with either, surface the conflict before
 implementing.
 
 ## 2. Hard constraints (never violate)
@@ -62,7 +71,7 @@ implementing.
   broadcast reaches that from four bytes of storage. Never call
   `Array3::zeros` on a caller-derived shape — use `alloc::zeros3`. The
   limit bounds single allocations only, not a pipeline's peak footprint;
-  the rest is deferred to v0.3.
+  the rest is deferred.
 - **Layout-agnostic inputs.** `PyReadonlyArray3` accepts strided,
   Fortran-order and negative-stride arrays, and a consumer passing
   `img[::2, ::2]` is normal. Use `ndarray::Zip`, which walks any layout;
@@ -94,36 +103,14 @@ B&W conversion → `zone_system` → `local_contrast` → `film_grain` →
 `highlight_rolloff` → `encode_srgb` → `quantize`.
 
 The channel count collapses to 1 at the B&W stage and returns to 3 at
-split-toning. Kernels after that point accept any channel count, so a
-pipeline need not branch on whether toning is enabled. Order matters:
-document any kernel with order sensitivity in its doc comment.
+split-toning; kernels after that accept any channel count, so a pipeline
+need not branch on whether toning is enabled. Order matters — document
+any kernel with order sensitivity in its doc comment.
 
-Values that are easy to get wrong, and that a kernel needs at hand:
+## 4. PyO3 0.29 traps
 
-- BT.709 luminance weights `(0.2126, 0.7152, 0.0722)` — the default for
-  sRGB-primary data.
-- Middle grey: 18% reflectance = `0.18` linear.
-- sRGB threshold `0.0031308`. The transfer is C⁰ there but **not** C¹ —
-  slope 12.920 below, 12.703 above.
-
-Everything else, with derivations and citations, is in
-`docs/architecture.md`.
-
-## 4. The Python ↔ Rust boundary
-
-`docs/ffi.md` is the full contract; `docs/export.md` covers what a
-finished image must look like in a file. In short: inputs are
-`PyReadonlyArray3<f32>`, shape `(H, W, C)` with C ∈ {1, 3}, any layout;
-outputs are `Py<PyArray3<f32>>`, freshly allocated and C-contiguous;
-errors are `PyResult<T>` and never a panic. Param types are `#[pyclass]`
-structs constructible by name in Python. The Python module is
-`phaios_core`, the crate is `phaios-core`, and their versions must match
-exactly — CI enforces it.
-
-### PyO3 0.29 notes
-
-Current as of PyO3 0.29 / numpy 0.29, and several differ from older
-tutorials:
+Current as of PyO3 0.29 / numpy 0.29, and several contradict older
+tutorials you may have seen:
 
 - **GIL release:** `py.detach(move || { ... })`; `allow_threads` was
   removed in 0.22. The closure must be `Send` — `ArrayView3<f32>` is
@@ -145,7 +132,7 @@ tutorials:
   value-compared objects — so param objects cannot be dict keys.
 - **Interpreter-dependent tests don't link:** with `extension-module` the
   test binary has no libpython, so `Python::attach` in `#[cfg(test)]`
-  fails. Test error *values* in Rust, exception *types* from
+  fails. Test error *values* in Rust and exception *types* from
   `tests/ffi.py` — and there use `pytest.raises(Exception)`, since a
   dtype mismatch raises `TypeError` or `ValueError` depending on version.
 - **Fixed-size arrays cross the boundary:** `[f32; 8]` works as a
@@ -153,149 +140,37 @@ tutorials:
 - **`#[pyo3(signature = ...)]` gives keyword defaults** on `#[new]`;
   array defaults are written inline.
 
-### Kernel-writing checklist
+## 5. Toolchain traps
 
-One commit containing all of:
+- `maturin develop --release` **silently drops the GPU** unless you add
+  `--features cuda`; `from phaios_core import gpu` then fails.
+- `cargo test` and `cargo clippy` skip the CUDA backend entirely without
+  `--features cuda` — it is behind `#[cfg]`, so even a type error there
+  passes. `./scripts/gpu-verify.sh` runs what CI cannot.
+- Run clippy with `--all-targets`: the bare form lints only the library,
+  so examples, benches and tests go unchecked until CI.
+- `cargo bench` needs no `--release`; the bench profile is already
+  optimised.
 
-1. `src/<kernel>.rs` — the kernel, its `#[pyclass]` params, and
-   `#[cfg(test)] mod tests`.
-2. The PyO3 binding in `lib.rs`, plus `m.add_class` / `m.add_function`.
-3. An integration test in `tests/kernels.rs` asserting a *property*.
-4. Python smoke tests in `tests/ffi.py`, including the error paths.
-5. `examples/NN_<name>.rs`, declared in `Cargo.toml`.
-6. A criterion benchmark in `benches/kernels.rs` on the 24 MP image —
-   and, if the kernel has a GPU path, in `benches/gpu.rs` too, with the
-   same channel count so the two ids can be divided.
-7. A section in `docs/architecture.md` with the citation.
-
-Prefer properties that fail loudly if the maths is wrong: band ordering,
-exposure invariance, round-trip identity, a signed rather than absolute
-comparison. A test that only checks the output shape passes just as
-happily on a kernel that returns its input — and a test written on a
-constant image passes on one that ignores its parameters entirely.
-
-## 5. Code conventions
-
-- **Rust 2024 edition**, stable toolchain.
-- **`cargo fmt`** and **`cargo clippy --all-targets -- -D warnings`** are
-  blocking in CI. Run clippy with `--all-targets` locally too: the bare
-  form lints only the library, so warnings in examples, benches and tests
-  go unseen until CI.
-- **`#![deny(missing_docs)]`** on the public API, and a doc comment on
-  every public item. Cite algorithms by full title and year.
-- **SPDX header on every source file:**
-  `// SPDX-License-Identifier: GPL-3.0-or-later`.
-- **`#[must_use]`** on functions returning `Result` or owned data.
-- Unit tests in `#[cfg(test)] mod tests`; integration tests in `tests/`.
-
-## 6. Dependency policy
-
-Every new dependency is a supply-chain decision.
-
-- **crates.io only**, pinned via the committed `Cargo.lock`.
-- **Adding one requires** licence, primary source URL, maintainer and a
-  justification, recorded as a comment in `Cargo.toml` beside the dep.
-- **Prefer std > established crate > new dep.** "Established" means >1M
-  downloads, active maintenance, and use by at least one major project.
-- **`cargo audit`** is blocking in CI. It is a separate binary locally
-  (`cargo install cargo-audit`); CI uses the `rustsec/audit-check`
-  action, so a fresh clone will not have the command.
-
-Core deps, not to be exceeded without justification: `pyo3`, `numpy`,
-`ndarray`, `rayon`, `thiserror`, plus `cudarc` behind `--features cuda`.
-`rand` and `rand_distr` were considered for film grain and **rejected**:
-the shipped kernel hashes pixel coordinates with splitmix64, which is
-reproducible across thread counts and portable to the GPU bit-for-bit,
-neither of which a stateful RNG can promise.
-
-Two traps: `ndarray`'s version must match the one `numpy` pulls in (check
-`cargo tree | grep ndarray` after touching `numpy`), with its `rayon`
-feature enabled; and `criterion::black_box` is deprecated — use
-`std::hint::black_box`.
-
-## 7. Build & test
-
-```sh
-uv venv .phaios-venv && source .phaios-venv/bin/activate
-uv pip install -r requirements-dev.txt
-
-maturin develop --release        # after Rust changes; add --features cuda
-                                 # or the gpu submodule silently disappears
-cargo test                       # add --features cuda for the GPU suite
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
-pytest
-cargo bench                      # bench profile is optimised; no --release
-```
-
-CI runs the same checks plus `cargo audit` and every example discovered
-from cargo metadata. It never builds `--features cuda` — the hosted
-runner has no `nvcc` and no device — so `./scripts/gpu-verify.sh` is the
-mirror image: it runs exactly the targets CI skips, under
-`PHAIOS_REQUIRE_GPU=1` so a green result cannot mean the suite quietly
-skipped for want of a device.
-
-### Working files stay inside the repo
-
-Scratch files, throwaway scripts, generated reports and disposable
-worktrees go in **`.cache/`** at the repo root — never `/tmp`, never
-`~/.cache`, never a home directory. `.cache/` is gitignored and excluded
-from the package, so nothing in it can reach a commit or a published
-crate; `.cache/scratch/` for one-off files, `.cache/worktrees/` for
-throwaway checkouts.
-
-Two reasons beyond tidiness. A system temp directory here is a small
-tmpfs with a quota: a `cargo` build in one dies partway with `Disk quota
-exceeded`, and it is cleared without warning mid-session, which has
-already lost working data. And a path under `$HOME` is invisible to
-`git status`, so residuals accumulate there unnoticed.
-
-Claude Code's own memory, journals and task outputs live under
-`~/.claude/` because the harness owns those paths. Don't relocate them.
-
-## 8. Examples
-
-`examples/` is the public face of the crate for non-Python users:
-small, self-contained, one concept each.
-
-- One Rust binary per example, writing an 8-bit PPM to `examples/output/`
-  so it needs no dependencies to view.
-- The test image is a Macbeth-style chart built in code. **No real image
-  inputs in this crate, ever** — that rule is about committed assets;
-  `tools/kernel-viewer/` loads images at runtime and its `testdata/` is
-  gitignored.
-- A doc comment saying what it demonstrates and what to look for.
-- A new kernel gets a new example. A GPU kernel gets a twin under the
-  same number series, gated on `required-features = ["cuda"]`, printing
-  its agreement with the CPU kernel and naming the file to diff against.
-
-CI runs every example without `required-features`; the GPU ones run only
-via `scripts/gpu-verify.sh`.
-
-`tools/kernel-viewer/` is a standalone GUI (eframe/egui) with live
-sliders, RAW loading and a CPU/GPU split view. It has its own
-`Cargo.toml`, `Cargo.lock` and an empty `[workspace]` table and is
-deliberately **not** a workspace member: its GUI dependencies must never
-enter this crate's lockfile or audit surface. It consumes only the public
-API, and has no CI.
-
-## 9. Commits & releases
-
-- Conventional commits with optional scope: `feat(bw):`, `fix(zone):`,
-  `test:`, `docs:`, `bench:`, `chore:`.
-- One logical change per commit.
-- `main` is always green; feature work on `feat/<slug>`.
-- Crate and wheel carry the same version; CI enforces the match.
-
-Releasing is documented in `README.md` — including the pre-tag
-`scripts/gpu-verify.sh` run, since nothing in CI would notice a CUDA
-backend that fails to compile.
-
-## 10. Working agreement
+## 6. Working practice
 
 - **Plan before code.** Produce a written plan, wait for approval, then
   implement.
-- **Ask before adding dependencies**, and justify each.
+- **Adding or changing a kernel:** follow the seven-item checklist in
+  `CONTRIBUTING.md`. The work is not complete until all seven exist —
+  the benchmark and the `docs/architecture.md` section are the two most
+  often forgotten.
+- **Ask before adding a dependency**, and justify it. Rules in
+  `CONTRIBUTING.md`.
+- **Scratch files go in `.cache/`** at the repo root — never `/tmp`,
+  never `~/.cache`, never a home directory. `.cache/scratch/` for one-off
+  files, `.cache/worktrees/` for throwaway checkouts. It is gitignored
+  and excluded from the package. Two reasons beyond tidiness: a system
+  temp directory here is a quota-limited tmpfs that kills `cargo` builds
+  partway and is cleared without warning mid-session, and a path under
+  `$HOME` is invisible to `git status`, so residuals accumulate unseen.
+  Claude Code's own memory and journals live under `~/.claude/` because
+  the harness owns those paths — don't relocate them.
 - **Flag assumptions.** Don't paper over ambiguity by picking a default
   silently.
 - **Every question is standalone.** Don't assume context from other
