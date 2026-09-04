@@ -67,6 +67,9 @@ if [ -d .phaios-venv ] && [ -f tests/ffi_gpu.py ]; then
   source .phaios-venv/bin/activate
   if python -c "import phaios_core.gpu" 2>/dev/null; then
     python -m pytest tests/ffi_gpu.py -q
+    # On a CUDA build the `gpu` allowlist entry is unused (stubtest checks
+    # phaios_core.gpu for real instead of allowing it to be absent).
+    python -m mypy.stubtest phaios_core --allowlist tests/stubtest-allowlist.txt --ignore-unused-allowlist
   else
     echo "skipped: the installed wheel has no gpu submodule."
     echo "         rebuild with: maturin develop --release --features cuda"

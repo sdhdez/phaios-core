@@ -107,3 +107,13 @@ jobs:
         run: |
           source .phaios-venv/bin/activate
           pytest tests/ffi.py -v
+
+      - name: Type-check the stubs
+        run: |
+          source .phaios-venv/bin/activate
+          mypy --strict python/phaios_core
+
+      - name: stubtest
+        run: |
+          source .phaios-venv/bin/activate
+          python -m mypy.stubtest phaios_core --allowlist tests/stubtest-allowlist.txt

@@ -23,6 +23,7 @@ what is present."""
 
 import numpy as np
 from numpy.typing import NDArray
+from typing import final
 
 from phaios_core import (
     BlurParams,
@@ -51,6 +52,7 @@ from phaios_core import (
     ZoneParams,
 )
 
+@final
 class GpuInfo:
     """Information about one CUDA device.
 
@@ -79,6 +81,7 @@ this class touches the device."""
 
     def __repr__(self) -> str: ...
 
+@final
 class GpuContext:
     """An owned handle to one CUDA device.
 
@@ -107,6 +110,7 @@ stays resident until downloaded. Accepts any layout."""
 
     def __repr__(self) -> str: ...
 
+@final
 class GpuImage:
     """An image resident in GPU memory.
 
