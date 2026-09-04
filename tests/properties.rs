@@ -655,8 +655,14 @@ proptest! {
             matches!(result, Err(PhaiosError::Allocation(_))),
             "a {width}x{height}x{c} target must be refused as Allocation, got {result:?}"
         );
+        // The bound is deliberately coarse. Materialising an 8 GiB-plus
+        // buffer takes many seconds on any machine, so two seconds still
+        // separates "refused by the guard" from "allocated, then failed",
+        // while a tight bound flakes on a loaded CI runner — 100 ms did,
+        // once in three local runs under contention. The `Err(Allocation)`
+        // check above is the assertion; this is the tell.
         prop_assert!(
-            elapsed.as_millis() < 100,
+            elapsed.as_secs() < 2,
             "rejection took {elapsed:?}; the guard must fire before allocating, not after"
         );
     }
