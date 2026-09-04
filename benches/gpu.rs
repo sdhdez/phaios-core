@@ -58,6 +58,7 @@ mod gpu {
     use phaios_core::lut::LutParams;
     use phaios_core::quantize::{Dither, QuantizeParams};
     use phaios_core::shadow_rolloff::ShadowRolloffParams;
+    use phaios_core::sharpen::SharpenParams;
     use phaios_core::split_toning::SplitToningParams;
     use phaios_core::tone::{ToneCurveParams, ZoneParams};
     use phaios_core::vignette::VignetteParams;
@@ -284,6 +285,14 @@ mod gpu {
             &sync,
             "gpu/glow/24MP/halation",
             k::glow_device(&luma, &glow).unwrap()
+        );
+        let sp_params = SharpenParams::new(0.5, 1.2, 0.02);
+        bench!(
+            c,
+            &ctx,
+            &sync,
+            "gpu/sharpen/24MP/capture",
+            k::sharpen_device(&luma, &sp_params).unwrap()
         );
         let gf = GuidedFilterParams::new(8, 0.01);
         bench!(

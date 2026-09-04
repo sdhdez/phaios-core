@@ -343,3 +343,12 @@ required-features = ["cuda"]
 name = "42_gpu_glow"
 path = "examples/42_gpu_glow.rs"
 required-features = ["cuda"]
+
+[[example]]
+name = "43_sharpen"
+path = "examples/43_sharpen.rs"
+
+[[example]]
+name = "44_gpu_sharpen"
+path = "examples/44_gpu_sharpen.rs"
+required-features = ["cuda"]

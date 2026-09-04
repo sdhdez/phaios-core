@@ -31,6 +31,7 @@ use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
 use phaios_core::lut::{LutParams, apply_lut};
 use phaios_core::quantize::{Dither, QuantizeParams, quantize_u8, quantize_u16};
 use phaios_core::shadow_rolloff::{ShadowRolloffParams, shadow_rolloff};
+use phaios_core::sharpen::{SharpenParams, sharpen};
 use phaios_core::split_toning::{SplitToningParams, split_toning};
 use phaios_core::tone::{ToneCurveParams, ZoneParams, tone_curve, zone_system};
 use phaios_core::vignette::{VignetteParams, vignette};
@@ -247,6 +248,17 @@ fn bench_glow(c: &mut Criterion) {
     }
 }
 
+fn bench_sharpen(c: &mut Criterion) {
+    let grey = pseudo_random_image(H, W, 1);
+    // The docstring's own capture-sharpen example: small sigma (direct
+    // blur path), non-zero threshold, so the gate is exercised rather
+    // than short-circuiting to threshold=0's unconditional T=1.
+    let params = SharpenParams::new(0.5, 1.2, 0.02);
+    c.bench_function("sharpen/24MP/capture", |b| {
+        b.iter(|| sharpen(black_box(grey.view()), black_box(&params)).unwrap())
+    });
+}
+
 fn bench_local_contrast(c: &mut Criterion) {
     let grey = pseudo_random_image(H, W, 1);
     let params = GuidedFilterParams::new(8, 0.01);
@@ -309,6 +321,7 @@ criterion_group!(
     bench_analysis,
     bench_blur,
     bench_glow,
+    bench_sharpen,
     bench_local_contrast,
     bench_film_grain,
     bench_split_toning,

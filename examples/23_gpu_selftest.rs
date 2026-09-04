@@ -133,6 +133,7 @@ const EXTRA_NOTES: &[(&str, &str)] = &[
         "sigma 2.5 direct path, sigma 8 box path, sigma 0 required bit-exact",
     ),
     ("glow", "amount 0 identity also required bit-exact"),
+    ("sharpen", "amount 0 identity also required bit-exact"),
 ];
 
 // ── the oracle ───────────────────────────────────────────────────────────────
@@ -374,7 +375,7 @@ fn run(
 fn check_all(ctx: &cuda::Context) -> Vec<Row> {
     use phaios_core::{
         blur, bw, encode, exposure, film_grain, geometry, glow, highlight_rolloff, histogram,
-        local_contrast, lut, quantize, shadow_rolloff, split_toning, tone, vignette,
+        local_contrast, lut, quantize, shadow_rolloff, sharpen, split_toning, tone, vignette,
     };
 
     let rgb = pseudo_random_image(257, 389, 3);
@@ -724,7 +725,7 @@ fn check_all(ctx: &cuda::Context) -> Vec<Row> {
         Ok(())
     }));
 
-    // ── blur and glow ────────────────────────────────────────────────────
+    // ── blur, glow and sharpen ──────────────────────────────────────────
 
     rows.push(run("blur", ONE_TRANSCENDENTAL.label, |ck| {
         let dev = ctx.upload(mono.view())?;
@@ -759,6 +760,29 @@ fn check_all(ctx: &cuda::Context) -> Vec<Row> {
         let off = glow::GlowParams::new(0.5, 4.0, 0.0);
         let cpu = glow::glow(mono.view(), &off)?;
         let gpu = ctx.download(&cuda::kernels::glow_device(&dev, &off)?)?;
+        ck.exact("amount 0", &cpu, &gpu);
+        Ok(())
+    }));
+
+    rows.push(run("sharpen", ONE_TRANSCENDENTAL.label, |ck| {
+        let dev = ctx.upload(mono.view())?;
+        // threshold 0 and non-zero; sigma below and above blur's box
+        // crossover (5.9 direct / 6.0 box), so both device blur paths
+        // are exercised through sharpen's own entry point.
+        for (amount, sigma, threshold) in [(0.6_f32, 2.5_f32, 0.0_f32), (0.4, 12.0, 0.3)] {
+            let params = sharpen::SharpenParams::new(amount, sigma, threshold);
+            let cpu = sharpen::sharpen(mono.view(), &params)?;
+            let gpu = ctx.download(&cuda::kernels::sharpen_device(&dev, &params)?)?;
+            ck.bounded(
+                &format!("a={amount} sigma={sigma} t={threshold}"),
+                &cpu,
+                &gpu,
+                ONE_TRANSCENDENTAL,
+            );
+        }
+        let off = sharpen::SharpenParams::new(0.0, 2.5, 0.1);
+        let cpu = sharpen::sharpen(mono.view(), &off)?;
+        let gpu = ctx.download(&cuda::kernels::sharpen_device(&dev, &off)?)?;
         ck.exact("amount 0", &cpu, &gpu);
         Ok(())
     }));
