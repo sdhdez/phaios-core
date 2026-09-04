@@ -21,6 +21,16 @@ The Rust crate and the Python wheel always carry the same version.
   working documents that no longer exist — both files ship in every
   crate and sdist, so the names did too.
 
+### Added — property tests
+
+`tests/properties.rs`, exercising every public kernel's shared
+`validate*` function — invisible to the CPU/CUDA conformance suite by
+construction — over generated rather than hand-picked input: valid input
+accepted with finite output, invalid input rejected without a panic and
+naming the offending field, layout-agnostic and deterministic output.
+New dev-dependency `proptest`; fixed seed, no `proptest-regressions/`
+ever written.
+
 ### Fixed — two CUDA kernels on high-dynamic-range input
 
 Both were found by widening the test inputs, not by reading the code. Every

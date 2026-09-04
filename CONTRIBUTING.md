@@ -62,6 +62,15 @@ When strengthening a weak test, break the code deliberately and confirm
 the new test fails. Check the mutation is *live* first: one that leaves
 output unchanged proves nothing, and has fooled us more than once.
 
+`tests/properties.rs` is the other half of this: property tests over a
+kernel's *validation* contract — the shared `validate*` function every
+kernel and its CUDA twin both call — generated across the whole input
+domain rather than picked by hand. Add a property there when you touch a
+`validate*` function or change its documented domain; add an
+example-based test here, or beside the kernel, when the point is a
+specific numerical claim (a coefficient, a round-trip, a signed
+comparison) that a random search would find by accident or not at all.
+
 ## Examples
 
 `examples/` is the crate's public face for non-Python users: small,
@@ -143,6 +152,11 @@ Every new dependency is a supply-chain decision. Ask before adding one.
 Core dependencies, not to be exceeded without justification: `pyo3`,
 `numpy`, `ndarray`, `rayon`, `thiserror`, plus `cudarc` behind
 `--features cuda`.
+
+**Dev-only:** `criterion` (statistics-driven micro-benchmarking,
+`benches/`) and `proptest` (strategies and shrinking over the
+`validate*` functions' whole input domain, `tests/properties.rs`) — both
+dev-dependencies only, never shipped in the published crate or wheel.
 
 `rand` and `rand_distr` were considered for film grain and **rejected**:
 the shipped kernel hashes pixel coordinates with splitmix64, which is
