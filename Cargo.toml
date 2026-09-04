@@ -132,6 +132,15 @@ cuda = ["dep:cudarc"]
 # Statistics-driven micro-benchmarking library.
 criterion = { version = "0.8", features = ["html_reports"] }
 
+# licence: MIT OR Apache-2.0  source: https://github.com/proptest-rs/proptest
+# maintainer: the proptest-rs organisation.
+# justification: strategies and shrinking over the shared `validate*`
+# functions' whole input domain, which the hand-picked cases in
+# tests/kernels.rs and the #[cfg(test)] modules cannot cover by construction.
+# Dev-only: exercised by `tests/properties.rs`, never a runtime dependency of
+# the published crate or wheel.
+proptest = "1"
+
 [[bench]]
 name = "kernels"
 harness = false
