@@ -109,6 +109,7 @@ use phaios_core::geometry::{
 use phaios_core::glow::{GlowParams, glow};
 use phaios_core::highlight_rolloff::{RolloffParams, highlight_rolloff};
 use phaios_core::histogram::{self as histogram_mod, HistogramParams, histogram};
+use phaios_core::hot_pixels::{HotPixelParams, hot_pixels};
 use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
 use phaios_core::lut::{LutParams, apply_lut};
 use phaios_core::quantize::{Dither, QuantizeParams, quantize_u8, quantize_u16};
@@ -1675,6 +1676,58 @@ proptest! {
         let rb = catch_call(|| sharpen(img_b.view(), &params));
         let msg_a = expect_rejected_message(ra, "sigma")?;
         let msg_b = expect_rejected_message(rb, "sigma")?;
+        prop_assert_eq!(msg_a, msg_b);
+    }
+}
+
+// ── hot_pixels ──────────────────────────────────────────────────────────────
+
+proptest! {
+    #![proptest_config(config())]
+
+    /// P1 + P5 + P6.
+    #[test]
+    fn hot_pixels_valid_params_is_accepted(
+        (img_a, img_b) in any_c_image_pair(),
+        threshold in 0.0f32..100.0f32,
+        relative in 0.0f32..100.0f32,
+    ) {
+        let params = HotPixelParams::new(threshold, relative);
+        let out_a = hot_pixels(img_a.view(), &params)?;
+        let out_b = hot_pixels(img_b.view(), &params)?;
+        prop_assert_eq!(out_a.dim(), img_a.dim());
+        prop_assert!(out_a.iter().all(|v| v.is_finite()));
+        prop_assert!(out_b.iter().all(|v| v.is_finite()));
+
+        assert_layout_agnostic(&img_a, |v| hot_pixels(v, &params))?;
+        assert_deterministic_f32(|| hot_pixels(img_a.view(), &params))?;
+    }
+
+    /// P2 + P3b over `threshold`: non-finite or negative.
+    #[test]
+    fn hot_pixels_bad_threshold_is_rejected(
+        (img_a, img_b) in any_c_image_pair(),
+        threshold in prop_oneof![2 => non_finite_f32(), 1 => -100.0f32..0.0f32],
+    ) {
+        let params = HotPixelParams::new(threshold, 0.0);
+        let ra = catch_call(|| hot_pixels(img_a.view(), &params));
+        let rb = catch_call(|| hot_pixels(img_b.view(), &params));
+        let msg_a = expect_rejected_message(ra, "threshold")?;
+        let msg_b = expect_rejected_message(rb, "threshold")?;
+        prop_assert_eq!(msg_a, msg_b);
+    }
+
+    /// P2 + P3b over `relative`: non-finite or negative.
+    #[test]
+    fn hot_pixels_bad_relative_is_rejected(
+        (img_a, img_b) in any_c_image_pair(),
+        relative in prop_oneof![2 => non_finite_f32(), 1 => -100.0f32..0.0f32],
+    ) {
+        let params = HotPixelParams::new(0.05, relative);
+        let ra = catch_call(|| hot_pixels(img_a.view(), &params));
+        let rb = catch_call(|| hot_pixels(img_b.view(), &params));
+        let msg_a = expect_rejected_message(ra, "relative")?;
+        let msg_b = expect_rejected_message(rb, "relative")?;
         prop_assert_eq!(msg_a, msg_b);
     }
 }

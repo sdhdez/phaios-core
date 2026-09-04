@@ -19,6 +19,7 @@ mod exposure;
 mod geometry;
 mod glow;
 mod grain;
+mod hot_pixels;
 mod hsl;
 mod local_contrast;
 mod quantize;
@@ -40,6 +41,7 @@ pub use geometry::{
 };
 pub use glow::{glow, glow_device};
 pub use grain::{film_grain, film_grain_device, hash_grid};
+pub use hot_pixels::{hot_pixels, hot_pixels_device};
 pub use hsl::{hsl_bw, hsl_bw_device};
 pub use local_contrast::{local_contrast, local_contrast_device};
 pub use quantize::{quantize_u8, quantize_u8_device, quantize_u16, quantize_u16_device};

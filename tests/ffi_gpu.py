@@ -649,3 +649,29 @@ def test_gpu_sharpen_same_validation_as_cpu(ctx):
     with pytest.raises(ValueError) as cpu_err:
         ph.sharpen(img, ph.SharpenParams(-1.0, 1.0, 0.0))
     assert str(gpu_err.value) == str(cpu_err.value)
+
+
+@needs_device
+@pytest.mark.parametrize("channels", [1, 3])
+def test_gpu_hot_pixels_matches_cpu(ctx, channels):
+    rng = np.random.default_rng(81)
+    img = rng.random((37, 29, channels)).astype(np.float32)
+    params = ph.HotPixelParams(0.05, 0.02)
+    got = gpu.hot_pixels(ctx.upload(img), params).download()
+    want = ph.hot_pixels(img, params)
+    # Bit-identical, not merely close: hot_pixels is a comparator network
+    # with one correctly-rounded subtraction, committed to full bit
+    # agreement (docs/ffi.md section 6), the same class as crop/orient.
+    assert np.array_equal(got.view(np.uint32), want.view(np.uint32))
+    assert got.shape == want.shape == img.shape
+
+
+@needs_device
+def test_gpu_hot_pixels_same_validation_as_cpu(ctx):
+    img = np.ones((4, 4, 1), dtype=np.float32)
+    resident = ctx.upload(img)
+    with pytest.raises(ValueError) as gpu_err:
+        gpu.hot_pixels(resident, ph.HotPixelParams(-1.0, 0.0))
+    with pytest.raises(ValueError) as cpu_err:
+        ph.hot_pixels(img, ph.HotPixelParams(-1.0, 0.0))
+    assert str(gpu_err.value) == str(cpu_err.value)

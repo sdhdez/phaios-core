@@ -549,6 +549,21 @@ fn orient(
     Ok(GpuImage { inner: result })
 }
 
+/// Remove hot pixels with a conditional 3x3 median, on the GPU. Mirrors
+/// ``phaios_core.hot_pixels``; bit-exact (a fixed comparator network of
+/// ``min``/``max`` pairs with no arithmetic, the same class as ``crop``,
+/// ``orient`` and ``vignette``).
+#[pyfunction]
+fn hot_pixels(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: pyo3::PyRef<'_, crate::hot_pixels::HotPixelParams>,
+) -> PyResult<GpuImage> {
+    let params_owned = params.clone();
+    let result = py.detach(|| cuda::kernels::hot_pixels_device(&img.inner, &params_owned))?;
+    Ok(GpuImage { inner: result })
+}
+
 /// Resize on the GPU. Mirrors ``phaios_core.resize``; bit-exact.
 #[pyfunction]
 fn resize(
@@ -631,6 +646,7 @@ pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult
     gpu.add_function(wrap_pyfunction!(film_grain, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(crop, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(orient, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(hot_pixels, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(resize, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(straighten, &gpu)?)?;
     parent.add_submodule(&gpu)?;

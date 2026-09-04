@@ -2048,6 +2048,7 @@ fn every_fallible_device_entry_point_rejects_what_the_cpu_rejects() {
     use phaios_core::glow::GlowParams;
     use phaios_core::highlight_rolloff::RolloffParams;
     use phaios_core::histogram::HistogramParams;
+    use phaios_core::hot_pixels::HotPixelParams;
     use phaios_core::local_contrast::GuidedFilterParams;
     use phaios_core::lut::LutParams;
     use phaios_core::shadow_rolloff::ShadowRolloffParams;
@@ -2092,6 +2093,20 @@ fn every_fallible_device_entry_point_rejects_what_the_cpu_rejects() {
         "sharpen amount=-1",
         phaios_core::sharpen::sharpen(rgb.view(), &p),
         cuda::kernels::sharpen_device(&d_rgb, &p),
+    );
+
+    let p = HotPixelParams::new(-1.0, 0.0);
+    rejects_identically(
+        "hot_pixels threshold=-1",
+        phaios_core::hot_pixels::hot_pixels(rgb.view(), &p),
+        cuda::kernels::hot_pixels_device(&d_rgb, &p),
+    );
+
+    let p = HotPixelParams::new(0.05, f32::NAN);
+    rejects_identically(
+        "hot_pixels relative=NaN",
+        phaios_core::hot_pixels::hot_pixels(rgb.view(), &p),
+        cuda::kernels::hot_pixels_device(&d_rgb, &p),
     );
 
     rejects_identically(
@@ -2671,6 +2686,177 @@ fn sharpen_degenerate_shapes_agree() {
                  {v:.2}x the bound"
             );
         }
+    }
+}
+
+// ── hot_pixels: comparison-only, no arithmetic in the median ────────────────
+
+/// Assert every element of `cpu` and `gpu` carries the identical bit
+/// pattern -- stricter than `assert_eq!` on the arrays directly, which
+/// treats NaN as unequal to itself even when the bits match (see
+/// `non_finite_pixels_agree_across_backends` above). `hot_pixels` is
+/// committed to full bit-exactness (`docs/ffi.md` §6), not a tolerance,
+/// so every test in this section uses this rather than `worst_violation`.
+fn assert_bit_exact(cpu: &Array3<f32>, gpu: &Array3<f32>, label: &str) {
+    assert_eq!(cpu.dim(), gpu.dim(), "{label}: shape mismatch");
+    for ((idx, c), g) in cpu.indexed_iter().zip(gpu.iter()) {
+        assert_eq!(
+            c.to_bits(),
+            g.to_bits(),
+            "{label}: diverged at {idx:?}: cpu={c}, gpu={g}"
+        );
+    }
+}
+
+/// Pseudo-random image across several `(threshold, relative)` pairs,
+/// including `0.0/0.0` -- the unconditional median, where every pixel
+/// takes the replace branch. No tolerance: the median step is
+/// IEEE-754-2008 `minNum`/`maxNum` comparisons only (`f32::min`/
+/// `f32::max` on the CPU, `fminf`/`fmaxf` on the device), and the one
+/// arithmetic step (`threshold + relative * m.abs()`, then
+/// `(p - m).abs() > limit`) is ordinary correctly-rounded `f32`
+/// arithmetic with `-fmad=false` on both sides -- see
+/// `src/hot_pixels.rs`'s module documentation and
+/// `src/cuda/ptx/hot_pixels.cu`.
+#[test]
+fn hot_pixels_is_bit_exact() {
+    use phaios_core::hot_pixels::{HotPixelParams, hot_pixels};
+
+    let Some(ctx) = try_context() else { return };
+    for c in [1, 3] {
+        let img = pseudo_random_image(257, 389, c);
+        for (threshold, relative) in [
+            (0.0_f32, 0.0_f32), // unconditional median
+            (0.05, 0.0),
+            (0.0, 0.05),
+            (0.05, 0.02),
+            (1.0, 1.0), // above the image's own range: the identity in practice
+        ] {
+            let params = HotPixelParams::new(threshold, relative);
+            let cpu = hot_pixels(img.view(), &params).unwrap();
+            let gpu = cuda::kernels::hot_pixels(&ctx, img.view(), &params).unwrap();
+            assert_bit_exact(
+                &cpu,
+                &gpu,
+                &format!("C={c} threshold={threshold} relative={relative}"),
+            );
+        }
+    }
+}
+
+/// The same agreement on linear scene-referred data spanning a real
+/// dynamic range -- `field_with_bar`, the input that broke `blur` and
+/// `local_contrast` (see those kernels' own HDR sweeps elsewhere in this
+/// file). `hot_pixels` carries no accumulation of any kind, so this is
+/// not expected to find anything the unit-range sweep above didn't --
+/// asserted anyway because the plan calls for checking, not assuming
+/// ("checked, not assumed", `src/cuda/ptx/local_contrast.cu`).
+#[test]
+fn hot_pixels_agrees_within_the_dynamic_range() {
+    use phaios_core::hot_pixels::{HotPixelParams, hot_pixels};
+
+    let Some(ctx) = try_context() else { return };
+    for highlight in [1.0_f32, 1e2, 1e4, 1e6, 1e8] {
+        let img = field_with_bar(64, 96, 1e-4, highlight);
+        for (threshold, relative) in [(0.0_f32, 0.0_f32), (0.05, 0.02)] {
+            let params = HotPixelParams::new(threshold, relative);
+            let cpu = hot_pixels(img.view(), &params).unwrap();
+            let gpu = cuda::kernels::hot_pixels(&ctx, img.view(), &params).unwrap();
+            assert_bit_exact(
+                &cpu,
+                &gpu,
+                &format!("highlight={highlight:e} threshold={threshold} relative={relative}"),
+            );
+        }
+    }
+}
+
+/// A smooth ramp (not a flat field, per CONTRIBUTING.md's warning about
+/// constant-image tests) with one bright and one dark planted outlier,
+/// stressing the replace-vs-keep decision boundary the way the
+/// pseudo-random sweep above cannot: neighbouring samples there are
+/// unrelated by construction, so a tight threshold makes nearly every
+/// pixel look like an outlier. On a ramp, only the two planted pixels
+/// take the replace branch (mirrors the CPU-only ramp tests added in
+/// `tests/kernels.rs` step 1, generalised here to a CPU/GPU comparison).
+#[test]
+fn hot_pixels_ramp_with_planted_outliers_is_bit_exact() {
+    use phaios_core::hot_pixels::{HotPixelParams, hot_pixels};
+
+    let Some(ctx) = try_context() else { return };
+    let (h, w) = (9, 15);
+    let mut img = Array3::from_shape_fn((h, w, 1), |(_, x, _)| 0.1_f32 + 0.02 * x as f32);
+    img[[4, 7, 0]] = 50.0; // bright outlier
+    img[[4, 10, 0]] = -50.0; // dark outlier
+
+    for (threshold, relative) in [(0.0_f32, 0.0_f32), (0.1, 0.05)] {
+        let params = HotPixelParams::new(threshold, relative);
+        let cpu = hot_pixels(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::hot_pixels(&ctx, img.view(), &params).unwrap();
+        assert_bit_exact(
+            &cpu,
+            &gpu,
+            &format!("ramp threshold={threshold} relative={relative}"),
+        );
+    }
+}
+
+/// Degenerate shapes must agree too, at both `C = 1` and `C = 3`: `1x1`
+/// has no distinct neighbour at all (every clamped offset reads the
+/// single pixel back), and `1xN`/`Nx1` collapse one axis of the border
+/// clamp entirely.
+#[test]
+fn hot_pixels_degenerate_shapes_agree() {
+    use phaios_core::hot_pixels::{HotPixelParams, hot_pixels};
+
+    let Some(ctx) = try_context() else { return };
+    for (h, w) in [(1, 1), (1, 33), (33, 1), (2, 2)] {
+        for c in [1, 3] {
+            let img = pseudo_random_image(h, w, c);
+            for (threshold, relative) in [(0.0_f32, 0.0_f32), (0.05, 0.02)] {
+                let params = HotPixelParams::new(threshold, relative);
+                let cpu = hot_pixels(img.view(), &params).unwrap();
+                let gpu = cuda::kernels::hot_pixels(&ctx, img.view(), &params).unwrap();
+                assert_bit_exact(
+                    &cpu,
+                    &gpu,
+                    &format!("{h}x{w}x{c} threshold={threshold} relative={relative}"),
+                );
+            }
+        }
+    }
+}
+
+/// An image containing one NaN pixel and one +Inf pixel, far enough
+/// apart that their 3x3 neighbourhoods do not overlap, run through both
+/// backends. `docs/ffi.md` §1 leaves non-finite input unspecified in
+/// general, but `hot_pixels` is a documented exception the plan predicts
+/// (`.cache/scratch/denoise/PLAN.md`, "Determinism"): the median step is
+/// IEEE-754-2008 `minNum`/`maxNum` comparisons only, which both
+/// `f32::min`/`f32::max` and `fminf`/`fmaxf` implement identically, and
+/// the kept-vs-replaced branch is decided by an ordinary `>` comparison
+/// that is `false` whenever a NaN reaches it on either backend -- so a
+/// single non-finite sample cannot make the two backends disagree here.
+/// If this ever fails, the doc paragraph is wrong and should be
+/// corrected -- not this test loosened.
+#[test]
+fn hot_pixels_agrees_bit_for_bit_on_nan_and_inf_input() {
+    use phaios_core::hot_pixels::{HotPixelParams, hot_pixels};
+
+    let Some(ctx) = try_context() else { return };
+    let mut img = Array3::<f32>::from_elem((9, 9, 1), 0.5_f32);
+    img[[2, 2, 0]] = f32::NAN;
+    img[[6, 6, 0]] = f32::INFINITY;
+
+    for (threshold, relative) in [(0.0_f32, 0.0_f32), (0.1, 0.05)] {
+        let params = HotPixelParams::new(threshold, relative);
+        let cpu = hot_pixels(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::hot_pixels(&ctx, img.view(), &params).unwrap();
+        assert_bit_exact(
+            &cpu,
+            &gpu,
+            &format!("nan/inf threshold={threshold} relative={relative}"),
+        );
     }
 }
 

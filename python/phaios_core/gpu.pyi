@@ -36,6 +36,7 @@ from phaios_core import (
     GuidedFilterParams,
     Histogram,
     HistogramParams,
+    HotPixelParams,
     HslWeightedParams,
     LuminanceStandard,
     LutParams,
@@ -341,6 +342,13 @@ index copy)."""
 def orient(img: GpuImage, orientation: Orientation) -> GpuImage:
     """Dihedral orientation on the GPU. Mirrors ``phaios_core.orient``;
 bit-exact (a pure index permutation)."""
+    ...
+
+def hot_pixels(img: GpuImage, params: HotPixelParams) -> GpuImage:
+    """Remove hot pixels with a conditional 3x3 median, on the GPU. Mirrors
+``phaios_core.hot_pixels``; bit-exact (a fixed comparator network of
+``min``/``max`` pairs with no arithmetic, the same class as ``crop``,
+``orient`` and ``vignette``)."""
     ...
 
 def resize(img: GpuImage, params: ResizeParams) -> GpuImage:
