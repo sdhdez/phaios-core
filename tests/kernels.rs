@@ -1600,3 +1600,310 @@ fn hot_pixels_filters_channels_independently() {
         );
     }
 }
+
+// ── Denoise tests ────────────────────────────────────────────────────────────
+
+use phaios_core::denoise::{DenoiseParams, denoise};
+
+/// **The key cross-check.** On a single-channel non-constant image,
+/// `denoise` must be bit-exact with `local_contrast` at `strength =
+/// −amount` and `eps = noise_sigma²` — `denoise`'s module documentation
+/// exact-negation argument, exercised end-to-end through the public API
+/// rather than argued only in prose. Pins three things at once: the
+/// `eps = noise_sigma²` mapping, the sign of the combine, and its exact
+/// shape (`p + (−amount)·(p−q)`, not some other algebraically-equal but
+/// differently-rounded form). This is the test the plan's `eps =
+/// noise_sigma` (not squared) mutation is expected to fail: with the
+/// unsquared mapping, `denoise`'s own `eps` disagrees with the
+/// `noise_sigma * noise_sigma` this test hands `local_contrast`
+/// separately, for every `noise_sigma` swept here except `0.0`.
+#[test]
+fn denoise_single_channel_is_bit_exact_with_local_contrast_at_negative_amount() {
+    let img = ndarray::Array3::from_shape_fn((17, 23, 1), |(y, x, _)| {
+        ((y * 13 + x * 7) % 97) as f32 / 97.0
+    });
+
+    for radius in [0_u32, 1, 4, 9] {
+        for &noise_sigma in &[0.0_f32, 0.02, 0.2, 1.5] {
+            for &amount in &[0.0_f32, 0.25, 0.6, 1.0] {
+                let params =
+                    DenoiseParams::new(radius, noise_sigma, amount, LuminanceStandard::Bt709);
+                let got = denoise(img.view(), &params).unwrap();
+
+                let eps = noise_sigma * noise_sigma;
+                let want =
+                    local_contrast(img.view(), &GuidedFilterParams::new(radius, eps), -amount)
+                        .unwrap();
+
+                for (&g, &w) in got.iter().zip(want.iter()) {
+                    assert_eq!(
+                        g.to_bits(),
+                        w.to_bits(),
+                        "radius={radius} noise_sigma={noise_sigma} amount={amount}: \
+                         denoise={g}, local_contrast(-amount)={w}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// `amount = 0.0` is the exact identity, bit-for-bit, at a non-zero
+/// radius and noise_sigma — on both the self-guided (`C=1`) and
+/// cross-guided (`C=3`) paths, regardless of what `q`/`q_c` actually
+/// evaluate to: multiplying by exactly `-0.0` and adding the result back
+/// changes nothing for any finite value (the module documentation's
+/// exact-negation argument).
+#[test]
+fn amount_zero_is_a_bit_exact_identity_at_nonzero_radius_and_sigma() {
+    let grey = ndarray::Array3::from_shape_fn((16, 16, 1), |(y, x, _)| (y * 16 + x) as f32 / 256.0);
+    let params = DenoiseParams::new(4, 0.05, 0.0, LuminanceStandard::Bt709);
+    let out = denoise(grey.view(), &params).unwrap();
+    for (&i, &o) in grey.iter().zip(out.iter()) {
+        assert_eq!(i.to_bits(), o.to_bits(), "C=1: {i} vs {o}");
+    }
+
+    let rgb = ndarray::Array3::from_shape_fn((16, 16, 3), |(y, x, c)| {
+        (y * 16 + x + c * 7) as f32 / 300.0
+    });
+    let out_rgb = denoise(rgb.view(), &params).unwrap();
+    for (&i, &o) in rgb.iter().zip(out_rgb.iter()) {
+        assert_eq!(i.to_bits(), o.to_bits(), "C=3: {i} vs {o}");
+    }
+}
+
+/// `radius = 0` is the identity on both paths, by the general formula
+/// (window = 1×1 makes every mean exact and every variance/covariance
+/// exactly, or very nearly, zero) rather than a dedicated fast-path
+/// branch — mirrors `guided_identity_radius_zero`'s tolerance, not an
+/// exact-bits comparison, since the SAT-based extraction of a single
+/// cell is itself a cancelling subtraction (see `local_contrast`'s own
+/// module documentation).
+#[test]
+fn radius_zero_is_the_identity_on_both_the_self_and_cross_guided_paths() {
+    let grey = ndarray::Array3::from_shape_fn((8, 8, 1), |(y, x, _)| (y * 8 + x) as f32 / 64.0);
+    let params = DenoiseParams::new(0, 0.1, 1.0, LuminanceStandard::Bt709);
+    let out = denoise(grey.view(), &params).unwrap();
+    for (&i, &o) in grey.iter().zip(out.iter()) {
+        assert!((i - o).abs() < 1e-4, "C=1 radius=0: {i} vs {o}");
+    }
+
+    let rgb =
+        ndarray::Array3::from_shape_fn((8, 8, 3), |(y, x, c)| (y * 8 + x + c * 5) as f32 / 90.0);
+    let out_rgb = denoise(rgb.view(), &params).unwrap();
+    for (&i, &o) in rgb.iter().zip(out_rgb.iter()) {
+        assert!((i - o).abs() < 1e-4, "C=3 radius=0: {i} vs {o}");
+    }
+}
+
+/// The double box mean's variance ratio for i.i.d. noise at window
+/// radius `r` — the guided filter's `a → 0` limit, `q =
+/// box_mean_r(box_mean_r(p))`. The two box passes compose into a single
+/// filter whose 1-D weight (before normalising) is the triangular kernel
+/// `w[k] = N − |k|` for `|k| ≤ N−1`, `N = 2r+1` (the autocorrelation of a
+/// size-N box with itself); the 2-D weight is separable, `w[k]·w[l]`.
+/// For i.i.d. noise of variance σ², the output variance is `σ² · S² /
+/// N⁸` with `S = Σ_k w[k]²` — *not* `σ²/N⁴` (squaring the single-box
+/// ratio), because the two passes' outputs are correlated through their
+/// overlapping windows.
+fn double_box_variance_ratio(r: u32) -> f64 {
+    let n = 2 * i64::from(r) + 1;
+    let s: f64 = (-(n - 1)..=(n - 1))
+        .map(|k| {
+            let wk = (n - k.abs()) as f64;
+            wk * wk
+        })
+        .sum();
+    (s * s) / (n as f64).powi(8)
+}
+
+/// At `a → 0` (`eps` far above the flat patch's own noise variance but
+/// far below the step edge's), the guided filter degenerates to a box
+/// mean of a box mean on the flat patch, so its output variance should
+/// fall to roughly [`double_box_variance_ratio`] times the input
+/// variance, measured on interior pixels `2 * radius` clear of the patch
+/// border (coefficients are averaged through a second window pass, the
+/// same reach `guided_filter_lifts_texture_and_preserves_the_edge`
+/// uses) — while a step edge elsewhere, whose window variance is
+/// dominated by the step rather than `eps`, keeps most of its height.
+#[test]
+fn denoise_smooths_flat_noise_toward_the_double_box_ratio_and_keeps_a_step_edge() {
+    const RADIUS: u32 = 4;
+    const REACH: usize = 2 * RADIUS as usize;
+
+    // Flat patch: mean 0.5, small fixed-seed pseudorandom noise.
+    let (h, w) = (32, 32);
+    let mut state = 0xD1B5_4A32_D192_ED03_u64;
+    let flat = ndarray::Array3::<f32>::from_shape_fn((h, w, 1), |_| {
+        state = phaios_core::film_grain::splitmix64(state);
+        let bits24 = (state >> 40) as i32; // 0..=0xFF_FFFF
+        0.5 + (bits24 - 0x0080_0000) as f32 / 8_388_608.0 * 0.03 // +/- 0.03 amplitude
+    });
+
+    let noise_sigma = 0.1_f32; // >> the flat patch's own std (~0.0087), << the step's
+    let amount = 1.0_f32;
+    let params = DenoiseParams::new(RADIUS, noise_sigma, amount, LuminanceStandard::Bt709);
+    let out = denoise(flat.view(), &params).unwrap();
+
+    let interior: Vec<(usize, usize)> = (REACH..(h - REACH))
+        .flat_map(|y| (REACH..(w - REACH)).map(move |x| (y, x)))
+        .collect();
+    let n = interior.len() as f64;
+    let mean_of = |a: &ndarray::Array3<f32>| -> f64 {
+        interior
+            .iter()
+            .map(|&(y, x)| a[[y, x, 0]] as f64)
+            .sum::<f64>()
+            / n
+    };
+    let var_of = |a: &ndarray::Array3<f32>, mean: f64| -> f64 {
+        interior
+            .iter()
+            .map(|&(y, x)| {
+                let d = a[[y, x, 0]] as f64 - mean;
+                d * d
+            })
+            .sum::<f64>()
+            / n
+    };
+
+    let mean_in = mean_of(&flat);
+    let var_in = var_of(&flat, mean_in);
+    let mean_out = mean_of(&out);
+    let var_out = var_of(&out, mean_out);
+
+    let ratio = double_box_variance_ratio(RADIUS);
+    let margin = 5.0; // generous: a is small but not exactly 0, plus sampling noise
+    assert!(
+        var_out < var_in * ratio * margin,
+        "expected output variance near the double-box ratio {ratio:.6} of input \
+         variance {var_in:.6} (margin {margin}x, bound {:.8}): got {var_out:.8}",
+        var_in * ratio * margin
+    );
+
+    // A plain step edge, same params: the window variance at the
+    // transition (~0.25 for a 50/50 split of 0 and 1) dwarfs eps = 0.01,
+    // so `a` stays high there and the step survives.
+    let (sh, sw) = (9, 41);
+    let mid = sw / 2;
+    let step = ndarray::Array3::from_shape_fn(
+        (sh, sw, 1),
+        |(_, x, _)| if x < mid { 0.0_f32 } else { 1.0_f32 },
+    );
+    let out_step = denoise(step.view(), &params).unwrap();
+    let row = sh / 2;
+    let left = out_step[[row, REACH, 0]];
+    let right = out_step[[row, sw - 1 - REACH, 0]];
+    assert!(
+        right - left > 0.7,
+        "step edge height must mostly survive heavy flat-noise smoothing: \
+         left={left}, right={right}, swing={}",
+        right - left
+    );
+}
+
+/// Cross-guided edges come from the shared luminance guide, not from a
+/// channel's own signal: a channel with no structure of its own is
+/// smoothed at essentially the same rate whether the guide has a nearby
+/// edge or is locally flat (`cov(I, p_c) ≈ 0` either way), while a
+/// channel that *shares* the guide's edge keeps it.
+///
+/// One RGB image: R and G both step from 0.2 to 0.8 at the midline (so
+/// the luminance guide has a strong edge there); B is flat 0.5 plus a
+/// small fixed checkerboard, uncorrelated with the step. Measured in two
+/// windows, both `2 * radius` clear of every border: one straddling the
+/// R/G edge, one entirely on the low side (locally flat guide there).
+///
+/// Mutation this catches: `a_c = cov(I, p_c) / (var(p_c) + eps)` (the
+/// channel's own variance in place of the guide's) computes blue's
+/// coefficient from blue's own statistics, which do not change between
+/// the two windows, so the near-edge/far-from-edge difference this test
+/// measures collapses to nothing either way; dropping the cross term
+/// (`a_c = 0` unconditionally, silently degenerating to per-channel
+/// self-guided) additionally destroys red's edge, since red would then
+/// be smoothed toward its own box mean instead of kept by a coefficient
+/// near 1.
+#[test]
+fn cross_guided_edges_come_from_the_guide_not_the_channel() {
+    const RADIUS: u32 = 4;
+    const REACH: usize = 2 * RADIUS as usize;
+    let (h, w) = (24, 48);
+    let mid = w / 2;
+
+    let img = ndarray::Array3::from_shape_fn((h, w, 3), |(y, x, c)| match c {
+        0 | 1 => {
+            if x < mid {
+                0.2_f32
+            } else {
+                0.8_f32
+            }
+        } // R, G: the shared step
+        _ => {
+            0.5 + if (x + y) % 2 == 0 {
+                0.05_f32
+            } else {
+                -0.05_f32
+            }
+        } // B: flat + checker
+    });
+
+    let noise_sigma = 0.1_f32; // eps = 0.01: >> B's own tiny contribution, << the R/G step
+    let params = DenoiseParams::new(RADIUS, noise_sigma, 1.0, LuminanceStandard::Bt709);
+    let out = denoise(img.view(), &params).unwrap();
+
+    // Blue's peak-to-peak (checker amplitude survived), near the edge vs
+    // far from it.
+    let checker_p2p = |col: usize| -> f32 {
+        let mut lo = f32::INFINITY;
+        let mut hi = f32::NEG_INFINITY;
+        for y in REACH..(h - REACH) {
+            let v = out[[y, col, 2]];
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+        hi - lo
+    };
+    let near_edge = checker_p2p(mid);
+    let far_from_edge = checker_p2p(REACH + 1);
+
+    assert!(
+        (near_edge - far_from_edge).abs() < 0.02,
+        "blue must be smoothed at essentially the same rate whether or not \
+         the guide has a nearby edge: near_edge={near_edge}, far_from_edge={far_from_edge}"
+    );
+
+    // Red shares the guide's edge and must keep it.
+    let red_left = out[[h / 2, REACH, 0]];
+    let red_right = out[[h / 2, w - 1 - REACH, 0]];
+    assert!(
+        red_right - red_left > 0.5,
+        "red shares the guide's edge and must keep most of its height: \
+         left={red_left}, right={red_right}"
+    );
+}
+
+/// The combine is affine in `amount`: `out(amount) − img = amount · (q
+/// − img)`, since `q` (or `q_c`) does not depend on `amount` at all.
+/// Tripling `amount` must exactly triple the residual — mirrors
+/// `local_contrast`'s own strength-linearity check in
+/// `guided_filter_lifts_texture_and_preserves_the_edge`.
+#[test]
+fn the_combine_is_affine_in_amount() {
+    let img = ndarray::Array3::from_shape_fn((20, 24, 3), |(y, x, c)| {
+        0.3 + 0.4 * (((y * 7 + x * 3 + c * 5) % 13) as f32 / 13.0)
+    });
+    let lo = DenoiseParams::new(3, 0.05, 0.25, LuminanceStandard::Bt709);
+    let hi = DenoiseParams::new(3, 0.05, 0.75, LuminanceStandard::Bt709);
+    let out_lo = denoise(img.view(), &lo).unwrap();
+    let out_hi = denoise(img.view(), &hi).unwrap();
+
+    let mut worst = 0.0_f32;
+    for ((&i, &l), &h_) in img.iter().zip(out_lo.iter()).zip(out_hi.iter()) {
+        let predicted_hi = i + 3.0 * (l - i); // 0.75 / 0.25 = 3
+        worst = worst.max((h_ - predicted_hi).abs());
+    }
+    assert!(
+        worst < 1e-5,
+        "the combine must be affine in amount; worst deviation {worst}"
+    );
+}

@@ -793,6 +793,7 @@ _SAME_SHAPE_KERNELS = {  # shape-preserving, RGB and luminance alike
     "glow": lambda x: ph.glow(x, ph.GlowParams(0.3, 3.0, 0.4)),
     "sharpen": lambda x: ph.sharpen(x, ph.SharpenParams(0.5, 3.0, 0.1)),
     "hot_pixels": lambda x: ph.hot_pixels(x, ph.HotPixelParams(0.05, 0.02)),
+    "denoise": lambda x: ph.denoise(x),
     # The three kernels whose own strided tests use a C-order view only,
     # which takes the same code path as its contiguous copy.
     "apply_lut": lambda x: ph.apply_lut(x, _LAYOUT_LUT, ph.LutParams()),
@@ -1731,6 +1732,48 @@ def test_hot_pixel_params_repr_and_defaults():
     r = repr(ph.HotPixelParams(0.05, 0.2))
     assert "threshold=0.05" in r
     assert "relative=0.2" in r
+
+
+# ── denoise: guided-filter denoise (self- and cross-guided) ───────────────────
+
+
+def test_denoise_rejects_negative_noise_sigma(grey_f32):
+    with pytest.raises(ValueError, match="noise_sigma"):
+        ph.denoise(grey_f32, ph.DenoiseParams(4, -0.1, 0.5))
+
+
+def test_denoise_rejects_amount_above_one(grey_f32):
+    with pytest.raises(ValueError, match="amount"):
+        ph.denoise(grey_f32, ph.DenoiseParams(4, 0.05, 1.5))
+
+
+def test_denoise_rejects_nan_amount(grey_f32):
+    with pytest.raises(ValueError, match="amount"):
+        ph.denoise(grey_f32, ph.DenoiseParams(4, 0.05, float("nan")))
+
+
+def test_denoise_wrong_dtype(rgb_f64):
+    with pytest.raises(Exception):
+        ph.denoise(rgb_f64)
+
+
+def test_denoise_params_repr_and_defaults():
+    p = ph.DenoiseParams()
+    assert p.radius == 0
+    assert p.noise_sigma == 0.0
+    assert p.amount == 0.0
+    assert p.standard == ph.LuminanceStandard.Bt709
+    assert p == ph.DenoiseParams(0, 0.0, 0.0, ph.LuminanceStandard.Bt709)
+    # Checked field-by-field, matching test_sharpen_params_repr_and_defaults:
+    # a constructor that silently swapped two same-typed fields (radius
+    # aside, noise_sigma/amount are both floats) would still print a
+    # matching value for whichever field's position happens to be
+    # untouched by that particular mix-up.
+    r = repr(ph.DenoiseParams(4, 0.02, 0.6, ph.LuminanceStandard.Bt601))
+    assert "radius=4" in r
+    assert "noise_sigma=0.02" in r
+    assert "amount=0.6" in r
+    assert "standard=Bt601" in r
 
 
 # ── Type stubs ────────────────────────────────────────────────────────────────

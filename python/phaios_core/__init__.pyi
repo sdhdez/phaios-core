@@ -156,6 +156,44 @@ criterion."""
     __hash__: ClassVar[None]  # type: ignore[assignment]  # typeshed idiom for unhashable
 
 @final
+class DenoiseParams:
+    """Parameters for [`denoise`].
+
+```python
+# A gentle denoise tuned to an estimated noise level.
+params = phaios_core.DenoiseParams(radius=4, noise_sigma=0.01, amount=0.6)
+```"""
+
+    def __new__(cls, radius: int = 0, noise_sigma: float = 0.0, amount: float = 0.0, standard: LuminanceStandard = LuminanceStandard.Bt709) -> DenoiseParams: ...
+
+    radius: int
+    """Filter radius in pixels. The window is `(2r+1) × (2r+1)`.
+
+[`crate::local_contrast::GuidedFilterParams`]'s own domain:
+unvalidated, any `u32` is legal — a radius larger than the image
+is harmless, since windows clamp to the image extent."""
+
+    noise_sigma: float
+    """Estimated noise standard deviation, in the input's own units.
+`eps = noise_sigma²` regularises the guided filter — see the
+module documentation. `0.0` (the default) is the
+no-regularisation limit: legal, but on its own not an identity."""
+
+    amount: float
+    """Blend between the input and the filtered base term. `0.0` (the
+default) is the exact identity; `1.0` is the full guided-filter
+base term."""
+
+    standard: LuminanceStandard
+    """Luminance standard for the `C == 3` guide. Ignored when the
+input is not three channels."""
+
+    def __eq__(self, value: object, /) -> bool: ...
+    def __ne__(self, value: object, /) -> bool: ...
+    def __repr__(self) -> str: ...
+    __hash__: ClassVar[None]  # type: ignore[assignment]  # typeshed idiom for unhashable
+
+@final
 class ResizeFilter:
     """Resampling filter for [`resize`]."""
 
@@ -927,6 +965,50 @@ ValueError
     If ``threshold`` or ``relative`` is negative or not finite.
 MemoryError
     If the output exceeds the single-allocation limit."""
+    ...
+
+def denoise(img: NDArray[np.float32], params: DenoiseParams | None = None) -> NDArray[np.float32]:
+    """Denoise with the guided filter — self-guided per channel, or
+cross-guided from a shared luminance guide for RGB.
+
+Computes, per channel, ``out = p - amount * (p - q)`` where ``q`` is
+the guided filter's smoothed base term (``eps = noise_sigma**2``).
+RGB input (``C == 3``) uses a cross-guided filter: edges come from
+``standard``'s luminance of the whole image, not each channel's own
+signal. Every other channel count, including ``C == 1``, is
+self-guided, reusing ``local_contrast``'s own guided filter.
+
+``amount = 0.0`` is the exact identity. On a single-channel image,
+this kernel is bit-exact with
+``local_contrast(img, GuidedFilterParams(radius, noise_sigma**2), -amount)``.
+
+Right after ``hot_pixels``, before ``straighten``/``resize`` and
+before ``exposure``: resampling would mix ``noise_sigma``'s
+per-pixel physical meaning across neighbours, and exposure would
+couple it to the caller's stop choice; an uncorrected hot pixel would
+read as structure the edge-aware filter protects instead of removes.
+
+Parameters
+----------
+img : numpy.ndarray
+    Input array, shape ``(H, W, C)`` for any channel count, dtype
+    ``float32``, any memory layout.
+params : DenoiseParams
+    Radius, noise sigma, blend amount, and the luminance standard
+    used for the ``C == 3`` guide. Default: amount 0, the identity.
+
+Returns
+-------
+numpy.ndarray
+    Shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+
+Raises
+------
+ValueError
+    If ``noise_sigma`` is negative or not finite, or ``amount`` is
+    outside 0..=1 or not finite.
+MemoryError
+    If the intermediates exceed the single-allocation limit."""
     ...
 
 def resize(img: NDArray[np.float32], params: ResizeParams) -> NDArray[np.float32]:

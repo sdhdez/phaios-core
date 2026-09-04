@@ -17,6 +17,7 @@ pub mod blur;
 pub mod bw;
 #[cfg(feature = "cuda")]
 pub mod cuda;
+pub mod denoise;
 pub mod encode;
 pub mod error;
 pub mod exposure;
@@ -197,6 +198,60 @@ pub fn hot_pixels_fn(
     let view = img.as_array();
     let params_owned = params.clone();
     let result = py.detach(move || hot_pixels::hot_pixels(view, &params_owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
+/// Denoise with the guided filter — self-guided per channel, or
+/// cross-guided from a shared luminance guide for RGB.
+///
+/// Computes, per channel, ``out = p - amount * (p - q)`` where ``q`` is
+/// the guided filter's smoothed base term (``eps = noise_sigma**2``).
+/// RGB input (``C == 3``) uses a cross-guided filter: edges come from
+/// ``standard``'s luminance of the whole image, not each channel's own
+/// signal. Every other channel count, including ``C == 1``, is
+/// self-guided, reusing ``local_contrast``'s own guided filter.
+///
+/// ``amount = 0.0`` is the exact identity. On a single-channel image,
+/// this kernel is bit-exact with
+/// ``local_contrast(img, GuidedFilterParams(radius, noise_sigma**2), -amount)``.
+///
+/// Right after ``hot_pixels``, before ``straighten``/``resize`` and
+/// before ``exposure``: resampling would mix ``noise_sigma``'s
+/// per-pixel physical meaning across neighbours, and exposure would
+/// couple it to the caller's stop choice; an uncorrected hot pixel would
+/// read as structure the edge-aware filter protects instead of removes.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)`` for any channel count, dtype
+///     ``float32``, any memory layout.
+/// params : DenoiseParams
+///     Radius, noise sigma, blend amount, and the luminance standard
+///     used for the ``C == 3`` guide. Default: amount 0, the identity.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``noise_sigma`` is negative or not finite, or ``amount`` is
+///     outside 0..=1 or not finite.
+/// MemoryError
+///     If the intermediates exceed the single-allocation limit.
+#[pyfunction]
+#[pyo3(name = "denoise", signature = (img, params = None))]
+pub fn denoise_fn(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: Option<pyo3::PyRef<'_, denoise::DenoiseParams>>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let owned = params.map_or_else(denoise::DenoiseParams::default, |p| p.clone());
+    let result = py.detach(move || denoise::denoise(view, &owned))?;
     Ok(result.into_pyarray(py).unbind())
 }
 
@@ -1173,6 +1228,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<geometry::CropParams>()?;
     m.add_class::<geometry::Orientation>()?;
     m.add_class::<hot_pixels::HotPixelParams>()?;
+    m.add_class::<denoise::DenoiseParams>()?;
     m.add_class::<geometry::ResizeFilter>()?;
     m.add_class::<geometry::ResizeParams>()?;
     m.add_class::<geometry::StraightenParams>()?;
@@ -1198,6 +1254,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crop, m)?)?;
     m.add_function(wrap_pyfunction!(orient, m)?)?;
     m.add_function(wrap_pyfunction!(hot_pixels_fn, m)?)?;
+    m.add_function(wrap_pyfunction!(denoise_fn, m)?)?;
     m.add_function(wrap_pyfunction!(resize, m)?)?;
     m.add_function(wrap_pyfunction!(straighten, m)?)?;
 

@@ -121,8 +121,13 @@ impl GuidedFilterParams {
 
 /// Apply the He–Sun–Tang guided filter (self-guided, 2-D).
 ///
-/// Not exposed to Python. Called by [`local_contrast`].
-fn guided_filter(img: ArrayView2<f32>, radius: u32, eps: f32) -> Result<Array2<f32>, PhaiosError> {
+/// Not exposed to Python. Called by [`local_contrast`], and reused by
+/// [`crate::denoise`] for its self-guided path.
+pub(crate) fn guided_filter(
+    img: ArrayView2<f32>,
+    radius: u32,
+    eps: f32,
+) -> Result<Array2<f32>, PhaiosError> {
     let (h, w) = img.dim();
     let r = radius as usize;
     let eps_f64 = eps as f64;
