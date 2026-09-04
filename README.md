@@ -118,6 +118,13 @@ pytest
 cargo run --example 01_luminance
 ```
 
+`maturin develop` is an editable install: the compiled extension is
+written to `python/phaios_core/` inside the checkout (gitignored) and the
+virtual environment gets a `.pth` pointing there, so a rebuild is picked
+up without reinstalling. Two virtual environments developing from the
+same checkout therefore overwrite each other's build; use one per
+checkout.
+
 ---
 
 ## Usage (Python)
