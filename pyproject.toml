@@ -15,6 +15,7 @@ classifiers = [
     "Topic :: Multimedia :: Graphics",
     "Intended Audience :: Developers",
     "Development Status :: 3 - Alpha",
+    "Typing :: Typed",
 ]
 dependencies = []
 
@@ -25,6 +26,7 @@ Changelog = "https://github.com/sdhdez/phaios-core/releases"
 
 [tool.maturin]
 module-name = "phaios_core"
+python-source = "python"
 
 # pytest configuration
 [tool.pytest.ini_options]
