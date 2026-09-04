@@ -45,6 +45,7 @@ from phaios_core import (
     ResizeParams,
     RolloffParams,
     ShadowRolloffParams,
+    SharpenParams,
     SplitToningParams,
     StraightenParams,
     ToneCurveParams,
@@ -246,6 +247,16 @@ def glow(img: GpuImage, params: GlowParams | None = None) -> GpuImage:
     """Light scattering on the GPU — halation, diffusion and veiling glare.
 Mirrors ``phaios_core.glow``; agreement is bounded, inherited from
 the blur between the two element-wise halves."""
+    ...
+
+def sharpen(img: GpuImage, params: SharpenParams | None = None) -> GpuImage:
+    """Unsharp mask on the GPU — a threshold-gated Gaussian sharpen. Mirrors
+``phaios_core.sharpen``; agreement is bounded (blur's class), inherited
+entirely from the blur beneath the pointwise gate-and-combine kernel,
+which is itself bit-exact.
+
+``amount = 0.0`` or ``sigma = 0.0`` is the exact identity on both
+backends."""
     ...
 
 def quantize_u8(img: GpuImage, params: QuantizeParams | None = None) -> NDArray[np.uint8]:

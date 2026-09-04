@@ -113,6 +113,7 @@ use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
 use phaios_core::lut::{LutParams, apply_lut};
 use phaios_core::quantize::{Dither, QuantizeParams, quantize_u8, quantize_u16};
 use phaios_core::shadow_rolloff::{ShadowRolloffParams, shadow_rolloff};
+use phaios_core::sharpen::{SharpenParams, sharpen};
 use phaios_core::split_toning::{SplitToningParams, split_toning};
 use phaios_core::tone::{ToneCurveParams, ZoneParams, tone_curve, zone_system};
 use phaios_core::vignette::{VignetteParams, vignette};
@@ -1603,6 +1604,75 @@ proptest! {
         let params = GlowParams::new(0.5, sigma, 0.5);
         let ra = catch_call(|| glow(img_a.view(), &params));
         let rb = catch_call(|| glow(img_b.view(), &params));
+        let msg_a = expect_rejected_message(ra, "sigma")?;
+        let msg_b = expect_rejected_message(rb, "sigma")?;
+        prop_assert_eq!(msg_a, msg_b);
+    }
+}
+
+// ── sharpen ──────────────────────────────────────────────────────────────────
+
+proptest! {
+    #![proptest_config(config())]
+
+    /// P1 + P5 + P6.
+    #[test]
+    fn sharpen_valid_params_is_accepted(
+        (img_a, img_b) in any_c_image_pair(),
+        amount in 0.0f32..100.0f32,
+        sigma in 0.0f32..64.0f32,
+        threshold in 0.0f32..100.0f32,
+    ) {
+        let params = SharpenParams::new(amount, sigma, threshold);
+        let out_a = sharpen(img_a.view(), &params)?;
+        let out_b = sharpen(img_b.view(), &params)?;
+        prop_assert_eq!(out_a.dim(), img_a.dim());
+        prop_assert!(out_a.iter().all(|v| v.is_finite()));
+        prop_assert!(out_b.iter().all(|v| v.is_finite()));
+
+        assert_layout_agnostic(&img_a, |v| sharpen(v, &params))?;
+        assert_deterministic_f32(|| sharpen(img_a.view(), &params))?;
+    }
+
+    /// P2 + P3b over `amount`: non-finite or negative.
+    #[test]
+    fn sharpen_bad_amount_is_rejected(
+        (img_a, img_b) in any_c_image_pair(),
+        amount in prop_oneof![2 => non_finite_f32(), 1 => -100.0f32..0.0f32],
+    ) {
+        let params = SharpenParams::new(amount, 1.0, 0.0);
+        let ra = catch_call(|| sharpen(img_a.view(), &params));
+        let rb = catch_call(|| sharpen(img_b.view(), &params));
+        let msg_a = expect_rejected_message(ra, "amount")?;
+        let msg_b = expect_rejected_message(rb, "amount")?;
+        prop_assert_eq!(msg_a, msg_b);
+    }
+
+    /// P2 + P3b over `threshold`: non-finite or negative.
+    #[test]
+    fn sharpen_bad_threshold_is_rejected(
+        (img_a, img_b) in any_c_image_pair(),
+        threshold in prop_oneof![2 => non_finite_f32(), 1 => -100.0f32..0.0f32],
+    ) {
+        let params = SharpenParams::new(0.5, 1.0, threshold);
+        let ra = catch_call(|| sharpen(img_a.view(), &params));
+        let rb = catch_call(|| sharpen(img_b.view(), &params));
+        let msg_a = expect_rejected_message(ra, "threshold")?;
+        let msg_b = expect_rejected_message(rb, "threshold")?;
+        prop_assert_eq!(msg_a, msg_b);
+    }
+
+    /// P2 + P3b: `sigma` outside `blur`'s own domain — `sharpen` delegates
+    /// to `blur::validate`, so the message is whatever that validator
+    /// names (mirrors `glow_bad_sigma_is_rejected`).
+    #[test]
+    fn sharpen_bad_sigma_is_rejected(
+        (img_a, img_b) in any_c_image_pair(),
+        sigma in prop_oneof![2 => non_finite_f32(), 1 => -1.0e6f32..0.0f32],
+    ) {
+        let params = SharpenParams::new(0.5, sigma, 0.0);
+        let ra = catch_call(|| sharpen(img_a.view(), &params));
+        let rb = catch_call(|| sharpen(img_b.view(), &params));
         let msg_a = expect_rejected_message(ra, "sigma")?;
         let msg_b = expect_rejected_message(rb, "sigma")?;
         prop_assert_eq!(msg_a, msg_b);

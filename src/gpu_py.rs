@@ -389,6 +389,25 @@ fn glow(
     Ok(GpuImage { inner: result })
 }
 
+/// Unsharp mask on the GPU — a threshold-gated Gaussian sharpen. Mirrors
+/// ``phaios_core.sharpen``; agreement is bounded (blur's class), inherited
+/// entirely from the blur beneath the pointwise gate-and-combine kernel,
+/// which is itself bit-exact.
+///
+/// ``amount = 0.0`` or ``sigma = 0.0`` is the exact identity on both
+/// backends.
+#[pyfunction]
+#[pyo3(signature = (img, params = None))]
+fn sharpen(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: Option<crate::sharpen::SharpenParams>,
+) -> PyResult<GpuImage> {
+    let owned = params.unwrap_or_default();
+    let result = py.detach(|| cuda::kernels::sharpen_device(&img.inner, &owned))?;
+    Ok(GpuImage { inner: result })
+}
+
 /// Radial vignette on the GPU. Mirrors ``phaios_core.vignette``;
 /// bit-exact against the CPU.
 #[pyfunction]
@@ -598,6 +617,7 @@ pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult
     gpu.add_function(wrap_pyfunction!(shadow_rolloff, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(blur, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(glow, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(sharpen, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(quantize_u8, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(quantize_u16, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(histogram, &gpu)?)?;

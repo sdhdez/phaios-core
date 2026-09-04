@@ -613,3 +613,39 @@ def test_gpu_glow_matches_cpu(ctx, threshold, sigma, amount):
         np.testing.assert_array_equal(got, want)
     else:
         assert np.abs(got - want).max() <= 1e-5 * np.abs(want).max() + 1e-7
+
+
+@needs_device
+@pytest.mark.parametrize(
+    "amount,sigma,threshold",
+    [(0.0, 3.0, 0.1), (0.35, 1.5, 0.0), (0.5, 8.0, 0.0), (0.4, 1.2, 0.05)],
+)
+def test_gpu_sharpen_matches_cpu(ctx, amount, sigma, threshold):
+    rng = np.random.default_rng(76)
+    img = rng.random((31, 43, 3)).astype(np.float32) * 2.0
+    params = ph.SharpenParams(amount, sigma, threshold)
+    got = gpu.sharpen(ctx.upload(img), params).download()
+    want = ph.sharpen(img, params)
+    if amount == 0.0 or sigma == 0.0:
+        np.testing.assert_array_equal(got, want)   # identity fast path, a copy
+    else:
+        assert np.abs(got - want).max() <= 1e-5 * np.abs(want).max() + 1e-7
+
+
+@needs_device
+def test_gpu_sharpen_default_is_the_identity(ctx):
+    rng = np.random.default_rng(77)
+    img = rng.random((17, 23, 3)).astype(np.float32)
+    got = gpu.sharpen(ctx.upload(img)).download()
+    np.testing.assert_array_equal(got, img)
+
+
+@needs_device
+def test_gpu_sharpen_same_validation_as_cpu(ctx):
+    img = np.ones((4, 4, 1), dtype=np.float32)
+    resident = ctx.upload(img)
+    with pytest.raises(ValueError) as gpu_err:
+        gpu.sharpen(resident, ph.SharpenParams(-1.0, 1.0, 0.0))
+    with pytest.raises(ValueError) as cpu_err:
+        ph.sharpen(img, ph.SharpenParams(-1.0, 1.0, 0.0))
+    assert str(gpu_err.value) == str(cpu_err.value)

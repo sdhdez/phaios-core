@@ -2051,6 +2051,7 @@ fn every_fallible_device_entry_point_rejects_what_the_cpu_rejects() {
     use phaios_core::local_contrast::GuidedFilterParams;
     use phaios_core::lut::LutParams;
     use phaios_core::shadow_rolloff::ShadowRolloffParams;
+    use phaios_core::sharpen::SharpenParams;
     use phaios_core::split_toning::SplitToningParams;
     use phaios_core::tone::{ToneCurveParams, ZoneParams};
     use phaios_core::vignette::VignetteParams;
@@ -2077,6 +2078,20 @@ fn every_fallible_device_entry_point_rejects_what_the_cpu_rejects() {
         "glow amount=-1",
         phaios_core::glow::glow(rgb.view(), &p),
         cuda::kernels::glow_device(&d_rgb, &p),
+    );
+
+    let p = SharpenParams::new(0.5, f32::NAN, 0.0);
+    rejects_identically(
+        "sharpen sigma=NaN",
+        phaios_core::sharpen::sharpen(rgb.view(), &p),
+        cuda::kernels::sharpen_device(&d_rgb, &p),
+    );
+
+    let p = SharpenParams::new(-1.0, 2.0, 0.0);
+    rejects_identically(
+        "sharpen amount=-1",
+        phaios_core::sharpen::sharpen(rgb.view(), &p),
+        cuda::kernels::sharpen_device(&d_rgb, &p),
     );
 
     rejects_identically(
@@ -2517,6 +2532,146 @@ fn glow_identity_is_bit_exact() {
         cuda::kernels::glow(&ctx, img.view(), &params).unwrap()
     );
     assert_eq!(glow(img.view(), &params).unwrap(), img);
+}
+
+// ── sharpen: one pointwise kernel after the shared device blur ──────────────
+
+/// Sharpen across amount/sigma/threshold. The bound is inherited from
+/// the blur underneath the pointwise gate-and-combine kernel, so it is
+/// the blur's (1e-5, 1e-7) rather than anything looser — the pointwise
+/// half is bit-exact (no transcendentals, `-fmad=false`; see
+/// `src/cuda/ptx/sharpen.cu`).
+#[test]
+fn sharpen_agrees_within_bound() {
+    use phaios_core::sharpen::{SharpenParams, sharpen};
+
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(97, 131, 3).mapv(|v| v * 2.0);
+
+    let mut worst = 0.0_f32;
+    let mut worst_where = String::new();
+    for (amount, sigma, threshold) in [
+        (0.0_f32, 8.0_f32, 0.0_f32), // the identity fast path
+        (0.35, 1.5, 0.0),            // direct blur path, gate off (threshold=0)
+        (0.5, 8.0, 0.0),             // box blur path, gate off
+        (0.4, 1.2, 0.05),            // direct path, gate engaged
+        (0.3, 10.0, 0.2),            // box path, gate engaged
+    ] {
+        let params = SharpenParams::new(amount, sigma, threshold);
+        let cpu = sharpen(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::sharpen(&ctx, img.view(), &params).unwrap();
+        let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+        if v > worst {
+            worst = v;
+            worst_where = format!("amount={amount} sigma={sigma} threshold={threshold}");
+        }
+        assert!(
+            v <= 1.0,
+            "sharpen amount={amount} sigma={sigma} threshold={threshold}: {v:.2}x the bound"
+        );
+    }
+    eprintln!("sharpen unit-range sweep: worst {worst:.4}x the bound ({worst_where})");
+}
+
+/// The same agreement, on input that actually spans a scene's dynamic
+/// range — `blur`'s and `glow`'s own reason (`docs/ffi.md` §6): the box
+/// path's f64-vs-Kahan-f32 divergence only shows up when a bright sample
+/// and a dark one share a sliding window, which `pseudo_random_image`
+/// never produces.
+///
+/// `detail = img - blurred` inherits the blur's own error at the
+/// highlight edge, so this is the same stress `blur_agrees_within_bound
+/// _across_the_dynamic_range` and `glow_agrees_within_bound_across_the
+/// _dynamic_range` apply, one stage later.
+#[test]
+fn sharpen_agrees_within_bound_across_the_dynamic_range() {
+    use phaios_core::sharpen::{SharpenParams, sharpen};
+
+    let Some(ctx) = try_context() else { return };
+    let mut worst = 0.0_f32;
+    let mut worst_where = String::new();
+
+    for highlight in [1.0_f32, 1e2, 1e4, 1e6, 1e8] {
+        let mut img = ndarray::Array3::<f32>::from_elem((97, 131, 1), 1e-4);
+        img.slice_mut(ndarray::s![40..44, 20..110, ..])
+            .fill(highlight);
+
+        // sigma 3 is the direct convolution (below BOX_CROSSOVER_SIGMA =
+        // 6); 12 and 30 are the box path — the one that could not
+        // survive a bright sample leaving a running f32 total.
+        for (amount, sigma, threshold) in [
+            (0.35_f32, 3.0_f32, 0.0_f32),
+            (0.35, 12.0, 0.0),
+            (0.4, 30.0, 0.0),
+            (0.4, 12.0, 0.5),
+            (0.4, 30.0, 0.5),
+        ] {
+            let params = SharpenParams::new(amount, sigma, threshold);
+            let cpu = sharpen(img.view(), &params).unwrap();
+            let gpu = cuda::kernels::sharpen(&ctx, img.view(), &params).unwrap();
+            let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+            if v > worst {
+                worst = v;
+                worst_where =
+                    format!("amount={amount} sigma={sigma} threshold={threshold} hl={highlight:e}");
+            }
+            assert!(
+                v <= 1.0,
+                "sharpen amount={amount} sigma={sigma} threshold={threshold} \
+                 with a {highlight:e} highlight: {v:.4}x the (1e-5, 1e-7) bound"
+            );
+        }
+    }
+
+    eprintln!("sharpen HDR sweep: worst {worst:.4}x the bound ({worst_where})");
+}
+
+/// `amount = 0` and `sigma = 0` are each a copy on both backends, so
+/// both fast paths must be bit-exact.
+#[test]
+fn sharpen_identity_is_bit_exact() {
+    use phaios_core::sharpen::{SharpenParams, sharpen};
+
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(48, 64, 3);
+
+    let amount_zero = SharpenParams::new(0.0, 3.0, 0.1);
+    assert_eq!(
+        sharpen(img.view(), &amount_zero).unwrap(),
+        cuda::kernels::sharpen(&ctx, img.view(), &amount_zero).unwrap()
+    );
+    assert_eq!(sharpen(img.view(), &amount_zero).unwrap(), img);
+
+    let sigma_zero = SharpenParams::new(0.5, 0.0, 0.1);
+    assert_eq!(
+        sharpen(img.view(), &sigma_zero).unwrap(),
+        cuda::kernels::sharpen(&ctx, img.view(), &sigma_zero).unwrap()
+    );
+    assert_eq!(sharpen(img.view(), &sigma_zero).unwrap(), img);
+}
+
+/// Degenerate shapes must agree too — the single row and single column
+/// cases are where a separable filter's axis handling goes wrong, and
+/// `sharpen` inherits that risk entirely from the blur beneath it.
+#[test]
+fn sharpen_degenerate_shapes_agree() {
+    use phaios_core::sharpen::{SharpenParams, sharpen};
+
+    let Some(ctx) = try_context() else { return };
+    for (h, w, c) in [(1, 1, 1), (1, 33, 3), (33, 1, 3), (2, 2, 1), (17, 5, 3)] {
+        let img = pseudo_random_image(h, w, c);
+        for (amount, sigma, threshold) in [(0.5_f32, 1.5_f32, 0.0_f32), (0.4, 6.0, 0.1)] {
+            let params = SharpenParams::new(amount, sigma, threshold);
+            let cpu = sharpen(img.view(), &params).unwrap();
+            let gpu = cuda::kernels::sharpen(&ctx, img.view(), &params).unwrap();
+            let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+            assert!(
+                v <= 1.0,
+                "sharpen {h}x{w}x{c} amount={amount} sigma={sigma} threshold={threshold}: \
+                 {v:.2}x the bound"
+            );
+        }
+    }
 }
 
 /// `blur` and `glow` diverge on non-finite input **below the box
