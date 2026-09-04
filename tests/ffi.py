@@ -12,11 +12,13 @@ Run with: pytest tests/ffi.py
 
 import math
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 import phaios_core as ph
+import stub_contract
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -1617,3 +1619,28 @@ def test_glow_params_repr_and_defaults():
     assert p.amount == 0.0
     assert p == ph.GlowParams(0.0, 8.0, 0.0)
     assert "amount=0.35" in repr(ph.GlowParams(0.8, 8.0, 0.35))
+
+
+# ── Type stubs ────────────────────────────────────────────────────────────────
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_INIT_PYI = _REPO_ROOT / "python" / "phaios_core" / "__init__.pyi"
+
+
+def test_stub_ships_in_the_installed_package():
+    """`__init__.pyi`, `gpu.pyi` and `py.typed` must sit next to the
+    installed `phaios_core` package, and the installed `__init__.pyi` must
+    be byte-identical to the repo copy. A failure here means a stale
+    `maturin develop` or a packaging bug ships a wheel with no type
+    information despite this file existing in the repo."""
+    errors = stub_contract.check_packaging(ph, _REPO_ROOT)
+    assert not errors, "\n".join(errors)
+
+
+def test_stub_matches_the_runtime_module():
+    """Every public name, signature, docstring and class shape in
+    `python/phaios_core/__init__.pyi` must match the built `phaios_core`
+    module exactly. A failure here means the stub drifted from the code
+    it documents — the discrepancy list names exactly what and where."""
+    errors = stub_contract.check_stub(_INIT_PYI, ph, top_level=True)
+    assert not errors, "\n".join(errors)

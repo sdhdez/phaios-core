@@ -14,10 +14,13 @@ Two regimes, both covered:
 Run with: pytest tests/ffi_gpu.py
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 import phaios_core as ph
+import stub_contract
 
 # The gpu submodule only exists when the wheel was built with the cuda
 # feature. A CPU-only build skips this whole file — that build's contract
@@ -67,6 +70,19 @@ def test_shipped_docstring_example_matches_the_real_api():
         assert stale not in doc, f"the docstring example names {stale!r}, which does not exist"
     for real in ("ctx.upload(", "img.download()"):
         assert real in doc, f"the docstring example should show {real!r}"
+
+
+_GPU_PYI = Path(__file__).resolve().parent.parent / "python" / "phaios_core" / "gpu.pyi"
+
+
+def test_gpu_stub_matches_the_runtime_submodule():
+    """Every public name, signature, docstring and class shape in
+    `python/phaios_core/gpu.pyi` must match the built `phaios_core.gpu`
+    submodule exactly. Needs no device: it only inspects the module
+    object, which exists whenever this file was not already skipped by
+    the file-level `importorskip` above."""
+    errors = stub_contract.check_stub(_GPU_PYI, gpu, top_level=False)
+    assert not errors, "\n".join(errors)
 
 
 @needs_device
