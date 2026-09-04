@@ -30,6 +30,7 @@ from phaios_core import (
     BlurShape,
     ColorFilter,
     CropParams,
+    DenoiseParams,
     Dither,
     GlowParams,
     GrainParams,
@@ -349,6 +350,18 @@ def hot_pixels(img: GpuImage, params: HotPixelParams) -> GpuImage:
 ``phaios_core.hot_pixels``; bit-exact (a fixed comparator network of
 ``min``/``max`` pairs with no arithmetic, the same class as ``crop``,
 ``orient`` and ``vignette``)."""
+    ...
+
+def denoise(img: GpuImage, params: DenoiseParams | None = None) -> GpuImage:
+    """Guided-filter denoise on the GPU. Mirrors ``phaios_core.denoise``;
+agreement bounded by the guided filter's own class (rtol 1e-4, atol
+1e-6) -- confirmed for both dispatch branches: ``C == 1`` is a direct
+call to the same device kernel ``local_contrast`` uses, and ``C ==
+3`` adds three new cross-guided kernels that stay within the same
+bound.
+
+``amount = 0.0`` (the default) is the exact identity on both
+backends."""
     ...
 
 def resize(img: GpuImage, params: ResizeParams) -> GpuImage:

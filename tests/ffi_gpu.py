@@ -675,3 +675,37 @@ def test_gpu_hot_pixels_same_validation_as_cpu(ctx):
     with pytest.raises(ValueError) as cpu_err:
         ph.hot_pixels(img, ph.HotPixelParams(-1.0, 0.0))
     assert str(gpu_err.value) == str(cpu_err.value)
+
+
+@needs_device
+@pytest.mark.parametrize("channels", [1, 3])
+def test_gpu_denoise_matches_cpu(ctx, channels):
+    rng = np.random.default_rng(83)
+    img = rng.random((37, 29, channels)).astype(np.float32)
+    params = ph.DenoiseParams(4, 0.05, 0.6)
+    got = gpu.denoise(ctx.upload(img), params).download()
+    want = ph.denoise(img, params)
+    # Bounded, not bit-exact: the guided filter's own class (rtol 1e-4,
+    # atol 1e-6) -- docs/ffi.md section 6, confirmed for C=1 and C=3 by
+    # tests/cuda_conformance.rs.
+    assert np.abs(got - want).max() <= 1e-4 * np.abs(want).max() + 1e-6
+    assert got.shape == want.shape == img.shape
+
+
+@needs_device
+def test_gpu_denoise_default_is_the_identity(ctx):
+    rng = np.random.default_rng(84)
+    img = rng.random((17, 23, 3)).astype(np.float32)
+    got = gpu.denoise(ctx.upload(img)).download()
+    np.testing.assert_array_equal(got, img)
+
+
+@needs_device
+def test_gpu_denoise_same_validation_as_cpu(ctx):
+    img = np.ones((4, 4, 1), dtype=np.float32)
+    resident = ctx.upload(img)
+    with pytest.raises(ValueError) as gpu_err:
+        gpu.denoise(resident, ph.DenoiseParams(2, -1.0, 0.5))
+    with pytest.raises(ValueError) as cpu_err:
+        ph.denoise(img, ph.DenoiseParams(2, -1.0, 0.5))
+    assert str(gpu_err.value) == str(cpu_err.value)

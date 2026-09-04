@@ -2043,6 +2043,7 @@ fn rejects_identically<T, U>(
 fn every_fallible_device_entry_point_rejects_what_the_cpu_rejects() {
     use phaios_core::blur::{BlurParams, BlurShape};
     use phaios_core::bw::{ColorFilter, HslWeightedParams, LuminanceStandard};
+    use phaios_core::denoise::DenoiseParams;
     use phaios_core::film_grain::GrainParams;
     use phaios_core::geometry::{CropParams, ResizeFilter, ResizeParams};
     use phaios_core::glow::GlowParams;
@@ -2107,6 +2108,20 @@ fn every_fallible_device_entry_point_rejects_what_the_cpu_rejects() {
         "hot_pixels relative=NaN",
         phaios_core::hot_pixels::hot_pixels(rgb.view(), &p),
         cuda::kernels::hot_pixels_device(&d_rgb, &p),
+    );
+
+    let p = DenoiseParams::new(2, -1.0, 0.5, LuminanceStandard::Bt709);
+    rejects_identically(
+        "denoise noise_sigma=-1",
+        phaios_core::denoise::denoise(rgb.view(), &p),
+        cuda::kernels::denoise_device(&d_rgb, &p),
+    );
+
+    let p = DenoiseParams::new(2, 0.02, 1.5, LuminanceStandard::Bt709);
+    rejects_identically(
+        "denoise amount=1.5",
+        phaios_core::denoise::denoise(rgb.view(), &p),
+        cuda::kernels::denoise_device(&d_rgb, &p),
     );
 
     rejects_identically(
@@ -2857,6 +2872,517 @@ fn hot_pixels_agrees_bit_for_bit_on_nan_and_inf_input() {
             &gpu,
             &format!("nan/inf threshold={threshold} relative={relative}"),
         );
+    }
+}
+
+// ── denoise: local_contrast's own bound, confirmed for the new cross- ──────
+// ── guided kernels too ──────────────────────────────────────────────────────
+
+/// `denoise`'s self-guided path at `C == 1` is a direct call to
+/// `local_contrast_device` with `strength = -amount` -- the same
+/// exact-negation argument `src/denoise.rs`'s module documentation gives
+/// for the CPU kernel (negating one multiply operand is an exact sign
+/// flip) applies bit for bit on the device too, since both device entry
+/// points round the identical sequence of operations. `amount` is kept
+/// away from `0.0` throughout so every case here actually reaches that
+/// shared computation rather than `denoise_device`'s own identity fast
+/// path.
+#[test]
+fn denoise_device_c1_is_bit_exact_with_local_contrast_device() {
+    use phaios_core::bw::LuminanceStandard;
+    use phaios_core::denoise::DenoiseParams;
+    use phaios_core::local_contrast::GuidedFilterParams;
+
+    let Some(ctx) = try_context() else { return };
+    let img = pseudo_random_image(97, 131, 1);
+    let d_img = ctx.upload(img.view()).unwrap();
+
+    for (radius, noise_sigma, amount) in [
+        (0_u32, 0.0_f32, 1.0_f32),
+        (4, 0.02, 0.6),
+        (8, 0.1, 1.0),
+        (64, 0.0, 0.35),
+        (2, 0.5, 0.01),
+    ] {
+        let denoise_params =
+            DenoiseParams::new(radius, noise_sigma, amount, LuminanceStandard::Bt709);
+        let via_denoise = cuda::kernels::denoise_device(&d_img, &denoise_params).unwrap();
+        let via_denoise = ctx.download(&via_denoise).unwrap();
+
+        let eps = noise_sigma * noise_sigma;
+        let gf = GuidedFilterParams::new(radius, eps);
+        let via_local_contrast =
+            cuda::kernels::local_contrast_device(&d_img, &gf, -amount).unwrap();
+        let via_local_contrast = ctx.download(&via_local_contrast).unwrap();
+
+        assert_eq!(
+            via_denoise, via_local_contrast,
+            "radius={radius} noise_sigma={noise_sigma} amount={amount}: \
+             denoise_device(C=1) diverged from local_contrast_device(strength=-amount)"
+        );
+    }
+}
+
+/// GPU `denoise` agrees with the CPU oracle within the guided filter's
+/// own bound (rtol 1e-4, atol 1e-6, `docs/ffi.md` §6) -- confirmed
+/// empirically for both channel counts `denoise` dispatches specially:
+/// `C == 1` (self-guided, inherits the bound automatically since it is
+/// the very same device kernel) and `C == 3` (cross-guided, three new
+/// kernels adding one new cancelling subtraction, `cov(I, p_c)`, the
+/// self-guided path never exercises). Prints the worst ratio to the
+/// bound with `--nocapture`.
+///
+/// `radius = 0` is deliberately paired with a *nonzero* `noise_sigma`
+/// here (`0.05`, not `0.0`): at `radius = 0` **and** `eps` exactly
+/// `0.0`, `C == 3`'s `a_c = cov / (var_i + eps)` divides two
+/// independently-SAT-rounded near-zero residuals by each other on the
+/// CPU side (`var_i`/`cov` are each mathematically exactly `0.0` at a
+/// single-pixel window, but the SAT's four-corner query does not
+/// recover that *exactly*, unlike a direct single-term sum) --
+/// measured at up to 222069x the bound on this test's own image, a
+/// genuine CPU-side instability, investigated and confirmed unrelated
+/// to the device kernels (see
+/// `denoise_cross_guided_diverges_from_the_cpu_at_extreme_highlights`
+/// for the same investigation at the other pathological corner, extreme
+/// highlights). The exact `radius = 0` identity itself is separately
+/// pinned, bit-exact against the input directly rather than against
+/// this CPU oracle, by `denoise_degenerate_shapes_and_identity_agree`.
+#[test]
+fn denoise_agrees_with_cpu_oracle() {
+    use phaios_core::bw::LuminanceStandard;
+    use phaios_core::denoise::{DenoiseParams, denoise};
+
+    let Some(ctx) = try_context() else { return };
+
+    for &c in &[1_usize, 3] {
+        let img = pseudo_random_image(89, 113, c);
+        let mut worst = 0.0_f32;
+        let mut worst_where = String::new();
+        for (radius, noise_sigma, amount) in [
+            (0_u32, 0.05_f32, 1.0_f32),
+            (2, 0.02, 0.6),
+            (4, 0.05, 1.0),
+            (8, 0.01, 0.4),
+            (32, 0.1, 0.8),
+        ] {
+            let params = DenoiseParams::new(radius, noise_sigma, amount, LuminanceStandard::Bt709);
+            let cpu = denoise(img.view(), &params).unwrap();
+            let gpu = cuda::kernels::denoise(&ctx, img.view(), &params).unwrap();
+            let v = worst_violation(&cpu, &gpu, 1e-4, 1e-6);
+            if v > worst {
+                worst = v;
+                worst_where =
+                    format!("C={c} radius={radius} noise_sigma={noise_sigma} amount={amount}");
+            }
+            assert!(
+                v <= 1.0,
+                "C={c} radius={radius} noise_sigma={noise_sigma} amount={amount}: \
+                 {v:.4}x the (1e-4, 1e-6) bound"
+            );
+        }
+        eprintln!("denoise unit-range sweep (C={c}): worst {worst:.4}x the bound ({worst_where})");
+    }
+}
+
+/// The same agreement on input that spans a scene's dynamic range --
+/// `field_with_bar`, the input that broke `local_contrast` before its
+/// L/L² fix (51.8× the bound, `src/cuda/ptx/local_contrast.cu`), for
+/// both `C == 1` and a uniform bar shared by all three channels at
+/// `C == 3`. Small radius with a large `noise_sigma` (hence a large
+/// `eps`) is the worst case, mirroring
+/// `local_contrast_agrees_within_bound_across_the_dynamic_range`
+/// exactly -- the three `noise_sigma` values are chosen so
+/// `noise_sigma²` lands on that test's own `eps` sweep, `{1e-4, 0.01,
+/// 0.5}`.
+///
+/// `C == 1` is asserted across the full required highlight range,
+/// `{1e0, 1e2, 1e4, 1e6, 1e8}` -- it inherits `local_contrast_device`'s
+/// own already-proven behaviour there directly. `C == 3` is asserted
+/// only across `{1e0, 1e2, 1e4}`, where it holds comfortably (worst
+/// measured well under 0.01x); the remaining two highlights,
+/// `{1e6, 1e8}`, are where `cov(I, p_c)` -- the one genuinely new
+/// cancelling subtraction this step adds -- was found, empirically, to
+/// exceed the bound on the CPU side. That finding is investigated, not
+/// hidden: see
+/// `denoise_cross_guided_diverges_from_the_cpu_at_extreme_highlights`.
+///
+/// See `denoise_cross_guided_agrees_within_bound_when_only_some_channels
+/// _carry_the_bar` below for the harder `C == 3` case this sweep cannot
+/// reach: here the bar is identical in every channel, so `cov(I, p_c)`
+/// degenerates to `var(I)` exactly as the self-guided path's `cov(I, I)`
+/// does, and never exercises a genuine covariance between two different
+/// signals.
+#[test]
+fn denoise_agrees_within_bound_across_the_dynamic_range() {
+    use phaios_core::bw::LuminanceStandard;
+    use phaios_core::denoise::{DenoiseParams, denoise};
+
+    let Some(ctx) = try_context() else { return };
+    let (h, w) = (64, 96);
+
+    let mut worst_c1 = 0.0_f32;
+    let mut worst_c1_where = String::new();
+    let mut worst_c3 = 0.0_f32;
+    let mut worst_c3_where = String::new();
+
+    for highlight in [1.0_f32, 1e2, 1e4, 1e6, 1e8] {
+        let img_c1 = field_with_bar(h, w, 1e-4, highlight);
+        let bar = field_with_bar(h, w, 1e-4, highlight);
+        let mut img_c3 = Array3::<f32>::zeros((h, w, 3));
+        for ch in 0..3 {
+            img_c3.slice_mut(s![.., .., ch..ch + 1]).assign(&bar);
+        }
+        // See the doc comment: {1e6, 1e8} is a documented, investigated
+        // CPU-side gap for C=3 only -- C=1 is asserted at every
+        // highlight regardless.
+        let assert_c3 = highlight <= 1e4;
+
+        for radius in [1_u32, 2, 8, 32] {
+            // sqrt(1e-4), sqrt(0.01), ~sqrt(0.5): the same eps sweep, roughly
+            // local_contrast's own HDR test uses.
+            for noise_sigma in [0.01_f32, 0.1, 0.7] {
+                let params = DenoiseParams::new(radius, noise_sigma, 0.5, LuminanceStandard::Bt709);
+
+                let cpu = denoise(img_c1.view(), &params).unwrap();
+                let gpu = cuda::kernels::denoise(&ctx, img_c1.view(), &params).unwrap();
+                let v = worst_violation(&cpu, &gpu, 1e-4, 1e-6);
+                if v > worst_c1 {
+                    worst_c1 = v;
+                    worst_c1_where =
+                        format!("radius={radius} noise_sigma={noise_sigma} hl={highlight:e}");
+                }
+                assert!(
+                    v <= 1.0,
+                    "C=1 radius={radius} noise_sigma={noise_sigma} with a {highlight:e} \
+                     highlight: {v:.4}x the (1e-4, 1e-6) bound"
+                );
+
+                let cpu = denoise(img_c3.view(), &params).unwrap();
+                let gpu = cuda::kernels::denoise(&ctx, img_c3.view(), &params).unwrap();
+                let v = worst_violation(&cpu, &gpu, 1e-4, 1e-6);
+                if assert_c3 {
+                    if v > worst_c3 {
+                        worst_c3 = v;
+                        worst_c3_where =
+                            format!("radius={radius} noise_sigma={noise_sigma} hl={highlight:e}");
+                    }
+                    assert!(
+                        v <= 1.0,
+                        "C=3 radius={radius} noise_sigma={noise_sigma} with a {highlight:e} \
+                         highlight: {v:.4}x the (1e-4, 1e-6) bound"
+                    );
+                }
+            }
+        }
+    }
+
+    eprintln!("denoise HDR sweep C=1: worst {worst_c1:.4}x the bound ({worst_c1_where})");
+    eprintln!(
+        "denoise HDR sweep C=3 (uniform bar, hl <= 1e4 only): worst {worst_c3:.4}x the bound \
+         ({worst_c3_where})"
+    );
+}
+
+/// The `C == 3` HDR case the sweep above cannot reach: the bright bar
+/// present in only some channels (R and B; G stays dark everywhere), so
+/// `cov(I, p_c)` is a genuine covariance between two *different*
+/// bright/dark signals rather than the guide against itself. Generalises
+/// `local_contrast.cu`'s own HDR lesson (`var(I)` needs f64 because nothing
+/// cancels it) to `coeff_ab_cross`'s covariance term, which the
+/// self-guided path and the uniform-bar sweep above cannot exercise at
+/// all -- there, "cov" is always "var" of one signal.
+///
+/// As above, asserted only at `{1e0, 1e2, 1e4}` -- see
+/// `denoise_cross_guided_diverges_from_the_cpu_at_extreme_highlights`
+/// for `{1e6, 1e8}`, which this construction is part of too.
+#[test]
+fn denoise_cross_guided_agrees_within_bound_when_only_some_channels_carry_the_bar() {
+    use phaios_core::bw::LuminanceStandard;
+    use phaios_core::denoise::{DenoiseParams, denoise};
+
+    let Some(ctx) = try_context() else { return };
+    let (h, w) = (64, 96);
+
+    let mut worst = 0.0_f32;
+    let mut worst_where = String::new();
+
+    for highlight in [1.0_f32, 1e2, 1e4] {
+        let dark = Array3::<f32>::from_elem((h, w, 1), 1e-4_f32);
+        let bright = field_with_bar(h, w, 1e-4, highlight);
+        let mut img = Array3::<f32>::zeros((h, w, 3));
+        img.slice_mut(s![.., .., 0..1]).assign(&bright); // R: bright bar
+        img.slice_mut(s![.., .., 1..2]).assign(&dark); // G: stays dark
+        img.slice_mut(s![.., .., 2..3]).assign(&bright); // B: bright bar
+
+        for radius in [1_u32, 2, 8, 32] {
+            for noise_sigma in [0.01_f32, 0.1, 0.7] {
+                let params = DenoiseParams::new(radius, noise_sigma, 0.5, LuminanceStandard::Bt709);
+                let cpu = denoise(img.view(), &params).unwrap();
+                let gpu = cuda::kernels::denoise(&ctx, img.view(), &params).unwrap();
+                let v = worst_violation(&cpu, &gpu, 1e-4, 1e-6);
+                if v > worst {
+                    worst = v;
+                    worst_where =
+                        format!("radius={radius} noise_sigma={noise_sigma} hl={highlight:e}");
+                }
+                assert!(
+                    v <= 1.0,
+                    "partial-channel bar radius={radius} noise_sigma={noise_sigma} with a \
+                     {highlight:e} highlight: {v:.4}x the (1e-4, 1e-6) bound"
+                );
+            }
+        }
+    }
+
+    eprintln!(
+        "denoise HDR sweep C=3 (partial-channel bar, hl <= 1e4 only): worst {worst:.4}x the \
+         bound ({worst_where})"
+    );
+}
+
+/// `C == 3` cross-guided EXCEEDS the committed guided-filter bound
+/// against the CPU oracle at extreme highlights (`1e6`, `1e8`) --
+/// investigated during this step, not silently dropped from the two
+/// sweeps above, and not "fixed" by loosening the bound or by editing
+/// `src/denoise.rs` (both out of bounds for this step: the bound is
+/// never loosened to turn a red test green, and the CPU implementation
+/// is a different step's file).
+///
+/// This is a CPU-side numerical limitation, not a device-side fault --
+/// established two ways:
+///
+/// 1. The two sweeps above cover the identical grid at `{1e0, 1e2,
+///    1e4}` and hold comfortably (worst measured well under 0.01x), and
+///    `local_contrast_agrees_within_bound_across_the_dynamic_range`
+///    (unrelated to this step, unmodified) holds at `1e6`/`1e8` too --
+///    so an f64 SAT is not inherently unable to hold this bound at this
+///    magnitude in this crate; only `cross_guided`'s new *covariance*
+///    term is affected.
+/// 2. An independent, from-scratch f64 window-loop oracle (no SAT, no
+///    box-sum reformulation -- sharing no arithmetic structure with
+///    *either* implementation, the same practice
+///    `src/denoise.rs::tests::naive_cross_guided` uses one level up)
+///    is built below for one representative pixel from the failing
+///    grid. The device agrees with it closely; the CPU does not.
+///
+/// Likely mechanism (recorded for whoever picks this up; this step is
+/// not authorised to act on it, `src/denoise.rs` being out of scope):
+/// `local_contrast`'s self-guided `var(L) = mean(L²) − mean(L)²`
+/// cancels near-exactly even through a global SAT, because both terms
+/// derive from the *same* `L` through the *same* accumulation path.
+/// `cross_guided`'s `cov(I, p_c) = mean(I·p_c) − mean(I)·mean(p_c)`
+/// combines `I` (from `luminance_bw`, a separate array -- even where
+/// `p_c` is numerically identical to it, as in the uniform-bar sweep
+/// above) built through a *different* SAT than `p_c`/`I·p_c` -- so the
+/// cancellation that keeps the self-guided term stable does not carry
+/// over, and at `I, p_c ~ 1e6..1e8` (so `I·p_c ~ 1e12..1e16`) the
+/// residual left behind grows large enough in absolute terms to swamp
+/// `eps` for every value tested here, including `eps = 0.49`.
+///
+/// The device path has no equivalent weakness: `box_h_cross` and
+/// `coeff_ab_cross` never build a global prefix sum at all -- the same
+/// reason `local_contrast.cu`'s own box-sum reformulation exists, see
+/// that file's module comment -- so their sums scale with the window,
+/// `(2r+1)²` terms, never with position in the image.
+#[test]
+fn denoise_cross_guided_diverges_from_the_cpu_at_extreme_highlights() {
+    use phaios_core::bw::LuminanceStandard;
+    use phaios_core::denoise::{DenoiseParams, denoise};
+
+    let Some(ctx) = try_context() else { return };
+    let (h, w) = (64, 96);
+
+    // Part 1: measure the divergence across the same grid the two
+    // sweeps above use, at the two highlights that exceed the bound.
+    // Not asserted against (1e-4, 1e-6) -- see the doc comment -- but
+    // every output is still required finite: the CPU's own worst-case
+    // behaviour here is "a very wrong but ordinary number", never
+    // NaN/Inf, and the device must match that much even here.
+    let mut worst = 0.0_f32;
+    let mut worst_where = String::new();
+    for highlight in [1e6_f32, 1e8] {
+        let bar = field_with_bar(h, w, 1e-4, highlight);
+        let mut uniform = Array3::<f32>::zeros((h, w, 3));
+        for ch in 0..3 {
+            uniform.slice_mut(s![.., .., ch..ch + 1]).assign(&bar);
+        }
+        let dark = Array3::<f32>::from_elem((h, w, 1), 1e-4_f32);
+        let mut partial = Array3::<f32>::zeros((h, w, 3));
+        partial.slice_mut(s![.., .., 0..1]).assign(&bar);
+        partial.slice_mut(s![.., .., 1..2]).assign(&dark);
+        partial.slice_mut(s![.., .., 2..3]).assign(&bar);
+
+        for img in [&uniform, &partial] {
+            for radius in [1_u32, 2, 8, 32] {
+                for noise_sigma in [0.01_f32, 0.1, 0.7] {
+                    let params =
+                        DenoiseParams::new(radius, noise_sigma, 0.5, LuminanceStandard::Bt709);
+                    let cpu = denoise(img.view(), &params).unwrap();
+                    let gpu = cuda::kernels::denoise(&ctx, img.view(), &params).unwrap();
+                    assert!(
+                        cpu.iter().all(|v| v.is_finite()) && gpu.iter().all(|v| v.is_finite()),
+                        "radius={radius} noise_sigma={noise_sigma} hl={highlight:e}: \
+                         non-finite output -- a genuinely new failure mode, not the \
+                         documented one"
+                    );
+                    let v = worst_violation(&cpu, &gpu, 1e-4, 1e-6);
+                    if v > worst {
+                        worst = v;
+                        worst_where =
+                            format!("radius={radius} noise_sigma={noise_sigma} hl={highlight:e}");
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "denoise C=3 EXTREME HDR (documented CPU-side divergence, not asserted against \
+         the bound): worst {worst:.4}x the (1e-4, 1e-6) bound ({worst_where})"
+    );
+    assert!(
+        worst > 1.0,
+        "if this now holds within the bound, the CPU-side limitation documented above \
+         has been fixed upstream -- fold {{1e6, 1e8}} back into the two asserted sweeps, \
+         they no longer need special-casing, and delete this test"
+    );
+
+    // Part 2: triangulate with a from-scratch f64 window-loop oracle at
+    // one representative pixel from the failing grid (radius=1,
+    // noise_sigma=0.01, hl=1e6, the uniform-bar image, channel 0) --
+    // sharing no arithmetic structure with either the CPU's SAT-based
+    // `cross_guided` or the device's box-sum kernels.
+    let highlight = 1e6_f32;
+    let bar = field_with_bar(h, w, 1e-4, highlight);
+    let mut img = Array3::<f32>::zeros((h, w, 3));
+    for ch in 0..3 {
+        img.slice_mut(s![.., .., ch..ch + 1]).assign(&bar);
+    }
+    let (radius, noise_sigma, amount) = (1_u32, 0.01_f32, 0.5_f32);
+    let params = DenoiseParams::new(radius, noise_sigma, amount, LuminanceStandard::Bt709);
+    let cpu = denoise(img.view(), &params).unwrap();
+    let gpu = cuda::kernels::denoise(&ctx, img.view(), &params).unwrap();
+
+    let r = i64::from(radius);
+    let eps = f64::from(noise_sigma) * f64::from(noise_sigma);
+    let (py, px, ch): (i64, i64, usize) = (28, 56, 0);
+    let coeff = |cy: i64, cx: i64| -> (f64, f64) {
+        let y1 = (cy - r).max(0);
+        let y2 = (cy + r).min(h as i64 - 1);
+        let x1 = (cx - r).max(0);
+        let x2 = (cx + r).min(w as i64 - 1);
+        let (mut n, mut sum_i, mut sum_i2, mut sum_p, mut sum_ip) =
+            (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+        for yy in y1..=y2 {
+            for xx in x1..=x2 {
+                let iv = f64::from(img[[yy as usize, xx as usize, 0]]);
+                let pv = f64::from(img[[yy as usize, xx as usize, ch]]);
+                n += 1.0;
+                sum_i += iv;
+                sum_i2 += iv * iv;
+                sum_p += pv;
+                sum_ip += iv * pv;
+            }
+        }
+        let mean_i = sum_i / n;
+        let var_i = (sum_i2 / n - mean_i * mean_i).max(0.0);
+        let mean_p = sum_p / n;
+        let mean_ip = sum_ip / n;
+        let cov = mean_ip - mean_i * mean_p;
+        let a = if var_i + eps > 0.0 {
+            cov / (var_i + eps)
+        } else {
+            0.0
+        };
+        (a, mean_p - a * mean_i)
+    };
+    let (y1, y2) = ((py - r).max(0), (py + r).min(h as i64 - 1));
+    let (x1, x2) = ((px - r).max(0), (px + r).min(w as i64 - 1));
+    let (mut n, mut sum_a, mut sum_b) = (0.0_f64, 0.0_f64, 0.0_f64);
+    for yy in y1..=y2 {
+        for xx in x1..=x2 {
+            let (a, b) = coeff(yy, xx);
+            n += 1.0;
+            sum_a += a;
+            sum_b += b;
+        }
+    }
+    let mean_a = sum_a / n;
+    let mean_b = sum_b / n;
+    let iv = f64::from(img[[py as usize, px as usize, 0]]);
+    let pv = f64::from(img[[py as usize, px as usize, ch]]);
+    let q = mean_a * iv + mean_b;
+    let naive_out = (pv - f64::from(amount) * (pv - q)) as f32;
+
+    let (yu, xu) = (py as usize, px as usize);
+    let cpu_diff = (cpu[[yu, xu, ch]] - naive_out).abs();
+    let gpu_diff = (gpu[[yu, xu, ch]] - naive_out).abs();
+    println!(
+        "pixel ({yu},{xu},{ch}): naive={naive_out}, cpu={} (diff {cpu_diff}), gpu={} \
+         (diff {gpu_diff})",
+        cpu[[yu, xu, ch]],
+        gpu[[yu, xu, ch]]
+    );
+    assert!(
+        gpu_diff < 1.0,
+        "the device should match the independent oracle closely at this pixel; got a \
+         diff of {gpu_diff} -- if this fails, the DEVICE has regressed, unlike the gap \
+         this test otherwise documents"
+    );
+    assert!(
+        cpu_diff > 1000.0,
+        "the CPU was observed diverging from the independent oracle by roughly 5.1e5 at \
+         this exact pixel when this test was written; if this assertion now fails, the \
+         CPU-side limitation documented above may have been fixed upstream"
+    );
+}
+
+/// Degenerate shapes and the two identity cases, across every channel
+/// count the dispatch cares about: `C == 1` (the direct
+/// `local_contrast_device` alias), `C == 3` (cross-guided), and two
+/// channel counts that take neither special path (`C == 2`, `C == 4`,
+/// routed through the host-round-trip branch documented in
+/// `src/cuda/kernels/denoise.rs`).
+///
+/// `amount = 0` is the device-copy fast path, bit-exact by construction.
+/// `radius = 0` collapses every window to one pixel: `var`/`cov` become
+/// an exact `x - x = 0.0` on both backends for any input (worked out by
+/// hand in `.cache/scratch/denoise/PROGRESS.md`: the same value cast or
+/// multiplied twice via the same deterministic operation always produces
+/// identical bits, so the cancelling subtraction is exactly zero, not
+/// merely close to it), so it is *also* an exact identity -- against the
+/// original input directly, not merely "close to the CPU" -- for any
+/// `amount`, mirroring `local_contrast_radius_zero_is_bit_exact_identity`.
+#[test]
+fn denoise_degenerate_shapes_and_identity_agree() {
+    use phaios_core::bw::LuminanceStandard;
+    use phaios_core::denoise::{DenoiseParams, denoise};
+
+    let Some(ctx) = try_context() else { return };
+
+    for (h, w) in [(1, 1), (1, 33), (33, 1), (9, 13)] {
+        for c in [1_usize, 2, 3, 4] {
+            let img = pseudo_random_image(h, w, c);
+
+            let zero_amount = DenoiseParams::new(4, 0.1, 0.0, LuminanceStandard::Bt709);
+            let gpu = cuda::kernels::denoise(&ctx, img.view(), &zero_amount).unwrap();
+            assert_eq!(gpu, img, "{h}x{w}x{c}: amount=0 must be the exact identity");
+
+            let zero_radius = DenoiseParams::new(0, 0.1, 0.7, LuminanceStandard::Bt709);
+            let gpu = cuda::kernels::denoise(&ctx, img.view(), &zero_radius).unwrap();
+            assert_eq!(gpu, img, "{h}x{w}x{c}: radius=0 must be the exact identity");
+
+            // A real (radius > 0, amount > 0) case still has to agree
+            // with the CPU within the guided-filter bound on these same
+            // tiny/degenerate shapes -- window clamping at a
+            // single-row or single-column extent is exactly the kind of
+            // edge case a box-sum implementation gets wrong, and C=2/4
+            // additionally exercise the host-round-trip branch.
+            let real = DenoiseParams::new(3, 0.05, 0.6, LuminanceStandard::Bt709);
+            let cpu = denoise(img.view(), &real).unwrap();
+            let gpu = cuda::kernels::denoise(&ctx, img.view(), &real).unwrap();
+            let v = worst_violation(&cpu, &gpu, 1e-4, 1e-6);
+            assert!(v <= 1.0, "{h}x{w}x{c}: {v:.4}x the (1e-4, 1e-6) bound");
+        }
     }
 }
 

@@ -98,6 +98,7 @@ use phaios_core::bw::{
     ColorFilter, HslWeightedParams, LuminanceStandard, channel_mixer_bw, color_filter_bw, hsl_bw,
     luminance_bw,
 };
+use phaios_core::denoise::{DenoiseParams, denoise};
 use phaios_core::encode::encode_srgb;
 use phaios_core::error::PhaiosError;
 use phaios_core::exposure::exposure;
@@ -1728,6 +1729,65 @@ proptest! {
         let rb = catch_call(|| hot_pixels(img_b.view(), &params));
         let msg_a = expect_rejected_message(ra, "relative")?;
         let msg_b = expect_rejected_message(rb, "relative")?;
+        prop_assert_eq!(msg_a, msg_b);
+    }
+}
+
+// ── denoise ──────────────────────────────────────────────────────────────────
+
+proptest! {
+    #![proptest_config(config())]
+
+    /// P1 + P5 + P6, over both dispatch branches `any_channels` reaches
+    /// (`C == 1` self-guided, `C == 3` cross-guided) plus the occasional
+    /// wider count that exercises neither special case.
+    #[test]
+    fn denoise_valid_params_is_accepted(
+        (img_a, img_b) in any_c_image_pair(),
+        radius in 0u32..=8u32,
+        noise_sigma in 0.0f32..2.0f32,
+        amount in 0.0f32..=1.0f32,
+    ) {
+        let params = DenoiseParams::new(radius, noise_sigma, amount, LuminanceStandard::Bt709);
+        let out_a = denoise(img_a.view(), &params)?;
+        let out_b = denoise(img_b.view(), &params)?;
+        prop_assert_eq!(out_a.dim(), img_a.dim());
+        prop_assert!(out_a.iter().all(|v| v.is_finite()));
+        prop_assert!(out_b.iter().all(|v| v.is_finite()));
+
+        assert_layout_agnostic(&img_a, |v| denoise(v, &params))?;
+        assert_deterministic_f32(|| denoise(img_a.view(), &params))?;
+    }
+
+    /// P2 + P3b over `noise_sigma`: non-finite or negative.
+    #[test]
+    fn denoise_bad_noise_sigma_is_rejected(
+        (img_a, img_b) in any_c_image_pair(),
+        noise_sigma in prop_oneof![2 => non_finite_f32(), 1 => -100.0f32..0.0f32],
+    ) {
+        let params = DenoiseParams::new(2, noise_sigma, 0.5, LuminanceStandard::Bt709);
+        let ra = catch_call(|| denoise(img_a.view(), &params));
+        let rb = catch_call(|| denoise(img_b.view(), &params));
+        let msg_a = expect_rejected_message(ra, "noise_sigma")?;
+        let msg_b = expect_rejected_message(rb, "noise_sigma")?;
+        prop_assert_eq!(msg_a, msg_b);
+    }
+
+    /// P2 + P3b over `amount`: non-finite, or outside `0..=1`.
+    #[test]
+    fn denoise_bad_amount_is_rejected(
+        (img_a, img_b) in any_c_image_pair(),
+        amount in prop_oneof![
+            2 => non_finite_f32(),
+            1 => -10.0f32..0.0f32,
+            1 => 1.000_1f32..10.0f32,
+        ],
+    ) {
+        let params = DenoiseParams::new(2, 0.02, amount, LuminanceStandard::Bt709);
+        let ra = catch_call(|| denoise(img_a.view(), &params));
+        let rb = catch_call(|| denoise(img_b.view(), &params));
+        let msg_a = expect_rejected_message(ra, "amount")?;
+        let msg_b = expect_rejected_message(rb, "amount")?;
         prop_assert_eq!(msg_a, msg_b);
     }
 }

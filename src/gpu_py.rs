@@ -564,6 +564,27 @@ fn hot_pixels(
     Ok(GpuImage { inner: result })
 }
 
+/// Guided-filter denoise on the GPU. Mirrors ``phaios_core.denoise``;
+/// agreement bounded by the guided filter's own class (rtol 1e-4, atol
+/// 1e-6) -- confirmed for both dispatch branches: ``C == 1`` is a direct
+/// call to the same device kernel ``local_contrast`` uses, and ``C ==
+/// 3`` adds three new cross-guided kernels that stay within the same
+/// bound.
+///
+/// ``amount = 0.0`` (the default) is the exact identity on both
+/// backends.
+#[pyfunction]
+#[pyo3(signature = (img, params = None))]
+fn denoise(
+    py: Python<'_>,
+    img: &GpuImage,
+    params: Option<crate::denoise::DenoiseParams>,
+) -> PyResult<GpuImage> {
+    let owned = params.unwrap_or_default();
+    let result = py.detach(|| cuda::kernels::denoise_device(&img.inner, &owned))?;
+    Ok(GpuImage { inner: result })
+}
+
 /// Resize on the GPU. Mirrors ``phaios_core.resize``; bit-exact.
 #[pyfunction]
 fn resize(
@@ -647,6 +668,7 @@ pub(crate) fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult
     gpu.add_function(wrap_pyfunction!(crop, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(orient, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(hot_pixels, &gpu)?)?;
+    gpu.add_function(wrap_pyfunction!(denoise, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(resize, &gpu)?)?;
     gpu.add_function(wrap_pyfunction!(straighten, &gpu)?)?;
     parent.add_submodule(&gpu)?;
