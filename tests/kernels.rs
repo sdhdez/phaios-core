@@ -1418,6 +1418,51 @@ fn a_step_edge_is_an_exact_identity_at_threshold_zero_including_the_borders() {
     }
 }
 
+/// A planted outlier at the leftmost column, replaced using the
+/// *clamped* window rather than left unchanged.
+///
+/// Added after the mutation gate showed the step-edge test above does
+/// not actually exercise the border clamp: a step edge's own value at
+/// the border already equals a plain copy-through of the input (that is
+/// the whole point of the identity property), so a mutation that skips
+/// the border ring entirely and copies input straight through produces
+/// bit-identical output on that test — a true negative, not a bug in
+/// the kernel. This test is sensitive to exactly that mutation.
+///
+/// At `x = 0`, both the clamped `x - 1` offset and the true `x` offset
+/// read the *same* column-0 cell, so the corrupted centre is read
+/// **twice** in the window while its uncorrupted right neighbour
+/// (`ramp(1)`) is read three times (once per row) and the once-removed
+/// neighbour `ramp(0)` (rows above/below, not corrupted) four times —
+/// window multiset `{ramp(0)×4, ramp(1)×3, outlier×2}`. Sorted, the
+/// outlier — being far brighter than both ramp values — occupies the
+/// top two slots, leaving `ramp(1)` at the median (5th-of-9) position.
+/// The correct answer is therefore `ramp(1)`, *not* `ramp(0)` and *not*
+/// the outlier: a mutation that drops the clamp and copies input
+/// through leaves the outlier in place (fails), while a mutation that
+/// clamped incorrectly (e.g. treated the border as a smaller window,
+/// changing which count is the majority) would also disagree with this
+/// specific, hand-derived value.
+#[test]
+fn a_bright_outlier_at_the_left_border_is_replaced_using_the_clamped_window() {
+    let (h, w) = (9, 15);
+    let (row, col) = (4, 0);
+    let mut img = x_ramp(h, w);
+    let ramp1 = img[[row, col + 1, 0]]; // the border clamp's un-duplicated neighbour
+    img[[row, col, 0]] = 50.0; // far brighter than anything on the ramp
+
+    let out = hot_pixels(img.view(), &HotPixelParams::new(0.0, 0.0)).unwrap();
+
+    assert_eq!(
+        out[[row, col, 0]].to_bits(),
+        ramp1.to_bits(),
+        "left-border outlier must be replaced by the clamped window's \
+         median, ramp(1) (not ramp(0), and not left unchanged): expected \
+         {ramp1}, got {}",
+        out[[row, col, 0]]
+    );
+}
+
 /// A `threshold` set strictly above the actual `|p - m|` deviation keeps
 /// the pixel unchanged — the mirror image of the two replacement tests
 /// above, pinning the other side of the `>` comparison (an off-by-one
