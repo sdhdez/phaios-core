@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The `phaios_core` Python extension module.
 
 Exposes the numerical kernels as Python-callable functions. All
@@ -7,6 +8,15 @@ import numpy as np
 from numpy.typing import NDArray
 from typing import ClassVar
 from collections.abc import Sequence
+
+# `phaios_core.gpu` exists only in builds compiled with `--features cuda`.
+# Consumers that support CPU-only installs must guard the import:
+#
+#     try:
+#         from phaios_core import gpu
+#     except ImportError:
+#         gpu = None
+from . import gpu as gpu
 
 __version__: str
 
@@ -1482,12 +1492,3 @@ Returns
 numpy.ndarray
     Shape ``(H, W, C)``, dtype ``float32``, display-referred sRGB."""
     ...
-
-# `phaios_core.gpu` exists only in builds compiled with `--features cuda`.
-# Consumers that support CPU-only installs must guard the import:
-#
-#     try:
-#         from phaios_core import gpu
-#     except ImportError:
-#         gpu = None
-from . import gpu as gpu

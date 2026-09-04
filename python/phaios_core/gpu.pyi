@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """CUDA backend for phaios-core (built with `--features cuda`).
 
 Every kernel in the parent module appears here a second time, operating
