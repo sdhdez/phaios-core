@@ -163,6 +163,21 @@ Each stage is optional and each is a pure function; skip any of them and
 the rest still compose. `split_toning` is the one that changes shape,
 taking `(H, W, 1)` to `(H, W, 3)` — the kernels after it accept either.
 
+### Type hints
+
+The wheel is [PEP 561](https://peps.python.org/pep-0561/) typed: it ships
+`py.typed` alongside full `.pyi` stubs for every function, class and
+enum. mypy and pyright pick these up automatically, no configuration
+needed. `phaios_core.gpu` is typed too, but it exists only in builds made
+with `--features cuda`, so guard the import:
+
+```python
+try:
+    from phaios_core import gpu
+except ImportError:
+    gpu = None
+```
+
 ---
 
 ## Licence

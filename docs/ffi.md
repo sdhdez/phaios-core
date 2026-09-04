@@ -537,3 +537,23 @@ WHEEL=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'
 
 When bumping the version for a release, update both files in the same
 commit.
+
+## 8. Type stubs
+
+The typing contract, in brief — see `CONTRIBUTING.md` §"Type stubs" for
+how it's enforced:
+
+- Images are `NDArray[np.float32]`; shape and channel-count rules are
+  documented in each kernel's docstring, not the type (numpy's typing
+  has no shape parameter). `quantize_u8`/`quantize_u16` are the
+  exception, returning `NDArray[np.uint8]`/`NDArray[np.uint16]`.
+- Param objects are unhashable (§3: PyO3 drops `__hash__` once `__eq__`
+  is defined) and declare `__hash__: ClassVar[None]`, the typeshed idiom
+  a type checker recognises.
+- `gpu` is typed but optional at runtime — present only in a
+  `--features cuda` build. Consumers guard the import.
+- The package uses maturin's mixed layout (`python-source = "python"`)
+  solely to carry these stubs (maturin's pure-Rust layout supports only
+  a single root-level stub, not a submodule one); `__init__.py` in
+  `python/phaios_core/` is byte-identical to what maturin generates on
+  its own, so this changes packaging, not runtime behaviour.

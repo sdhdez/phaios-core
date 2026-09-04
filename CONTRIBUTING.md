@@ -32,7 +32,9 @@ One commit containing all of:
 
 1. `src/<kernel>.rs` — the kernel, its `#[pyclass]` params, and
    `#[cfg(test)] mod tests`.
-2. The PyO3 binding in `lib.rs`, plus `m.add_class` / `m.add_function`.
+2. The PyO3 binding in `lib.rs`, plus `m.add_class` / `m.add_function`,
+   **and its entry in `python/phaios_core/__init__.pyi`** (and `gpu.pyi`
+   for a GPU twin).
 3. An integration test in `tests/kernels.rs` asserting a *property*.
 4. Python smoke tests in `tests/ffi.py`, including the error paths.
 5. `examples/NN_<name>.rs`, declared in `Cargo.toml`.
@@ -81,6 +83,46 @@ self-contained, one concept each.
 CI runs every example without `required-features`. The GPU ones run only
 through `scripts/gpu-verify.sh`, since the hosted runner has neither
 `nvcc` nor a device.
+
+## Type stubs
+
+`python/phaios_core/__init__.pyi` (top level) and `python/phaios_core/
+gpu.pyi` (the optional CUDA submodule) ship the type information the
+compiled extension itself carries none of. They live in `python/`
+because the mixed layout (`python-source = "python"` in
+`pyproject.toml`) is the only way maturin supports a submodule stub —
+its pure-Rust layout supports exactly one stub file, at the package
+root (maturin issue #2507).
+
+**The mirror rule:** every signature, default and docstring in the stub
+is copied verbatim from the runtime module. This is checked, not just
+asked for — `tests/stub_contract.py` is a stdlib-only (`ast` +
+`inspect`) checker run through `tests/ffi.py` and `tests/ffi_gpu.py`.
+It names every drift it finds and quotes the exact runtime text to
+paste back into the stub, so fixing a failure is copy-paste, not
+guesswork.
+
+Two more checks run in CI and `scripts/gpu-verify.sh`, on top of the
+contract test:
+
+```sh
+mypy --strict python/phaios_core
+python -m mypy.stubtest phaios_core --allowlist tests/stubtest-allowlist.txt
+```
+
+`mypy --strict` type-checks the stubs on their own terms (an unimported
+name, a bad `NDArray` parameter, a property/setter type clash).
+`stubtest` cross-checks every stub signature against the built module
+directly, catching things the contract test does not look at, such as
+PyO3's exact `__eq__`/`__ne__` parameter shape.
+
+**Allowlist policy** (`tests/stubtest-allowlist.txt`): entries are for
+PyO3 artefacts only — a fact about how PyO3 compiles this extension
+that cannot be expressed in a `.pyi` file, never a shortcut around real
+drift. Every entry carries a one-line comment saying why it's there.
+If `stubtest` reports something and you're not sure whether it's a
+PyO3 artefact or a genuine stub error, fix the stub first; allowlist
+only what turns out to be unfixable.
 
 ## Dependencies
 

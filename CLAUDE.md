@@ -160,6 +160,10 @@ tutorials you may have seen:
   `CONTRIBUTING.md`. The work is not complete until all seven exist —
   the benchmark and the `docs/architecture.md` section are the two most
   often forgotten.
+- **Python-visible changes need the stub.** A new or changed
+  `#[pyfunction]`, `#[pyclass]` field, default or docstring is not
+  complete until `python/phaios_core/__init__.pyi` (or `gpu.pyi`)
+  mirrors it verbatim; `tests/ffi.py` fails on any drift.
 - **Ask before adding a dependency**, and justify it. Rules in
   `CONTRIBUTING.md`.
 - **Scratch files go in `.cache/`** at the repo root — never `/tmp`,

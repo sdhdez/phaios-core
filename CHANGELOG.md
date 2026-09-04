@@ -559,8 +559,34 @@ Six new examples (07–12) and a criterion benchmark per kernel.
   `Cargo.toml` and `pyproject.toml`, and fmt, clippy and the tests must
   pass on the tagged commit, before anything is built or published.
 
+### Added — type stubs
+
+- `python/phaios_core/__init__.pyi` and `gpu.pyi`: full type stubs for
+  every function, class and enum, plus `py.typed` ([PEP
+  561](https://peps.python.org/pep-0561/)). mypy and pyright pick them
+  up with no configuration. Docstrings are mirrored verbatim from the
+  runtime module, not just signatures.
+- `tests/stub_contract.py`, a stdlib-only contract test wired into
+  `tests/ffi.py` and `tests/ffi_gpu.py`, failing on any drift between a
+  stub and the runtime module: names, signatures, defaults,
+  docstrings, class shape, and that the installed package actually
+  ships the stub files.
+- `mypy --strict python/phaios_core` and `python -m mypy.stubtest
+  phaios_core --allowlist tests/stubtest-allowlist.txt` in CI and
+  `scripts/gpu-verify.sh`, catching what the contract test does not:
+  type errors in the stubs themselves, and PyO3-specific signature
+  facts like the exact `__eq__`/`__ne__` parameter shape.
+
 ### Changed
 
+- The package moved to maturin's mixed layout (`python-source =
+  "python"` in `pyproject.toml`) so `phaios_core.gpu` can carry its own
+  stub — maturin's pure-Rust layout supports only one stub file, at the
+  package root. `python/phaios_core/__init__.py` is now committed to
+  the repo, byte-identical to what maturin generated automatically
+  before; no behaviour change.
+- `mypy>=1.18` added to `requirements-dev.txt` (dev-only; the crate
+  itself gains no new dependency).
 - **`local_contrast` is 2.5× faster and uses 3.5× less memory.** The
   summed-area tables are now built in two parallel passes (rows, then
   512-column blocks) instead of one single-threaded cell-by-cell pass,
