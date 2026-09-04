@@ -29,7 +29,11 @@ construction — over generated rather than hand-picked input: valid input
 accepted with finite output, invalid input rejected without a panic and
 naming the offending field, layout-agnostic and deterministic output.
 New dev-dependency `proptest`; fixed seed, no `proptest-regressions/`
-ever written.
+ever written. 256 cases per property (one exception runs fewer, priced
+out by its own kernel's documented cost rather than this file);
+`cargo test --test properties` measured at ~4.1 s. Images are generated
+from a single hashed seed per pixel rather than one proptest strategy
+node per pixel, which is what makes 256 cases affordable at all.
 
 ### Fixed — two CUDA kernels on high-dynamic-range input
 

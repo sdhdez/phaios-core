@@ -47,14 +47,25 @@
 //! set to [`FileFailurePersistence::Off`] everywhere in this file, so no
 //! `proptest-regressions/` directory is ever written — the fixed seed is
 //! the only reproducibility mechanism, and it is enough, since nothing
-//! here reads wall-clock time, ambient files or other outside state.
+//! here reads ambient files or other outside state to *generate* a case
+//! (P4 alone reads the clock, and only to make an assertion about one).
 //!
-//! To run more cases than the default (16 per property — deliberately
-//! below proptest's own default of 256; see [`dim`] and
-//! `blur_valid_sigma_is_accepted`'s doc comment for why, and this file's
-//! measured runtime in `CHANGELOG.md`), set `PROPTEST_CASES`, which this
-//! file honours itself via [`cases`] rather than leaving it to
-//! `ProptestConfig::default()`:
+//! Images are not proptest-generated pixel by pixel. Each is a single
+//! `u64` seed, drawn like any other proptest value (so it shrinks and
+//! replays exactly like one), filled by [`image`] with an ordinary Rust
+//! loop over the crate's own `splitmix64` hash — see that function's doc
+//! comment for the full reasoning; in short, building one proptest
+//! strategy-tree node per pixel, across thousands of generated cases, was
+//! far more expensive than either generating or blurring the pixels ever
+//! was.
+//!
+//! The default case count is 256 per property (proptest's own default),
+//! reached everywhere in this file via [`cases`] rather than left to
+//! `ProptestConfig::default()`, specifically so `PROPTEST_CASES` still
+//! overrides it. One property is the deliberate exception:
+//! `blur_valid_sigma_is_accepted` runs at a lower, separately-configured
+//! count (see its own doc comment) because its cost is dominated by
+//! `box_widths`'s search, not by anything this file generates.
 //!
 //! ```sh
 //! PROPTEST_CASES=1000 cargo test --test properties
@@ -120,7 +131,7 @@ fn cases() -> u32 {
     std::env::var("PROPTEST_CASES")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(16)
+        .unwrap_or(256)
 }
 
 /// The `ProptestConfig` shared by every `proptest! { #![proptest_config(config())] ... }`
@@ -144,21 +155,28 @@ const MAX_ALLOCATION_BYTES: u64 = 8 << 30;
 // ── Shared strategies ────────────────────────────────────────────────────────
 
 /// Image extent: H or W, within `1..=48` as specified, but weighted
-/// heavily toward the small end. Measured: with `1..=48` sampled
-/// uniformly, the dominant cost of every property in this file was not
-/// the kernel call but *generating* the pixel vector — proptest's
-/// weighted-`prop_oneof!` sampling of [`scene_value`] run `h * w * c`
-/// times per image, twice per case — which made a single "valid input"
-/// property (128 cases) take ~3.5 s regardless of the kernel or the
-/// rayon thread count (confirmed by pinning `RAYON_NUM_THREADS=1`, which
-/// made no measurable difference). Across every property in this file
-/// that adds up to far more than the crate's ~10 s budget. Biasing this
-/// distribution toward small images while still reaching all the way to
-/// 48 keeps the documented range reachable — including, occasionally,
-/// its extremes, where `blur`'s and `local_contrast`'s neighbourhood
-/// operations and `straighten`'s resampling get genuinely exercised —
-/// without paying its full cost on every one of the thousands of cases
-/// this file generates.
+/// heavily toward the small end.
+///
+/// An earlier version of this file generated pixels individually —
+/// `prop::collection::vec(scene_value(), h * w * c)` — and *that* strategy
+/// tree, not kernel execution, was the dominant cost (a single "valid
+/// input" property at 128 cases took ~3.5 s regardless of the kernel or
+/// the rayon thread count). [`image`] replaced it with a single `u64`
+/// seed hashed per pixel, which is why pixel generation itself is no
+/// longer the bottleneck — see its doc comment.
+///
+/// That leaves ordinary kernel cost, which still scales with `h * w * c`,
+/// and matters for two more mundane reasons at the case counts this file
+/// runs (256 per property, `cases`): raw wall time across ~70 properties,
+/// and CPU contention — `cargo test` runs properties in parallel, and
+/// `resize_oversized_target_is_refused_before_allocating`'s `< 100 ms`
+/// wall-clock assertion (P4) was measured to flake under that contention
+/// with images sampled uniformly up to 48×48. Biasing this distribution
+/// toward small images while still reaching all the way to 48 keeps the
+/// documented range reachable — including, occasionally, its extremes,
+/// where `blur`'s and `local_contrast`'s neighbourhood operations and
+/// `straighten`'s resampling get genuinely exercised — without either
+/// cost on every one of the thousands of cases this file generates.
 fn dim() -> impl Strategy<Value = usize> {
     prop_oneof![
         8 => 1usize..=6usize,
@@ -186,27 +204,6 @@ fn wrong_channels(correct: usize) -> impl Strategy<Value = usize> {
     })
 }
 
-/// A single scene-referred pixel value: the landmark values named in the
-/// task (0, a value near zero, 18% grey, unity, a bright highlight, and
-/// their negatives — white balance can push a channel slightly negative,
-/// and nothing here validates pixel content) mixed with a continuous
-/// range wide enough to exercise ordinary arithmetic without courting
-/// overflow when combined with this file's parameter ranges.
-fn scene_value() -> impl Strategy<Value = f32> {
-    prop_oneof![
-        10 => -1000.0f32..1000.0f32,
-        1 => Just(0.0f32),
-        1 => Just(1e-6f32),
-        1 => Just(-1e-6f32),
-        1 => Just(0.18f32),
-        1 => Just(-0.18f32),
-        1 => Just(1.0f32),
-        1 => Just(-1.0f32),
-        1 => Just(1.0e4f32),
-        1 => Just(-1.0e4f32),
-    ]
-}
-
 /// NaN, +∞ and −∞ — the three non-finite `f32` values, for building
 /// invalid-parameter strategies.
 fn non_finite_f32() -> impl Strategy<Value = f32> {
@@ -215,22 +212,89 @@ fn non_finite_f32() -> impl Strategy<Value = f32> {
 
 /// Build an `(h, w, c)` image from a flat value vector. `expect` here
 /// documents an invariant of this file's own strategies (the vector is
-/// always sized `h * w * c` by construction), not caller input.
+/// always sized `h * w * c` by construction), not caller input. Used only
+/// where a test needs a *narrower* pixel range than [`image`]'s (the
+/// seed-difference tests, which want a non-trivial midtone image rather
+/// than the full scene-referred spread).
 fn mk_image(h: usize, w: usize, c: usize, vals: Vec<f32>) -> Array3<f32> {
     Array3::from_shape_vec((h, w, c), vals)
         .expect("this file's strategies always build a vec of exactly h*w*c values")
 }
 
+/// One scene-referred pixel value, deterministically, from 64 hashed
+/// bits: the same distribution the original `scene_value()` proptest
+/// strategy sampled — the landmark values named in the task (0, a value
+/// near zero, 18% grey, unity, a bright highlight, and their negatives —
+/// white balance can push a channel slightly negative, and nothing here
+/// validates pixel content) mixed with a continuous range wide enough to
+/// exercise ordinary arithmetic without courting overflow when combined
+/// with this file's parameter ranges — but selected by hashing an index
+/// instead of drawing from `prop_oneof!`. 19 equally-likely buckets: 10
+/// continuous, 1 each for the 9 landmarks, matching the original weights
+/// exactly. See [`image`] for why this exists as a hash rather than a
+/// `Strategy`.
+fn scene_value_from_hash(bits: u64) -> f32 {
+    const LANDMARKS: [f32; 9] = [0.0, 1e-6, -1e-6, 0.18, -0.18, 1.0, -1.0, 1.0e4, -1.0e4];
+    let bucket = bits % 19;
+    if bucket < 10 {
+        // Independent of the bucket selector: the low bits (mod 19) pick
+        // the bucket, the high 32 bits scale to -1000.0..1000.0.
+        let unit = f64::from((bits >> 32) as u32) / f64::from(u32::MAX);
+        (-1000.0 + unit * 2000.0) as f32
+    } else {
+        LANDMARKS[(bucket - 10) as usize]
+    }
+}
+
+/// Build an `(h, w, c)` image whose pixels are drawn from a single `u64`
+/// seed rather than individually from a proptest `Strategy`.
+///
+/// `prop::collection::vec(scene_value(), h * w * c)` — the original
+/// approach — builds one shrinkable strategy-tree node per pixel: a
+/// 48x48x3 image is 6912 of them, generated twice per case (paired
+/// images) in every property in this file. That tree-building cost, not
+/// kernel execution, was measured as the dominant cost of every property
+/// here (see `dim`'s doc history in `CHANGELOG.md`). A single `u64`
+/// strategy draw is O(1) regardless of image size; this function then
+/// fills the array with an ordinary Rust loop — `splitmix64` twice per
+/// pixel, hashing the seed together with the flat index — which costs
+/// real but far smaller time, entirely outside proptest's own
+/// bookkeeping.
+///
+/// Shrinking still works on what matters: `dim()` shrinks `h`/`w` toward
+/// 1, kernel params shrink toward their own simplest values, and the
+/// seed itself shrinks toward 0 (a perfectly ordinary seed, no special
+/// casing needed) — proptest still finds and reports a minimal
+/// `(shape, params, seed)` triple. What it no longer does is shrink
+/// individual pixel values toward "simpler" ones, which was never what
+/// distinguished a useful shrunk case here: every property in this file
+/// cares about shape, params and the seed's *reproducibility*, not about
+/// which particular finite value a given pixel happened to hold.
+///
+/// `splitmix64` is `phaios_core::film_grain::splitmix64` — `pub` already
+/// (film_grain's own noise hash), reused here rather than duplicated.
+fn image(h: usize, w: usize, c: usize, seed: u64) -> Array3<f32> {
+    let n = h * w * c;
+    let mut data = Vec::with_capacity(n);
+    for i in 0..n {
+        let bits = phaios_core::film_grain::splitmix64(
+            seed ^ phaios_core::film_grain::splitmix64(i as u64),
+        );
+        data.push(scene_value_from_hash(bits));
+    }
+    Array3::from_shape_vec((h, w, c), data).expect("this loop always pushes exactly h*w*c values")
+}
+
 prop_compose! {
-    /// Two independently-sampled images sharing one `(h, w, c)` shape, `c`
+    /// Two independently-seeded images sharing one `(h, w, c)` shape, `c`
     /// fixed by the caller — the pair P3 needs to show validation does not
     /// depend on pixel content.
     fn fixed_c_image_pair(c: usize)(h in dim(), w in dim())
-                                   (va in prop::collection::vec(scene_value(), h * w * c),
-                                    vb in prop::collection::vec(scene_value(), h * w * c),
+                                   (seed_a in any::<u64>(),
+                                    seed_b in any::<u64>(),
                                     h in Just(h), w in Just(w))
                                    -> (Array3<f32>, Array3<f32>) {
-        (mk_image(h, w, c, va), mk_image(h, w, c, vb))
+        (image(h, w, c, seed_a), image(h, w, c, seed_b))
     }
 }
 
@@ -239,11 +303,11 @@ prop_compose! {
     /// from [`any_channels`] — for the kernels that place no constraint on
     /// `C` at all.
     fn any_c_image_pair()(h in dim(), w in dim(), c in any_channels())
-                         (va in prop::collection::vec(scene_value(), h * w * c),
-                          vb in prop::collection::vec(scene_value(), h * w * c),
+                         (seed_a in any::<u64>(),
+                          seed_b in any::<u64>(),
                           h in Just(h), w in Just(w), c in Just(c))
                          -> (Array3<f32>, Array3<f32>) {
-        (mk_image(h, w, c, va), mk_image(h, w, c, vb))
+        (image(h, w, c, seed_a), image(h, w, c, seed_b))
     }
 }
 
@@ -252,11 +316,11 @@ prop_compose! {
     /// deliberately *wrong* for `correct_c` — for exercising the shape
     /// half of the validation contract.
     fn wrong_c_image_pair(correct_c: usize)(h in dim(), w in dim(), c in wrong_channels(correct_c))
-                                           (va in prop::collection::vec(scene_value(), h * w * c),
-                                            vb in prop::collection::vec(scene_value(), h * w * c),
+                                           (seed_a in any::<u64>(),
+                                            seed_b in any::<u64>(),
                                             h in Just(h), w in Just(w), c in Just(c))
                                            -> (Array3<f32>, Array3<f32>) {
-        (mk_image(h, w, c, va), mk_image(h, w, c, vb))
+        (image(h, w, c, seed_a), image(h, w, c, seed_b))
     }
 }
 
@@ -412,29 +476,28 @@ prop_compose! {
 }
 
 prop_compose! {
-    /// A full valid crop case: shape, two independent images of that
-    /// shape, and a rectangle guaranteed to lie inside it.
+    /// A full valid crop case: shape, two independently-seeded images of
+    /// that shape, and a rectangle guaranteed to lie inside it.
     fn valid_crop_case()(h in dim(), w in dim(), c in any_channels())
                         (params in valid_crop(h, w),
-                         va in prop::collection::vec(scene_value(), h * w * c),
-                         vb in prop::collection::vec(scene_value(), h * w * c),
+                         seed_a in any::<u64>(),
+                         seed_b in any::<u64>(),
                          h in Just(h), w in Just(w), c in Just(c))
                         -> (Array3<f32>, Array3<f32>, CropParams) {
-        let _ = (h, w, c);
-        (mk_image(h, w, c, va), mk_image(h, w, c, vb), params)
+        (image(h, w, c, seed_a), image(h, w, c, seed_b), params)
     }
 }
 
 prop_compose! {
-    /// A full invalid crop case: two independent images of a shape, and a
-    /// rectangle guaranteed to exceed that shape.
+    /// A full invalid crop case: two independently-seeded images of a
+    /// shape, and a rectangle guaranteed to exceed that shape.
     fn invalid_crop_case()(h in dim(), w in dim())
                           (params in invalid_crop(h, w),
-                           va in prop::collection::vec(scene_value(), h * w * 3),
-                           vb in prop::collection::vec(scene_value(), h * w * 3),
+                           seed_a in any::<u64>(),
+                           seed_b in any::<u64>(),
                            h in Just(h), w in Just(w))
                           -> (Array3<f32>, Array3<f32>, CropParams) {
-        (mk_image(h, w, 3, va), mk_image(h, w, 3, vb), params)
+        (image(h, w, 3, seed_a), image(h, w, 3, seed_b), params)
     }
 }
 
@@ -619,12 +682,11 @@ fn dim_at_least_2() -> impl Strategy<Value = usize> {
 prop_compose! {
     fn valid_straighten_case()(h in dim_at_least_2(), w in dim_at_least_2(), c in any_channels())
                               (degrees in -45.0f32..=45.0f32,
-                               va in prop::collection::vec(scene_value(), h * w * c),
-                               vb in prop::collection::vec(scene_value(), h * w * c),
+                               seed_a in any::<u64>(),
+                               seed_b in any::<u64>(),
                                h in Just(h), w in Just(w), c in Just(c))
                               -> (Array3<f32>, Array3<f32>, StraightenParams) {
-        let _ = (h, w, c);
-        (mk_image(h, w, c, va), mk_image(h, w, c, vb), StraightenParams::new(degrees))
+        (image(h, w, c, seed_a), image(h, w, c, seed_b), StraightenParams::new(degrees))
     }
 }
 
@@ -1400,8 +1462,25 @@ proptest! {
 
 // ── blur ──────────────────────────────────────────────────────────────────────
 
+/// Lower than [`config`]'s default (256), for `blur_valid_sigma_is_accepted`
+/// alone. `box_widths`'s search cost is roughly quadratic in sigma (its
+/// own doc: "quadratic... starting near σ"), so even with the
+/// small-weighted distribution below, running it at 256 cases cost ~20 s
+/// on its own — the *rest* of this file's 69 properties combined cost
+/// about 2 s at 256 cases. This many still walks every tier of the
+/// distribution, including at or near `MAX_SIGMA`, on this file's fixed
+/// seed; the exact boundary (`sigma == MAX_SIGMA` accepted,
+/// `sigma > MAX_SIGMA` rejected) is additionally pinned by
+/// `blur::tests::a_huge_sigma_is_refused_rather_than_searched_forever`.
+fn blur_valid_config() -> ProptestConfig {
+    ProptestConfig {
+        cases: 24,
+        ..config()
+    }
+}
+
 proptest! {
-    #![proptest_config(config())]
+    #![proptest_config(blur_valid_config())]
 
     /// Sigma is weighted toward the small end but reaches all the way to
     /// `MAX_SIGMA`, occasionally. The box *path* costs the same at any
@@ -1431,8 +1510,14 @@ proptest! {
         assert_layout_agnostic(&img_a, |v| blur(v, &params))?;
         assert_deterministic_f32(|| blur(img_a.view(), &params))?;
     }
+}
 
-    /// P2 + P3b: sigma negative, non-finite, or above `MAX_SIGMA`.
+proptest! {
+    #![proptest_config(config())]
+
+    /// P2 + P3b: sigma negative, non-finite, or above `MAX_SIGMA`. Cheap
+    /// regardless of sigma's magnitude — `validate` rejects before
+    /// `box_widths` ever runs — so this stays at the default case count.
     #[test]
     fn blur_bad_sigma_is_rejected(
         (img_a, img_b) in any_c_image_pair(),
