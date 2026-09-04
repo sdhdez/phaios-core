@@ -1907,3 +1907,100 @@ fn the_combine_is_affine_in_amount() {
         "the combine must be affine in amount; worst deviation {worst}"
     );
 }
+
+/// A sharper isolation of the same property as
+/// `cross_guided_edges_come_from_the_guide_not_the_channel`, added after
+/// the mutation gate showed that test blind to two mutations it was
+/// meant to catch. Both gaps were confirmed empirically (`cargo test
+/// --test kernels` under each mutation, reverted after use) before this
+/// replacement was written, and this one was itself re-run under both
+/// mutations to confirm it closes them.
+///
+/// **Gap 1 — `var(p_c)` for `var(I)` in `a_c`'s denominator.** With the
+/// original test's shared R/G step at amplitude 0.6 and `eps = 0.01`,
+/// `cov(I, blue) ≈ wB·var(blue)` is nearly the same near the edge and far
+/// from it (the edge is orthogonal to blue's own checker, so it barely
+/// moves the numerator), while `var(blue)` itself does not depend on the
+/// guide at all — so swapping which variance sits in the denominator
+/// left both `a_blue` values small either way, and the near/far
+/// comparison passed regardless. Fixed by widening the gap between
+/// `var(I)` near the edge and `var(blue)`: a 0-to-2 step (`var(I)` ≈ 0.86
+/// at the transition, dwarfing blue's own ≈0.01) with `eps = 0.0025`.
+/// `a_blue` computed correctly (`cov / (var(I) + eps)`) stays tiny
+/// (checker peak-to-peak ≈0.0009 measured, right at the transition) —
+/// the transition is so much stronger than blue's own texture that blue
+/// is smoothed *harder* right at it, not less. `a_blue` computed from
+/// `var(blue)` instead is far larger there (checker peak-to-peak ≈0.0195
+/// measured — ≈20×), letting the checker survive visibly.
+///
+/// **Gap 2 — dropping the cross term (`a_c = 0` unconditionally).** The
+/// original test measured red `2 * radius` clear of the transition on
+/// each side specifically to read a clean, unaffected value — which
+/// means it cannot see a mutation whose only effect is *near* the
+/// transition. A double box mean (what `a_c = 0` degenerates every
+/// channel to) only smears the step within its own `2 * radius`
+/// support, so both measurement points stayed at the true 0.0/2.0
+/// regardless. Fixed by moving the two red measurements to the pixels
+/// immediately either side of the transition instead: correctly, `a_c`
+/// is driven so close to 1 there (`var(I) ≈ 0.86 ≫ eps = 0.0025`) that
+/// both stay within a thousandth of their true values (measured
+/// -0.0029 and 2.0029); under `a_c = 0` they collapse toward the
+/// window's mean instead (measured 0.889 and 1.111, roughly the
+/// unweighted midpoint 1.0).
+#[test]
+fn cross_guided_uses_the_guides_variance_not_the_channels_own() {
+    const RADIUS: u32 = 4;
+    const REACH: usize = 2 * RADIUS as usize;
+    let (h, w) = (24, 48);
+    let mid = w / 2;
+
+    let img = ndarray::Array3::from_shape_fn((h, w, 3), |(y, x, c)| match c {
+        0 | 1 => {
+            if x < mid {
+                0.0_f32
+            } else {
+                2.0_f32
+            }
+        } // R, G: a strong shared step
+        _ => {
+            let checker = if (x + y) % 2 == 0 { 0.1_f32 } else { -0.1_f32 };
+            0.5 + checker
+        } // B: flat + checker, uncorrelated with the step
+    });
+
+    let noise_sigma = 0.05_f32; // eps = 0.0025: << var(I) near the step, >> var(blue)
+    let params = DenoiseParams::new(RADIUS, noise_sigma, 1.0, LuminanceStandard::Bt709);
+    let out = denoise(img.view(), &params).unwrap();
+
+    // Gap 1: blue's checker, measured right at the transition.
+    let checker_p2p_at = |col: usize| -> f32 {
+        let mut lo = f32::INFINITY;
+        let mut hi = f32::NEG_INFINITY;
+        for y in REACH..(h - REACH) {
+            let v = out[[y, col, 2]];
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+        hi - lo
+    };
+    let near_edge = checker_p2p_at(mid);
+    assert!(
+        near_edge < 0.008,
+        "blue's checker must be smoothed hard right at the guide's strong \
+         edge (measured ≈0.0009 with var(I), ≈0.0195 with var(blue) in \
+         its place): got {near_edge}"
+    );
+
+    // Gap 2: red, immediately either side of the transition (not
+    // `2 * radius` clear of it, which a double box mean cannot reach).
+    let row = h / 2;
+    let just_left = out[[row, mid - 1, 0]];
+    let just_right = out[[row, mid, 0]];
+    assert!(
+        just_left < 0.3 && just_right > 1.7,
+        "red shares the guide's edge and must keep it essentially exact \
+         even immediately adjacent to the transition (true values 0.0 \
+         and 2.0; a double box mean collapses both toward 1.0): \
+         just_left={just_left}, just_right={just_right}"
+    );
+}
