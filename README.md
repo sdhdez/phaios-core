@@ -41,6 +41,7 @@ freshly allocated C-contiguous array.
 | `blur` | Separable Gaussian; direct below σ 6, three box passes above | v0.2 |
 | `glow` | Light scattering: halation, diffusion, veiling glare | v0.2 |
 | `local_contrast` | He–Sun–Tang guided filter for local contrast enhancement | v0.1 |
+| `sharpen` | Threshold-gated Gaussian unsharp mask | v0.2 |
 | `film_grain` | Band-passed procedural grain, deterministic from an explicit seed | v0.2 |
 | `split_toning` | Shadow/highlight tinting in OKLab — returns `(H, W, 3)` | v0.2 |
 | `vignette` | Radial darkening or lightening, resolution-independent | v0.2 |

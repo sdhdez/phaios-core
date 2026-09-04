@@ -40,6 +40,7 @@ pipeline:
 | `hsl_bw` | 3 | 1 | needs hue, so it must run before the collapse |
 | `zone_system` | 1 | 1 | |
 | `local_contrast` | 1 | 1 | |
+| `sharpen` | any | same | threshold-gated Gaussian unsharp mask; channels filtered independently |
 | `film_grain` | 1 | 1 | |
 | `split_toning` | 1 | **3** | the only kernel that adds channels |
 | `vignette` | any | same | one factor per pixel, applied to every channel |
@@ -54,8 +55,8 @@ pipeline:
 | `apply_lut` | any | same | element-wise through a caller-supplied table |
 | `histogram` | any | **not an image** | a reduction — returns a `Histogram`, see below |
 
-A kernel given the wrong channel count raises `ValueError`. The sixteen
-that accept "any" do so for three distinct reasons.
+A kernel given the wrong channel count raises `ValueError`. The
+seventeen that accept "any" do so for three distinct reasons.
 
 The four **geometry** kernels (`crop`, `orient`, `straighten`, `resize`)
 are channel-agnostic by nature: they move pixels without looking inside
@@ -65,9 +66,9 @@ colour.
 The six **tone** kernels (`exposure`, `vignette`, `tone_curve`,
 `shadow_rolloff`, `highlight_rolloff`, `encode_srgb`) run either side of
 `split_toning`, so a pipeline need not branch on whether toning is
-enabled. `blur` and `glow` join them for the same reason — each channel is
-filtered and scattered independently, so neither needs nor imposes a
-channel count.
+enabled. `blur`, `glow` and `sharpen` join them for the same reason —
+each channel is filtered, scattered or sharpened independently, so none
+needs nor imposes a channel count.
 
 The remaining four — `apply_lut`, `quantize_u8`, `quantize_u16` and
 `histogram` — are per-sample by construction. The first three map each
@@ -457,7 +458,11 @@ What is promised across backends:
   a sliding window being a subtraction, (rtol 1e-5, atol 1e-7) for
   `glow`, which inherits the blur's bound because the blur is the only
   inexact part of it — the threshold subtraction and the weighted add
-  either side are correctly rounded. (rtol 1e-3, atol 1e-5) for
+  either side are correctly rounded, and (rtol 1e-5, atol 1e-7) for
+  `sharpen`, for the same reason: its blur is the same shared
+  implementation, and the subtract/gate/combine pointwise kernel that
+  follows it is free of transcendentals, so the blur is the only
+  inexact part of `sharpen` too. (rtol 1e-3, atol 1e-5) for
   `film_grain`'s Box–Muller half, whose splitmix64 hash underneath is
   exact and is asserted over a coordinate grid by `hash_grid`, not by
   the identity case in `examples/23_gpu_selftest.rs` — that one is a

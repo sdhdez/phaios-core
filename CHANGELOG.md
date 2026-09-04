@@ -8,6 +8,21 @@ The Rust crate and the Python wheel always carry the same version.
 
 ## [Unreleased] — 0.2.0-dev
 
+### Added — unsharp masking with a soft threshold
+
+`sharpen(img, SharpenParams)`: a plain, haloing Gaussian
+unsharp mask for capture/output sharpening — the gap `glow` and
+`local_contrast` each disclaim. `out = img + amount·soft_gate(detail,
+threshold)·detail`, `detail = img − blur_σ(img)`;
+`amount`/`sigma`/`threshold` default to `0.0`, the identity. The
+gate is a Hermite smoothstep, not a hard cutoff — `glow`'s own
+reasoning: a step would turn a few ULP of cross-backend disagreement
+into a full-amplitude flip of whether a pixel is amplified. CUDA twin:
+the shared device blur plus one pointwise kernel, bounded in `glow`'s
+class (rtol 1e-5, atol 1e-7) — 0.5619x the bound at unit range,
+0.0511x on the HDR sweep. `examples/43_sharpen.rs`/`44_gpu_sharpen.rs`,
+`benches/kernels.rs`/`benches/gpu.rs`, `docs/architecture.md` §20.
+
 ### Changed — the "no image assets" rule is now enforced, not stated
 
 - `.gitignore` ignores every raster and RAW extension anywhere in the

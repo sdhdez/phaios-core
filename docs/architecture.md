@@ -1288,6 +1288,7 @@ pseudo-random values. Not CI gates — informational only.
 | `zone_system` | **13.0 ms** | `zone_system/24MP/1-zone-offset` | `exp` + `log2` per pixel |
 | `tone_curve` | **10.4 ms** | `tone_curve/24MP/slope-offset-power` | One `powf` per pixel |
 | `local_contrast` | **177.5 ms** | `local_contrast/24MP/r=8` | 4 parallel SAT builds |
+| `sharpen` | **42.0 ms** | `sharpen/24MP/capture` | one direct-path blur (σ=1.2) plus one pointwise pass |
 | `film_grain` | **58.1 ms** | `film_grain/24MP/size=2` | Hash + Box–Muller per pixel, then one SAT |
 | `split_toning` | **23.4 ms** | `split_toning/24MP` | 1 cube root in, 3 cubes out, per pixel |
 | `vignette` | **10.6 ms** | `vignette/24MP` | `sqrt` per pixel |
@@ -1381,6 +1382,7 @@ one kernel in the table where the GPU is not far ahead.
 | `blur` σ = 16 (box) | **7.925 ms** | 74.07 ms | segmented; see below |
 | `blur` σ = 64 (box) | **8.510 ms** | 73.77 ms | near-flat in σ, as on the CPU |
 | `glow` halation | **8.538 ms** | 96.63 ms | the blur plus two element-wise passes |
+| `sharpen` capture | **4.097 ms** | 42.01 ms | one direct-path blur (σ=1.2) plus one pointwise pass, 10.3x |
 | `local_contrast` r = 8 | **11.999 ms** | 170.14 ms | f64 L/L² sums; see below |
 | `quantize` u8, plain | **3.373 ms** | 5.77 ms | **includes** the 24.9 MB readback |
 | `histogram` 256 bins, 3 ch | **0.471 ms** | 9.80 ms | **includes** the counts readback (3 KB) |
@@ -1562,3 +1564,146 @@ support can reach frame-edge pixels in the outermost ~2-pixel band of
 the result, where taps clamp (replicate) — standard practice,
 documented rather than hidden. Geometry order within the group:
 `orient` → `straighten` → `crop` → `resize`.
+
+---
+
+## 20. Unsharp masking with a soft threshold
+
+```
+blurred = blur_σ(img)
+detail  = img − blurred
+T       = soft_gate(detail, threshold)
+out     = img + amount · T · detail
+```
+
+At `threshold = 0` this is exactly Gonzalez, R. C., Woods, R. E.,
+*Digital Image Processing*, 4th ed. (Pearson, 2018), §3.6 "Unsharp
+Masking and Highboost Filtering": `out = img + amount·(img −
+blur_σ(img))`, where `amount` is their highboost constant `k` (`k = 1`
+standard unsharp masking, `k > 1` highboost).
+
+`threshold` gates the residual so flat, near-noise-level regions are not
+amplified — the concept behind Polesel, A., Ramponi, G., Mathews, V. J.,
+"Image enhancement via adaptive unsharp masking," *IEEE Transactions on
+Image Processing*, 9(3), pp. 505–510, March 2000 (DOI
+10.1109/83.826787): gain that depends on local detail rather than a
+single fixed constant. The gate's exact nonlinearity below is this
+crate's own construction, not theirs — cited for the concept, the same
+posture §8 already takes toward the guided filter's originators for
+anything beyond the core algorithm.
+
+### Why the gate is soft, not a hard cut
+
+Two arguments, one numerical and one visual — the same pair `glow`
+already made for its own knee (§17), read against a different signal.
+
+**The cross-backend argument.** A hard threshold (zero gain below it,
+full gain above) is discontinuous *in the data*. Two backends computing
+`detail = img − blur(img)` by different accumulation orders can disagree
+by a few ULP (§16; `docs/ffi.md` §6), and a step function turns that
+disagreement into a full-amplitude flip of whether a pixel is gated at
+all — a pixel landing on opposite sides of the threshold on the two
+backends gets zero gain on one and full gain on the other. `sharpen`'s
+gate reads a *derived*, higher-frequency signal (`|img − blur(img)|`)
+rather than `glow`'s raw pixel value, so more pixels sit close to the
+boundary than they would for `glow` — the soft knee matters more here,
+not less. A gate that is C¹ at both ends of the ramp turns that
+disagreement into a bounded error instead of an unbounded one, which is
+what a bounded-agreement class (`docs/ffi.md` §6) needs.
+
+**The outline argument.** `glow`'s own reason: "a hard cut would give
+the halo an outline exactly where the source crosses the threshold" —
+here, a hard gate would give the *sharpening itself* an outline: a
+visible ring delineating where `|detail|` happened to cross the
+threshold, independent of anything in the scene. That ring is an
+artifact of the gate, not of the image, and it is exactly the kind of
+thing a threshold exists to avoid introducing.
+
+### The ramp constant
+
+The gate is a Hermite smoothstep, `T = u²(3 − 2u)`, ramping over
+`[threshold, SOFT_KNEE_SPAN · threshold]` with `SOFT_KNEE_SPAN = 2.0`. It
+is a free constant, not a fourth parameter, in the company of `blur`'s
+own `TRUNCATION` and `BOX_CROSSOVER_SIGMA` (§16) and `split_toning`'s
+fixed 0.25 crossover half-width (§10) — a documented default rather than
+something a caller tunes. `threshold = 0.0` is special-cased to `T ≡
+1.0` unconditionally, including at `detail = 0.0`: the ramp would
+otherwise have zero width, and evaluating it would divide by that zero.
+
+### Identity properties
+
+Three, all algebraic rather than approximate:
+
+- `amount = 0.0` — the exact identity, a fast path that copies the input
+  rather than computing and discarding a zero product.
+- `sigma = 0.0` — the exact identity, delegated to `blur`'s own
+  `sigma = 0.0` fast path.
+- `threshold` at least as large as every `|detail|` the image
+  produces — the exact identity too, and not merely approximately:
+  `soft_gate` clamps to `0.0` for any `|detail| <= threshold`, so `T` is
+  algebraically zero there, not just small.
+
+### Order
+
+Recommended after `local_contrast`, before `film_grain` — not fixed in
+the canonical pipeline order any more than `blur` or `glow` are (§1
+lists neither; both are optional-position effects documented
+per-kernel). The reasoning mirrors §1's own for why grain follows the
+tone stages rather than preceding them: sharpening amplifies noise, so
+if grain ran first, `sharpen` would amplify the grain texture as if it
+were image detail — indistinguishable from real detail to a kernel that
+only looks at `|img − blur(img)|` — inflating the grain beyond what
+`film_grain`'s own controlled envelope specifies. Running `sharpen`
+before grain is added avoids that.
+
+### Range
+
+Never clamps. The overshoot and undershoot this produces at an edge is
+Gonzalez & Woods §3.6's own ringing behaviour, not a defect this crate
+suppresses — the same posture `docs/ffi.md` already documents for the
+crate generally and `glow` takes for its own halo.
+
+### What this is not
+
+**Not `local_contrast`.** `local_contrast`'s guided filter is
+edge-aware — its own documentation calls the residual "a clean
+high-frequency (detail) signal rather than a halo-ridden Gaussian
+unsharp mask" (§8). `sharpen` is exactly that halo-ridden Gaussian
+unsharp mask: a plain, non-edge-aware blur-and-subtract, chosen on
+purpose for capture and output sharpening, where a controlled halo at a
+hard edge is the expected look rather than something to avoid. Where
+`local_contrast::strength` reaches `1 = standard unsharp mask` only as a
+comparison point on its way to something edge-aware, `sharpen` is that
+comparison point, made into the whole kernel.
+
+**Not `glow`.** `glow`'s threshold gates the *raw pixel value*
+(`max(in − threshold, 0)`) and adds a broad, always-positive scattering
+term modelling a physical process — halation, diffusion, veiling glare
+(§17). `sharpen`'s threshold gates the *derived* detail signal
+(`|img − blur(img)|`) and its contribution is signed, following
+`detail`'s own sign either side of an edge. The two kernels share a
+shape — params pyclass, shared `validate`, a host kernel composing
+`blur`, a CUDA twin reusing the device blur — and nothing else; `glow`
+itself already disclaims being an unsharp mask (`src/glow.rs`), for the
+same reason `sharpen` disclaims being light scattering.
+
+### On the device
+
+One pointwise kernel after the shared device blur, not two brackets
+around it the way `glow` composes (§17's weight-then-add). `sharpen`'s
+blur runs on `img` directly rather than on a pre-transformed field, so
+the subtract/gate/combine work all happens after the blur and fits a
+single launch. The blur is `blur_device`, the crate's one device
+Gaussian, so `sharpen` cannot drift from it independently of `blur`
+itself.
+
+Agreement class: bounded, `blur`'s own (rtol 1e-5, atol 1e-7) —
+`glow`'s class, for the same reason: the pointwise half has no
+transcendentals and is bit-exact under `-fmad=false`, so the blur
+underneath is the only inexact part. Measured worst-case ratios of the
+committed bound (`tests/cuda_conformance.rs`): 0.5619× at unit range
+(`amount = 0.35`, `sigma = 1.5`, `threshold = 0`) and 0.0511× on the
+dynamic-range sweep (`amount = 0.35`, `sigma = 12`, `threshold = 0`, a
+1e8 highlight) — close to `glow`'s own HDR-sweep worst case (0.0510×),
+consistent with both kernels propagating the same underlying blur error
+one stage differently.
