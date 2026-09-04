@@ -169,9 +169,12 @@ params = phaios_core.DenoiseParams(radius=4, noise_sigma=0.01, amount=0.6)
     radius: int
     """Filter radius in pixels. The window is `(2r+1) × (2r+1)`.
 
-[`crate::local_contrast::GuidedFilterParams`]'s own domain:
-unvalidated, any `u32` is legal — a radius larger than the image
-is harmless, since windows clamp to the image extent."""
+Bounded above by [`MAX_RADIUS`]: unlike
+[`crate::local_contrast::GuidedFilterParams`]'s own unvalidated
+radius (an O(1)-per-pixel table query regardless of size), this
+kernel's window statistics are summed directly from the window's
+own pixels, so cost is linear in radius — see the module
+documentation."""
 
     noise_sigma: float
     """Estimated noise standard deviation, in the input's own units.
@@ -976,11 +979,14 @@ the guided filter's smoothed base term (``eps = noise_sigma**2``).
 RGB input (``C == 3``) uses a cross-guided filter: edges come from
 ``standard``'s luminance of the whole image, not each channel's own
 signal. Every other channel count, including ``C == 1``, is
-self-guided, reusing ``local_contrast``'s own guided filter.
+self-guided, computed directly on that channel.
 
 ``amount = 0.0`` is the exact identity. On a single-channel image,
-this kernel is bit-exact with
-``local_contrast(img, GuidedFilterParams(radius, noise_sigma**2), -amount)``.
+this kernel agrees with
+``local_contrast(img, GuidedFilterParams(radius, noise_sigma**2), -amount)``
+within the guided filter's own bound (rtol 1e-4, atol 1e-6), not
+bit-for-bit: both sum the same window statistics, but by different
+routes.
 
 Right after ``hot_pixels``, before ``straighten``/``resize`` and
 before ``exposure``: resampling would mix ``noise_sigma``'s
@@ -994,8 +1000,9 @@ img : numpy.ndarray
     Input array, shape ``(H, W, C)`` for any channel count, dtype
     ``float32``, any memory layout.
 params : DenoiseParams
-    Radius, noise sigma, blend amount, and the luminance standard
-    used for the ``C == 3`` guide. Default: amount 0, the identity.
+    Radius (at most ``MAX_RADIUS``), noise sigma, blend amount, and
+    the luminance standard used for the ``C == 3`` guide. Default:
+    amount 0, the identity.
 
 Returns
 -------
@@ -1005,8 +1012,9 @@ numpy.ndarray
 Raises
 ------
 ValueError
-    If ``noise_sigma`` is negative or not finite, or ``amount`` is
-    outside 0..=1 or not finite.
+    If ``radius`` is above ``MAX_RADIUS``, ``noise_sigma`` is
+    negative or not finite, or ``amount`` is outside 0..=1 or not
+    finite.
 MemoryError
     If the intermediates exceed the single-allocation limit."""
     ...

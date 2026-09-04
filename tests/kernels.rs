@@ -1603,27 +1603,36 @@ fn hot_pixels_filters_channels_independently() {
 
 // ── Denoise tests ────────────────────────────────────────────────────────────
 
-use phaios_core::denoise::{DenoiseParams, denoise};
+use phaios_core::denoise::{DenoiseParams, MAX_RADIUS, denoise};
 
 /// **The key cross-check.** On a single-channel non-constant image,
-/// `denoise` must be bit-exact with `local_contrast` at `strength =
-/// −amount` and `eps = noise_sigma²` — `denoise`'s module documentation
-/// exact-negation argument, exercised end-to-end through the public API
-/// rather than argued only in prose. Pins three things at once: the
-/// `eps = noise_sigma²` mapping, the sign of the combine, and its exact
-/// shape (`p + (−amount)·(p−q)`, not some other algebraically-equal but
-/// differently-rounded form). This is the test the plan's `eps =
-/// noise_sigma` (not squared) mutation is expected to fail: with the
-/// unsquared mapping, `denoise`'s own `eps` disagrees with the
-/// `noise_sigma * noise_sigma` this test hands `local_contrast`
-/// separately, for every `noise_sigma` swept here except `0.0`.
+/// `denoise` must agree with `local_contrast` at `strength = −amount`
+/// and `eps = noise_sigma²` — exercised end-to-end through the public
+/// API rather than argued only in prose. Bounded, not bit-exact: since
+/// the maintainer's cancellation fix (`.cache/scratch/denoise/PLAN.md`,
+/// "Decision 2"), `denoise`'s self-guided path sums its own window
+/// statistics directly rather than calling `local_contrast`'s SAT-based
+/// `guided_filter`, so the two no longer round identically at every
+/// step — they agree only within the guided filter's own class (`rtol
+/// 1e-4, atol 1e-6`, `docs/ffi.md` §6, the same bound the CUDA
+/// conformance sweeps use). Still pins the `eps = noise_sigma²` mapping
+/// and the sign/shape of the combine: this is the test the plan's `eps
+/// = noise_sigma` (not squared) mutation is expected to fail, with the
+/// unsquared mapping disagreeing with the `noise_sigma * noise_sigma`
+/// this test hands `local_contrast` separately, for every `noise_sigma`
+/// swept here except `0.0`. Prints the worst ratio to the bound with
+/// `--nocapture`.
 #[test]
-fn denoise_single_channel_is_bit_exact_with_local_contrast_at_negative_amount() {
+fn denoise_single_channel_agrees_with_local_contrast_at_negative_amount() {
     let img = ndarray::Array3::from_shape_fn((17, 23, 1), |(y, x, _)| {
         ((y * 13 + x * 7) % 97) as f32 / 97.0
     });
 
-    for radius in [0_u32, 1, 4, 9] {
+    let (atol, rtol) = (1e-6_f32, 1e-4_f32); // GUIDED_FILTER class.
+    let mut worst = 0.0_f32;
+    let mut worst_where = String::new();
+
+    for radius in [0_u32, 1, 4, 9, MAX_RADIUS] {
         for &noise_sigma in &[0.0_f32, 0.02, 0.2, 1.5] {
             for &amount in &[0.0_f32, 0.25, 0.6, 1.0] {
                 let params =
@@ -1636,16 +1645,49 @@ fn denoise_single_channel_is_bit_exact_with_local_contrast_at_negative_amount() 
                         .unwrap();
 
                 for (&g, &w) in got.iter().zip(want.iter()) {
-                    assert_eq!(
-                        g.to_bits(),
-                        w.to_bits(),
+                    let diff = (g - w).abs();
+                    let ratio = diff / (atol + rtol * w.abs());
+                    if ratio > worst {
+                        worst = ratio;
+                        worst_where =
+                            format!("radius={radius} noise_sigma={noise_sigma} amount={amount}");
+                    }
+                    assert!(
+                        ratio <= 1.0,
                         "radius={radius} noise_sigma={noise_sigma} amount={amount}: \
-                         denoise={g}, local_contrast(-amount)={w}"
+                         denoise={g}, local_contrast(-amount)={w} ({ratio:.4}x the \
+                         (rtol {rtol:e}, atol {atol:e}) bound)"
                     );
                 }
             }
         }
     }
+    eprintln!(
+        "denoise vs local_contrast(-amount), C=1: worst {worst:.4}x the GUIDED_FILTER bound \
+         ({worst_where})"
+    );
+}
+
+/// `radius` is bounded above by `MAX_RADIUS` (`.cache/scratch/denoise/PLAN.md`,
+/// "Decision 2": direct window sums make cost linear in radius, unlike
+/// `local_contrast`'s unbounded, O(1)-per-pixel table query). The bound
+/// itself must still work, and `MAX_RADIUS + 1` must be refused, naming
+/// `radius`.
+#[test]
+fn denoise_accepts_radius_at_the_maximum_and_rejects_above_it() {
+    let img = ndarray::Array3::from_shape_fn((9, 9, 1), |(y, x, _)| (y * 9 + x) as f32 / 81.0);
+    let params = DenoiseParams::new(MAX_RADIUS, 0.05, 0.5, LuminanceStandard::Bt709);
+    assert!(
+        denoise(img.view(), &params).is_ok(),
+        "radius = MAX_RADIUS ({MAX_RADIUS}) must still be accepted"
+    );
+
+    let params = DenoiseParams::new(MAX_RADIUS + 1, 0.05, 0.5, LuminanceStandard::Bt709);
+    let err = denoise(img.view(), &params).unwrap_err();
+    assert!(
+        err.to_string().contains("radius"),
+        "radius = MAX_RADIUS + 1 should be refused naming `radius`: {err}"
+    );
 }
 
 /// `amount = 0.0` is the exact identity, bit-for-bit, at a non-zero

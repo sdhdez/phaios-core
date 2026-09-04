@@ -98,7 +98,7 @@ use phaios_core::bw::{
     ColorFilter, HslWeightedParams, LuminanceStandard, channel_mixer_bw, color_filter_bw, hsl_bw,
     luminance_bw,
 };
-use phaios_core::denoise::{DenoiseParams, denoise};
+use phaios_core::denoise::{self as denoise_mod, DenoiseParams, denoise};
 use phaios_core::encode::encode_srgb;
 use phaios_core::error::PhaiosError;
 use phaios_core::exposure::exposure;
@@ -1740,11 +1740,15 @@ proptest! {
 
     /// P1 + P5 + P6, over both dispatch branches `any_channels` reaches
     /// (`C == 1` self-guided, `C == 3` cross-guided) plus the occasional
-    /// wider count that exercises neither special case.
+    /// wider count that exercises neither special case. `radius` covers
+    /// the full accepted range up to `MAX_RADIUS`, unlike most other
+    /// radius-taking kernels here: `denoise`'s window statistics are
+    /// summed directly rather than queried from a table, so cost scales
+    /// with radius and the crate bounds it accordingly.
     #[test]
     fn denoise_valid_params_is_accepted(
         (img_a, img_b) in any_c_image_pair(),
-        radius in 0u32..=8u32,
+        radius in 0u32..=denoise_mod::MAX_RADIUS,
         noise_sigma in 0.0f32..2.0f32,
         amount in 0.0f32..=1.0f32,
     ) {
@@ -1757,6 +1761,20 @@ proptest! {
 
         assert_layout_agnostic(&img_a, |v| denoise(v, &params))?;
         assert_deterministic_f32(|| denoise(img_a.view(), &params))?;
+    }
+
+    /// P2 over `radius`: above `MAX_RADIUS`.
+    #[test]
+    fn denoise_bad_radius_is_rejected(
+        (img_a, img_b) in any_c_image_pair(),
+        radius in (denoise_mod::MAX_RADIUS + 1)..(denoise_mod::MAX_RADIUS + 1_000),
+    ) {
+        let params = DenoiseParams::new(radius, 0.02, 0.5, LuminanceStandard::Bt709);
+        let ra = catch_call(|| denoise(img_a.view(), &params));
+        let rb = catch_call(|| denoise(img_b.view(), &params));
+        let msg_a = expect_rejected_message(ra, "radius")?;
+        let msg_b = expect_rejected_message(rb, "radius")?;
+        prop_assert_eq!(msg_a, msg_b);
     }
 
     /// P2 + P3b over `noise_sigma`: non-finite or negative.

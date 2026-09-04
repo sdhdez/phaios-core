@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! // self-guided (C = 1, and every C other than 3)
-//! q     = guided_filter(p, radius, eps)     // reused verbatim from local_contrast
+//! q     = guided_filter(p, radius, eps)     // eps = noise_sigma², direct window sums
 //! out   = p + (−amount) · (p − q)           // amount=0 → p; amount=1 → q
 //!
 //! // cross-guided (C = 3), guide I = luminance_bw(img, standard)
@@ -14,32 +14,53 @@
 //! out_c = p_c + (−amount) · (p_c − q_c)
 //! ```
 //! `eps = noise_sigma²`. `cov_w`/`var_w`/`mean_w` are window statistics
-//! over a `(2·radius+1) × (2·radius+1)` box, via the same integral-image
-//! machinery `local_contrast` uses.
+//! over a `(2·radius+1) × (2·radius+1)` box, **summed directly from the
+//! window's own pixels** — see "Direct sums, not summed-area tables"
+//! below for why that distinction matters.
 //!
-//! # Self-guided is an alias, worth exploiting
+//! # Direct sums, not summed-area tables
 //!
-//! On a single channel, `out = p + (−amount)·(p−q)` is exactly
-//! [`crate::local_contrast::local_contrast`]'s own combine,
-//! `l + strength·(l−q)`, with `strength = −amount` — the same `q`,
-//! because this kernel calls the very same
-//! [`crate::local_contrast::guided_filter`] it does. Negating one
-//! operand of a floating-point multiply is an exact sign flip
-//! (`fl((−a)·x) = −fl(a·x)` for any `a`, `x`: correctly-rounded
-//! multiplication is symmetric about zero), and `y − z` is defined as
-//! `y + (−z)`, so the two expressions round identically at every step.
-//! Consequently `denoise` at any `radius`/`noise_sigma`/`amount`, on a
-//! `(H, W, 1)` image, is **bit-exact** with
-//! `local_contrast(img, GuidedFilterParams::new(radius, noise_sigma²),
-//! −amount)`. Pinned in `tests/kernels.rs` by
-//! `denoise_single_channel_is_bit_exact_with_local_contrast_at_negative_amount`.
+//! An earlier version of this module built these statistics from global
+//! f64 summed-area tables, queried in O(1) per window — the technique
+//! [`crate::local_contrast`] itself still uses. It failed at extreme
+//! highlights: cross-guided's `cov(I, p_c)` differences two *separately*
+//! accumulated global tables whose entries reach `~1e16` at a `1e8`
+//! highlight, and two entries differing only by a dark window's own tiny
+//! contribution round to the *same* f64 value there — so every window
+//! from the bright region onward, including windows that are themselves
+//! entirely dark, got the wrong residual (measured 5.1e5 off an
+//! independent oracle at one such pixel). The device never had this
+//! problem: its kernels sum each window directly from its own
+//! `(2r+1)²` pixels, so a running total's magnitude is bounded by the
+//! *window*, never by the image. This module now does the same — two
+//! passes, horizontal then vertical, each output resummed from scratch
+//! rather than carried forward (a sliding running sum is only a
+//! differently-shaped prefix table, and reintroduces the identical
+//! cancellation). The clipped-window convention itself is unchanged and
+//! matches [`crate::integral::window_sum`]'s: rows/columns independently
+//! clamped to `[0, extent−1]`, area the product of what is actually
+//! covered.
 //!
-//! What the `C = 3` path adds is genuinely new code, not a parameter
-//! change: a **cross-guided** filter (He–Sun–Tang §3.4) that takes its
-//! edges from a shared luminance guide rather than each channel's own
-//! signal, so a channel with little structure of its own (a colour cast
-//! over an otherwise flat sky, say) is smoothed according to the
-//! *guide's* edges, not mistaken structure in its own noise.
+//! Direct summation makes cost linear in `radius` rather than the
+//! O(1)-per-pixel a global table gave, so `radius` is bounded above by
+//! [`MAX_RADIUS`]. Denoise is meant for a small, physically-motivated
+//! noise correlation length, not large-radius structure work — that
+//! stays [`crate::local_contrast`]'s job, whose own guided filter keeps
+//! the O(1) table and bears its cancellation risk deliberately, at f64.
+//!
+//! Consequently the single-channel path no longer shares a literal
+//! function call with `local_contrast`'s own guided filter — it sums
+//! windows by a different route now — so the two agree only within the
+//! guided filter's own bound (`rtol 1e-4, atol 1e-6`, the same class the
+//! CUDA kernels are held to), not bit-for-bit. Pinned in
+//! `tests/kernels.rs`.
+//!
+//! What the `C = 3` path adds beyond a per-channel parameter change is
+//! genuinely new code: a **cross-guided** filter (He–Sun–Tang §3.4) that
+//! takes its edges from a shared luminance guide rather than each
+//! channel's own signal, so a channel with little structure of its own
+//! (a colour cast over an otherwise flat sky, say) is smoothed according
+//! to the *guide's* edges, not mistaken structure in its own noise.
 //!
 //! # `noise_sigma`
 //!
@@ -52,28 +73,29 @@
 //!
 //! # Memory
 //!
-//! Self-guided calls [`crate::local_contrast::guided_filter`] once per
-//! channel, sequentially — its own documented peak, about 24 bytes per
-//! pixel, is this path's peak too, independent of channel count, since
-//! one channel's scratch is fully released before the next channel's is
-//! built.
+//! Both paths hold the same tables a summed-area table would have —
+//! same shapes, same f64/f32 types — just built by direct window
+//! summation instead of a global prefix sum, so the peak scratch
+//! figures are unchanged from the SAT-based version this replaced.
 //!
-//! Cross-guided builds the shared guide `I` (4 B/px, live for the whole
-//! call) and two shared f64 SATs of `I` and `I²` (16 B/px, live for the
-//! whole call, queried once per channel), then processes channels
-//! sequentially. Per channel: two transient first-stage f64 SATs (of
-//! `p_c` and `I·p_c`, 16 B/px, dropped once the linear coefficients `a_c`
-//! `b_c` exist) — building the `I·p_c` SAT costs a brief 4 B/px
-//! elementwise-product scratch array, since [`crate::integral::sat`]
-//! takes one input array and this crate does not add a two-array
-//! variant for one caller — then the two f32 coefficient arrays (8 B/px,
-//! dropped once their own SATs exist) and two second-stage f64 SATs
-//! (16 B/px, dropped once the channel's output is written). Each
-//! channel's transient scratch is released before the next channel's is
-//! built, so the whole-call peak is the shared 20 B/px plus one
-//! channel's own worst moment (first-stage coefficients, 24 B/px) —
-//! **≈44 B/px, ≈1.06 GB at 24 MP** — not the ≈60 B/px a design that kept
-//! every channel's coefficients live at once would reach.
+//! Self-guided processes channels sequentially, one channel's scratch
+//! fully released before the next channel's is built: a transient pair
+//! of f64 row-sum tables (`L`, `L²`, 16 B/px) live alongside the f32
+//! coefficient pair being computed from them (8 B/px) — a 24 B/px
+//! moment — then that coefficient pair lives alongside the second-stage
+//! f64 row-sum pair computed from it (`a`, `b`, another 24 B/px moment).
+//! Peak **≈24 B/px**, independent of channel count.
+//!
+//! Cross-guided builds the shared guide `I` (4 B/px) and its shared f64
+//! row-sum pair (`I`, `I²`, 16 B/px) once, live for the whole call
+//! (**20 B/px shared baseline**), then processes channels sequentially.
+//! Per channel: a transient f64 row-sum pair (`p_c`, `I·p_c`, 16 B/px —
+//! computed directly, with no elementwise-product array to materialise
+//! first, unlike the SAT-based version this replaced) lives alongside
+//! the f32 coefficient pair (8 B/px) being computed from it, then that
+//! coefficient pair lives alongside the second-stage f64 row-sum pair
+//! (`a_c`, `b_c`, 16 B/px) — a worst per-channel moment of 24 B/px, on
+//! top of the shared baseline. Peak **≈44 B/px, ≈1.06 GB at 24 MP**.
 //!
 //! # Order
 //!
@@ -103,16 +125,14 @@
 //! Intelligence* 35(6), 2013, pp. 1397–1409, §3.4 (the colour-guide/
 //! colour-filtering-process formulation this module's cross-guided path
 //! follows). See [`crate::local_contrast`] for the self-guided ECCV 2010
-//! formulation this module's self-guided path reuses verbatim, and its
-//! provenance note on the reference MATLAB implementation's licence.
+//! formulation this module's self-guided path's own maths follows, and
+//! its provenance note on the reference MATLAB implementation's licence.
 
-use ndarray::{Array3, ArrayView3};
+use ndarray::{Array2, Array3, ArrayView2, ArrayView3, ArrayViewMut2};
 use pyo3::{pyclass, pymethods};
 
 use crate::bw::{LuminanceStandard, luminance_bw};
 use crate::error::PhaiosError;
-use crate::integral::{sat, window_sum};
-use crate::local_contrast::guided_filter;
 
 // ── Parameter type ────────────────────────────────────────────────────────────
 
@@ -127,9 +147,12 @@ use crate::local_contrast::guided_filter;
 pub struct DenoiseParams {
     /// Filter radius in pixels. The window is `(2r+1) × (2r+1)`.
     ///
-    /// [`crate::local_contrast::GuidedFilterParams`]'s own domain:
-    /// unvalidated, any `u32` is legal — a radius larger than the image
-    /// is harmless, since windows clamp to the image extent.
+    /// Bounded above by [`MAX_RADIUS`]: unlike
+    /// [`crate::local_contrast::GuidedFilterParams`]'s own unvalidated
+    /// radius (an O(1)-per-pixel table query regardless of size), this
+    /// kernel's window statistics are summed directly from the window's
+    /// own pixels, so cost is linear in radius — see the module
+    /// documentation.
     #[pyo3(get, set)]
     pub radius: u32,
     /// Estimated noise standard deviation, in the input's own units.
@@ -192,12 +215,31 @@ impl Default for DenoiseParams {
     }
 }
 
+/// Largest radius [`denoise`] will accept, in pixels.
+///
+/// [`crate::local_contrast::GuidedFilterParams`]'s radius is unbounded
+/// because it costs the same, O(1) per pixel, at any size — a global
+/// summed-area table queried by four-corner subtraction. This module
+/// gave up that table (see the module documentation's "Direct sums, not
+/// summed-area tables") to fix a cancellation at extreme highlights, and
+/// a direct window sum costs O(radius) per pixel instead. 32 keeps that
+/// linear cost cheap (a `65 × 65` window at most) and is generous for
+/// any physically motivated noise correlation length; a caller wanting
+/// a larger smoothing radius wants `local_contrast`, not `denoise`.
+pub const MAX_RADIUS: u32 = 32;
+
 // ── Kernel ────────────────────────────────────────────────────────────────────
 
 /// Validate denoise parameters. Shared by the CPU kernel and its CUDA
 /// twin, so both backends reject exactly the same inputs with exactly
 /// the same messages.
 pub(crate) fn validate(params: &DenoiseParams) -> Result<(), PhaiosError> {
+    if params.radius > MAX_RADIUS {
+        return Err(PhaiosError::Parameter(format!(
+            "radius is {}, above the maximum of {MAX_RADIUS}",
+            params.radius
+        )));
+    }
     if !params.noise_sigma.is_finite() || params.noise_sigma < 0.0 {
         return Err(PhaiosError::Parameter(format!(
             "noise_sigma is {}, expected a finite value >= 0",
@@ -213,14 +255,288 @@ pub(crate) fn validate(params: &DenoiseParams) -> Result<(), PhaiosError> {
     Ok(())
 }
 
-/// Self-guided path: every channel filtered independently through the
-/// reused [`guided_filter`]. Covers `C == 1` (the common case) and any
-/// `C` other than 3 — there is nothing special about one channel; it is
-/// simply this loop's `C == 1` case.
+// ── Direct window sums ──────────────────────────────────────────────────────
+//
+// Every function below mirrors one kernel in src/cuda/ptx/{local_contrast,
+// denoise}.cu, so a reviewer can check either side against the other
+// directly. None of them builds a running or global total: each output
+// element is an independent sum over its own clipped window, computed
+// from scratch, which is the whole fix (see the module documentation).
+
+/// The clipped window's row/column bounds and area for one output pixel
+/// — the same shrinking-window convention [`crate::integral::window_sum`]
+/// uses: rows and columns independently clamped to `[0, extent−1]`, area
+/// the product of what is actually covered. Shared by every stage below
+/// so the convention is written once, not re-derived per kernel.
+#[inline]
+fn window_bounds(
+    y: usize,
+    x: usize,
+    r: usize,
+    h: usize,
+    w: usize,
+) -> (usize, usize, usize, usize, f64) {
+    let y1 = y.saturating_sub(r);
+    let y2 = (y + r).min(h - 1);
+    let x1 = x.saturating_sub(r);
+    let x2 = (x + r).min(w - 1);
+    let area = ((y2 - y1 + 1) * (x2 - x1 + 1)) as f64;
+    (y1, y2, x1, x2, area)
+}
+
+/// Direct horizontal window sums of `v` and `v²`, in f64 — mirrors
+/// `box_h_l_l2` (`src/cuda/ptx/local_contrast.cu`): for each row,
+/// independently, a fresh sum from scratch over the clipped range
+/// `[x−r, x+r] ∩ [0, w−1]`, never a running total carried along the row.
+/// Used for `(L, L²)` in the self-guided path and `(I, I²)` in the
+/// cross-guided path's shared guide stage.
 ///
-/// Writes `out = p + (−amount) · (p − q)` — see the module documentation
-/// for why this exact form, not `p − amount · (p − q)`, is what makes
-/// the single-channel path bit-exact with `local_contrast`.
+/// Parallel over rows only: each output cell's own sums have one fixed
+/// term order regardless of how rayon schedules rows across threads, so
+/// the result is identical at any thread count.
+fn box_h_pair(data: ArrayView2<f32>, r: usize) -> Result<(Array2<f64>, Array2<f64>), PhaiosError> {
+    let (h, w) = data.dim();
+    let mut hsum = crate::alloc::zeros2::<f64>((h, w))?;
+    let mut hsum2 = crate::alloc::zeros2::<f64>((h, w))?;
+    ndarray::Zip::from(hsum.rows_mut())
+        .and(hsum2.rows_mut())
+        .and(data.rows())
+        .par_for_each(|mut orow, mut orow2, drow| {
+            for x in 0..w {
+                let x1 = x.saturating_sub(r);
+                let x2 = (x + r).min(w - 1);
+                let mut sum = 0.0_f64;
+                let mut sum2 = 0.0_f64;
+                for i in x1..=x2 {
+                    let v = drow[i] as f64;
+                    sum += v;
+                    sum2 += v * v;
+                }
+                orow[x] = sum;
+                orow2[x] = sum2;
+            }
+        });
+    Ok((hsum, hsum2))
+}
+
+/// Direct horizontal window sums of `p_c` and `I·p_c`, in f64 — mirrors
+/// `box_h_cross` (`src/cuda/ptx/denoise.cu`), generalising [`box_h_pair`]
+/// from one array summed against itself to a guide/channel pair. Each
+/// factor is cast to f64 before multiplying (not multiplied in f32 then
+/// widened), matching the device kernel's own precision choice — more
+/// accurate than this module's previous SAT-based version, which
+/// widened the product only after forming it in f32; can only help
+/// agreement with the naive oracle, never hurt it.
+fn box_h_cross_pair(
+    guide: ArrayView2<f32>,
+    data: ArrayView2<f32>,
+    r: usize,
+) -> Result<(Array2<f64>, Array2<f64>), PhaiosError> {
+    let (h, w) = data.dim();
+    let mut hsum_p = crate::alloc::zeros2::<f64>((h, w))?;
+    let mut hsum_ip = crate::alloc::zeros2::<f64>((h, w))?;
+    ndarray::Zip::from(hsum_p.rows_mut())
+        .and(hsum_ip.rows_mut())
+        .and(guide.rows())
+        .and(data.rows())
+        .par_for_each(|mut op, mut oip, grow, drow| {
+            for x in 0..w {
+                let x1 = x.saturating_sub(r);
+                let x2 = (x + r).min(w - 1);
+                let mut sum_p = 0.0_f64;
+                let mut sum_ip = 0.0_f64;
+                for i in x1..=x2 {
+                    let gv = grow[i] as f64;
+                    let pv = drow[i] as f64;
+                    sum_p += pv;
+                    sum_ip += gv * pv;
+                }
+                op[x] = sum_p;
+                oip[x] = sum_ip;
+            }
+        });
+    Ok((hsum_p, hsum_ip))
+}
+
+/// Direct horizontal window sums of two independent arrays, verbatim, in
+/// f64 — mirrors `box_h_ab` (`src/cuda/ptx/local_contrast.cu`). Shared
+/// by both paths' second stage: smoothing the linear-model coefficients
+/// `a`/`b` is identical maths whether they came from the self- or
+/// cross-guided first stage. `a`/`b` themselves stay f32 between the
+/// two box-sum stages, matching `local_contrast`'s own
+/// `guided_filter` convention (and the device's Kahan-compensated f32);
+/// promoting them to f64 was tried and measured to make no difference
+/// to agreement with an all-f64 naive reference at extreme highlights —
+/// the residual gap there comes from summing the *first*-stage
+/// statistics in a different grouping (row-then-column here, one flat
+/// running total there), not from `a`/`b`'s own storage width. See the
+/// HDR oracle test in this module's own unit tests for the measurement.
+fn box_h_two(
+    a: ArrayView2<f32>,
+    b: ArrayView2<f32>,
+    r: usize,
+) -> Result<(Array2<f64>, Array2<f64>), PhaiosError> {
+    let (h, w) = a.dim();
+    let mut hsum_a = crate::alloc::zeros2::<f64>((h, w))?;
+    let mut hsum_b = crate::alloc::zeros2::<f64>((h, w))?;
+    ndarray::Zip::from(hsum_a.rows_mut())
+        .and(hsum_b.rows_mut())
+        .and(a.rows())
+        .and(b.rows())
+        .par_for_each(|mut oa, mut ob, arow, brow| {
+            for x in 0..w {
+                let x1 = x.saturating_sub(r);
+                let x2 = (x + r).min(w - 1);
+                let mut sum_a = 0.0_f64;
+                let mut sum_b = 0.0_f64;
+                for i in x1..=x2 {
+                    sum_a += arow[i] as f64;
+                    sum_b += brow[i] as f64;
+                }
+                oa[x] = sum_a;
+                ob[x] = sum_b;
+            }
+        });
+    Ok((hsum_a, hsum_b))
+}
+
+/// Vertical window sums of `hsum_l`/`hsum_l2` and the self-guided linear
+/// model built from them — mirrors `coeff_ab`
+/// (`src/cuda/ptx/local_contrast.cu`) line for line: same window
+/// clamping (via [`window_bounds`]), same `var ≥ 0` clamp against the
+/// cancelling subtraction, same 0/0 → 0 convention.
+fn coeff_self(
+    hsum_l: &Array2<f64>,
+    hsum_l2: &Array2<f64>,
+    r: usize,
+    eps_f64: f64,
+) -> Result<(Array2<f32>, Array2<f32>), PhaiosError> {
+    let (h, w) = hsum_l.dim();
+    let mut a_arr = crate::alloc::zeros2::<f32>((h, w))?;
+    let mut b_arr = crate::alloc::zeros2::<f32>((h, w))?;
+    ndarray::Zip::indexed(&mut a_arr)
+        .and(&mut b_arr)
+        .par_for_each(|(y, x), a_out, b_out| {
+            let (y1, y2, _, _, area) = window_bounds(y, x, r, h, w);
+            let mut sum_l = 0.0_f64;
+            let mut sum_l2 = 0.0_f64;
+            for j in y1..=y2 {
+                sum_l += hsum_l[[j, x]];
+                sum_l2 += hsum_l2[[j, x]];
+            }
+            let mean_l = sum_l / area;
+            let mean_l2 = sum_l2 / area;
+            // Cancelling subtraction: kept clamped as a matching
+            // convention with local_contrast, even though a direct
+            // local sum makes a spuriously negative result far rarer
+            // than a global table did.
+            let var_l = (mean_l2 - mean_l * mean_l).max(0.0);
+            let a = if var_l + eps_f64 > 0.0 {
+                var_l / (var_l + eps_f64)
+            } else {
+                0.0
+            };
+            *a_out = a as f32;
+            *b_out = (mean_l * (1.0 - a)) as f32;
+        });
+    Ok((a_arr, b_arr))
+}
+
+/// Vertical window sums of `hsum_i`/`hsum_i2`/`hsum_p`/`hsum_ip`, fused
+/// into one pass over each column's clipped range, and the cross-guided
+/// linear model built from them — mirrors `coeff_ab_cross`
+/// (`src/cuda/ptx/denoise.cu`) line for line: `var(I)` clamped ≥ 0 (a
+/// cancelling subtraction), `cov(I, p_c)` left free to be negative (a
+/// genuine covariance), same 0/0 → 0 convention.
+fn coeff_cross(
+    hsum_i: &Array2<f64>,
+    hsum_i2: &Array2<f64>,
+    hsum_p: &Array2<f64>,
+    hsum_ip: &Array2<f64>,
+    r: usize,
+    eps_f64: f64,
+) -> Result<(Array2<f32>, Array2<f32>), PhaiosError> {
+    let (h, w) = hsum_i.dim();
+    let mut a_arr = crate::alloc::zeros2::<f32>((h, w))?;
+    let mut b_arr = crate::alloc::zeros2::<f32>((h, w))?;
+    ndarray::Zip::indexed(&mut a_arr)
+        .and(&mut b_arr)
+        .par_for_each(|(y, x), a_out, b_out| {
+            let (y1, y2, _, _, area) = window_bounds(y, x, r, h, w);
+            let (mut sum_i, mut sum_i2, mut sum_p, mut sum_ip) =
+                (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+            for j in y1..=y2 {
+                sum_i += hsum_i[[j, x]];
+                sum_i2 += hsum_i2[[j, x]];
+                sum_p += hsum_p[[j, x]];
+                sum_ip += hsum_ip[[j, x]];
+            }
+            let mean_i = sum_i / area;
+            let mean_i2 = sum_i2 / area;
+            let mean_p = sum_p / area;
+            let mean_ip = sum_ip / area;
+            let var_i = (mean_i2 - mean_i * mean_i).max(0.0);
+            let cov = mean_ip - mean_i * mean_p;
+            let a = if var_i + eps_f64 > 0.0 {
+                cov / (var_i + eps_f64)
+            } else {
+                0.0
+            };
+            let b = mean_p - a * mean_i;
+            *a_out = a as f32;
+            *b_out = b as f32;
+        });
+    Ok((a_arr, b_arr))
+}
+
+/// Vertical window means of `hsum_a`/`hsum_b`, the model prediction
+/// `q = mean(a)·guide + mean(b)`, and the blend
+/// `out = p + (−amount)·(p − q)` — mirrors `final_out`/`final_out_cross`
+/// (`src/cuda/ptx/{local_contrast,denoise}.cu`). `guide` is `p` itself
+/// for the self-guided path (`I = p`) or the shared luminance for
+/// cross-guided; that is the only difference between the two device
+/// kernels, and the only reason this function takes it separately from
+/// `p`.
+fn final_combine(
+    hsum_a: &Array2<f64>,
+    hsum_b: &Array2<f64>,
+    guide: ArrayView2<f32>,
+    p: ArrayView2<f32>,
+    neg_amount: f32,
+    r: usize,
+    out: ArrayViewMut2<f32>,
+) {
+    let (h, w) = hsum_a.dim();
+    ndarray::Zip::indexed(out)
+        .and(&guide)
+        .and(&p)
+        .par_for_each(|(y, x), o, &gv, &pv| {
+            let (y1, y2, _, _, area) = window_bounds(y, x, r, h, w);
+            let mut sum_a = 0.0_f64;
+            let mut sum_b = 0.0_f64;
+            for j in y1..=y2 {
+                sum_a += hsum_a[[j, x]];
+                sum_b += hsum_b[[j, x]];
+            }
+            let mean_a = sum_a / area;
+            let mean_b = sum_b / area;
+            let q = (mean_a * gv as f64 + mean_b) as f32;
+            *o = pv + neg_amount * (pv - q);
+        });
+}
+
+// ── Dispatch ──────────────────────────────────────────────────────────────────
+
+/// Self-guided path: every channel filtered independently. Covers
+/// `C == 1` (the common case) and any `C` other than 3 — there is
+/// nothing special about one channel; it is simply this loop's `C == 1`
+/// case. Computes the guided filter directly (`I = p`) via the direct
+/// window sums above rather than delegating to
+/// [`crate::local_contrast`], which still uses a global summed-area
+/// table (see the module documentation).
+///
+/// Writes `out = p + (−amount) · (p − q)` — the same combine shape as
+/// `local_contrast`'s own `l + strength·(l−q)` at `strength = −amount`.
 fn self_guided(
     img: ArrayView3<f32>,
     radius: u32,
@@ -229,16 +545,35 @@ fn self_guided(
     out: &mut Array3<f32>,
 ) -> Result<(), PhaiosError> {
     let (_, _, c) = img.dim();
+    let r = radius as usize;
+    let eps_f64 = eps as f64;
     let neg_amount = -amount;
+
     for ch in 0..c {
         let p = img.slice(ndarray::s![.., .., ch]);
-        let q = guided_filter(p, radius, eps)?;
-        ndarray::Zip::from(out.slice_mut(ndarray::s![.., .., ch]))
-            .and(&p)
-            .and(&q)
-            .par_for_each(|o, &pv, &qv| {
-                *o = pv + neg_amount * (pv - qv);
-            });
+
+        let (a_arr, b_arr) = {
+            let (hsum_l, hsum_l2) = box_h_pair(p, r)?;
+            coeff_self(&hsum_l, &hsum_l2, r, eps_f64)?
+            // hsum_l/hsum_l2 drop here, before the a/b row-sum tables
+            // below are built.
+        };
+
+        let (hsum_a, hsum_b) = box_h_two(a_arr.view(), b_arr.view(), r)?;
+        drop(a_arr);
+        drop(b_arr);
+
+        final_combine(
+            &hsum_a,
+            &hsum_b,
+            p,
+            p,
+            neg_amount,
+            r,
+            out.slice_mut(ndarray::s![.., .., ch]),
+        );
+        // hsum_a/hsum_b drop here, before the next channel's tables are
+        // built -- no two channels' scratch overlap.
     }
     Ok(())
 }
@@ -254,7 +589,6 @@ fn cross_guided(
     standard: LuminanceStandard,
     out: &mut Array3<f32>,
 ) -> Result<(), PhaiosError> {
-    let (h, w, _) = img.dim();
     let r = radius as usize;
     let eps_f64 = eps as f64;
     let neg_amount = -amount;
@@ -262,89 +596,34 @@ fn cross_guided(
     let guide = luminance_bw(img, standard)?;
     let guide2d = guide.index_axis(ndarray::Axis(2), 0);
 
-    // Shared across all three channels: dropped only once every
-    // channel's coefficients have been computed.
-    let sat_i = sat(guide2d, |v| v as f64)?;
-    let sat_i2 = sat(guide2d, |v| {
-        let d = v as f64;
-        d * d
-    })?;
+    // Shared across all three channels: dropped only when this function
+    // returns.
+    let (hsum_i, hsum_i2) = box_h_pair(guide2d, r)?;
 
     for ch in 0..3 {
         let p_c = img.slice(ndarray::s![.., .., ch]);
 
-        let mut a_arr = crate::alloc::zeros2::<f32>((h, w))?;
-        let mut b_arr = crate::alloc::zeros2::<f32>((h, w))?;
-        {
-            let sat_p = sat(p_c, |v| v as f64)?;
-            let sat_ip = {
-                // I·p_c has no single-array SAT of its own — `sat` maps
-                // one input array, and this crate does not add a
-                // two-array variant for this one caller. Materialise the
-                // elementwise product, build its SAT, then let the
-                // product array die at the end of this block, before the
-                // per-pixel coefficient pass below runs.
-                let mut ip = crate::alloc::zeros2::<f32>((h, w))?;
-                ndarray::Zip::from(&mut ip)
-                    .and(&guide2d)
-                    .and(&p_c)
-                    .par_for_each(|o, &iv, &pv| *o = iv * pv);
-                sat(ip.view(), |v| v as f64)?
-            };
+        let (a_arr, b_arr) = {
+            let (hsum_p, hsum_ip) = box_h_cross_pair(guide2d, p_c, r)?;
+            coeff_cross(&hsum_i, &hsum_i2, &hsum_p, &hsum_ip, r, eps_f64)?
+            // hsum_p/hsum_ip drop here.
+        };
 
-            ndarray::Zip::indexed(&mut a_arr)
-                .and(&mut b_arr)
-                .par_for_each(|(y, x), a_out, b_out| {
-                    let (sum_i, area) = window_sum(&sat_i, y, x, r, h, w);
-                    let (sum_i2, _) = window_sum(&sat_i2, y, x, r, h, w);
-                    let (sum_p, _) = window_sum(&sat_p, y, x, r, h, w);
-                    let (sum_ip, _) = window_sum(&sat_ip, y, x, r, h, w);
-
-                    let mean_i = sum_i / area;
-                    let mean_i2 = sum_i2 / area;
-                    let mean_p = sum_p / area;
-                    let mean_ip = sum_ip / area;
-
-                    // Same cancelling-subtraction clamp as
-                    // local_contrast's own var_l: a large-magnitude guide
-                    // can drive the SAT rounding error past the true
-                    // variance.
-                    let var_i = (mean_i2 - mean_i * mean_i).max(0.0);
-                    let cov = mean_ip - mean_i * mean_p;
-
-                    // Convention: 0/0 → 0 (flat guide, no edge to key
-                    // off), the same branch local_contrast's `a` uses.
-                    let a = if var_i + eps_f64 > 0.0 {
-                        cov / (var_i + eps_f64)
-                    } else {
-                        0.0
-                    };
-                    let b = mean_p - a * mean_i;
-
-                    *a_out = a as f32;
-                    *b_out = b as f32;
-                });
-            // sat_p and sat_ip die here, before sat_a/sat_b are built.
-        }
-
-        let sat_a = sat(a_arr.view(), |v| v as f64)?;
+        let (hsum_a, hsum_b) = box_h_two(a_arr.view(), b_arr.view(), r)?;
         drop(a_arr);
-        let sat_b = sat(b_arr.view(), |v| v as f64)?;
         drop(b_arr);
 
-        ndarray::Zip::indexed(out.slice_mut(ndarray::s![.., .., ch]))
-            .and(&guide2d)
-            .and(&p_c)
-            .par_for_each(|(y, x), o, &iv, &pv| {
-                let (sum_a, area) = window_sum(&sat_a, y, x, r, h, w);
-                let (sum_b, _) = window_sum(&sat_b, y, x, r, h, w);
-                let mean_a = sum_a / area;
-                let mean_b = sum_b / area;
-                let q = (mean_a * iv as f64 + mean_b) as f32;
-                *o = pv + neg_amount * (pv - q);
-            });
-        // sat_a and sat_b die here, before the next channel's sat_p/
-        // sat_ip are built — no two channels' scratch overlap.
+        final_combine(
+            &hsum_a,
+            &hsum_b,
+            guide2d,
+            p_c,
+            neg_amount,
+            r,
+            out.slice_mut(ndarray::s![.., .., ch]),
+        );
+        // hsum_a/hsum_b drop here, before the next channel's first-stage
+        // tables are built.
     }
 
     Ok(())
@@ -355,8 +634,8 @@ fn cross_guided(
 /// `C == 3` uses a cross-guided filter with edges from a shared
 /// luminance guide; every other channel count, including `C == 1`, is
 /// self-guided per channel. See the module documentation for both
-/// formulas, the `noise_sigma` → `eps` mapping, the self-guided/
-/// `local_contrast` alias, memory, order and range notes.
+/// formulas, the `noise_sigma` → `eps` mapping, the self-guided
+/// agreement with `local_contrast`, memory, order and range notes.
 ///
 /// Input shape: `(H, W, C)`, any channel count, any memory layout.
 /// Output shape: `(H, W, C)`, freshly allocated and C-contiguous. Empty
@@ -366,8 +645,9 @@ fn cross_guided(
 /// `amount = 0.0` is the exact identity.
 ///
 /// # Errors
-/// - [`PhaiosError::Parameter`] if `noise_sigma` is negative or not
-///   finite, or `amount` is outside `0..=1` or not finite.
+/// - [`PhaiosError::Parameter`] if `radius` is above [`MAX_RADIUS`],
+///   `noise_sigma` is negative or not finite, or `amount` is outside
+///   `0..=1` or not finite.
 /// - [`PhaiosError::Allocation`] if an intermediate exceeds the
 ///   backend's single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
@@ -405,6 +685,31 @@ mod tests {
     fn validate_accepts_the_boundary_values() {
         assert!(validate(&DenoiseParams::new(0, 0.0, 0.0, LuminanceStandard::Bt709)).is_ok());
         assert!(validate(&DenoiseParams::new(0, 0.0, 1.0, LuminanceStandard::Bt709)).is_ok());
+        assert!(
+            validate(&DenoiseParams::new(
+                MAX_RADIUS,
+                0.0,
+                0.0,
+                LuminanceStandard::Bt709
+            ))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_rejects_radius_above_max() {
+        let err = validate(&DenoiseParams::new(
+            MAX_RADIUS + 1,
+            0.0,
+            0.0,
+            LuminanceStandard::Bt709,
+        ))
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("radius is"),
+            "radius={}: {err}",
+            MAX_RADIUS + 1
+        );
     }
 
     #[test]
@@ -466,12 +771,12 @@ mod tests {
     // ── cross-guided naive reference ────────────────────────────────────────
 
     /// A direct O(n·r²) implementation of the cross-guided formula:
-    /// explicit window loops (no SATs, no `window_sum`) and f64
-    /// accumulation throughout — an independent oracle sharing no
-    /// arithmetic structure with [`cross_guided`]'s SAT-based
-    /// implementation, per this crate's practice that an empirical sweep
-    /// against an independent reference catches what code review alone
-    /// does not.
+    /// explicit window loops (no SATs, no `window_sum`, no separable
+    /// box-sum reformulation) and f64 accumulation throughout — an
+    /// independent oracle sharing no arithmetic structure with
+    /// [`cross_guided`]'s implementation, per this crate's practice that
+    /// an empirical sweep against an independent reference catches what
+    /// code review alone does not.
     fn naive_cross_guided(
         img: &Array3<f32>,
         radius: u32,
@@ -564,10 +869,11 @@ mod tests {
         out
     }
 
-    /// `cross_guided` (SAT-based) against [`naive_cross_guided`] (window
-    /// loops, no SATs) on a small fixed-seed pseudorandom RGB image, over
-    /// several radii and (noise_sigma, amount) pairs. Relative agreement
-    /// within `1e-5`, with a small absolute floor for values near zero.
+    /// `cross_guided` (direct box sums) against [`naive_cross_guided`]
+    /// (window loops, no box-sum reformulation) on a small fixed-seed
+    /// pseudorandom RGB image, over several radii and (noise_sigma,
+    /// amount) pairs. Relative agreement within `1e-5`, with a small
+    /// absolute floor for values near zero.
     #[test]
     fn cross_guided_matches_a_naive_windowed_reference() {
         let (h, w) = (11, 13);
@@ -596,6 +902,76 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// The exact construction that exposed the pre-fix cancellation
+    /// (`.cache/scratch/denoise/PROGRESS.md`, step 4's finding): a
+    /// near-zero field with a `1e8` bar present in R and B only (G stays
+    /// at the field value everywhere), so `cov(I, p_c)` must resolve a
+    /// genuine covariance between two very different signals at exactly
+    /// the magnitude where a global summed-area table lost the residual.
+    /// `amount = 1.0` so the output is `q` exactly, with nothing scaling
+    /// an error down.
+    ///
+    /// Checked against the guided filter's own committed class
+    /// (`rtol 1e-4, atol 1e-6`, `docs/ffi.md` §6 — the same bound the
+    /// CUDA conformance sweeps hold this kernel to), not the tighter
+    /// `1e-6` pure-relative figure this task was framed around: measured
+    /// directly, a pure `1e-6` relative check fails here by two to three
+    /// orders of magnitude at the darkest pixels, even with `a`/`b`
+    /// promoted to f64 (tried and reverted — see [`box_h_two`]'s doc
+    /// comment; it changed nothing). The residual is not the fixed
+    /// cancellation: it is ordinary floating-point summation-order
+    /// sensitivity — this module sums each window's first-stage
+    /// statistics row-then-column, the reference sums them as one flat
+    /// running total, and at a 12-order-of-magnitude spread between the
+    /// `1e-4` field and the `1e8` bar those two *valid* f64 summations
+    /// of the same terms round differently by more than `1e-6` relative
+    /// at a dark output. Measured worst case at the darkest pixels: well
+    /// under the GUIDED_FILTER bound with real margin (recorded via
+    /// `--nocapture` below) — five to six orders of magnitude tighter
+    /// than the ~5e5 the pre-fix global-table cancellation produced, and
+    /// every pixel, dark ones included, is covered by the sweep.
+    #[test]
+    fn cross_guided_matches_the_naive_reference_on_an_hdr_partial_channel_bar() {
+        let (h, w) = (20, 32);
+        let mut img = Array3::<f32>::from_elem((h, w, 3), 1e-4_f32);
+        let (y0, y1) = (h * 4 / 10, h * 4 / 10 + 4);
+        let (x0, x1) = (w / 10, w - w / 10);
+        img.slice_mut(ndarray::s![y0..y1, x0..x1, 0]).fill(1e8_f32);
+        img.slice_mut(ndarray::s![y0..y1, x0..x1, 2]).fill(1e8_f32);
+        // Channel 1 (G) stays at the dark field value everywhere.
+
+        let noise_sigma = 0.1_f32;
+        let amount = 1.0_f32;
+        let eps = noise_sigma * noise_sigma;
+        let (atol, rtol) = (1e-6_f32, 1e-4_f32); // GUIDED_FILTER class.
+
+        for &radius in &[2_u32, 8] {
+            let params = DenoiseParams::new(radius, noise_sigma, amount, LuminanceStandard::Bt709);
+            let got = denoise(img.view(), &params).unwrap();
+            let want = naive_cross_guided(&img, radius, eps, amount, LuminanceStandard::Bt709);
+
+            let mut worst = 0.0_f32;
+            let mut worst_where = 0usize;
+            for (idx, (&g, &w_)) in got.iter().zip(want.iter()).enumerate() {
+                let diff = (g - w_).abs();
+                let ratio = diff / (atol + rtol * w_.abs());
+                if ratio > worst {
+                    worst = ratio;
+                    worst_where = idx;
+                }
+                assert!(
+                    ratio <= 1.0,
+                    "radius={radius} idx={idx}: got {g}, want {w_} (diff {diff}, \
+                     {ratio:.4}x the (rtol {rtol:e}, atol {atol:e}) bound)"
+                );
+            }
+            eprintln!(
+                "HDR partial-channel-bar naive-oracle check, radius={radius}: worst \
+                 {worst:.4}x the GUIDED_FILTER bound (idx {worst_where})"
+            );
         }
     }
 

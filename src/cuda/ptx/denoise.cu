@@ -43,12 +43,15 @@
 // uses instead) does nothing for a cancelling difference -- only wider
 // storage does. `I*p_c` is formed by casting EACH factor to double
 // before multiplying (not: multiply in float, then widen the product),
-// the same style box_h_l_l2 uses for `v*v` -- deliberately more
-// accurate than src/denoise.rs's own CPU `cross_guided`, which
-// multiplies in f32 before widening the *product* for its SAT (a
-// consequence of reusing the single-array `integral::sat` helper, see
-// that function's doc comment); the small resulting divergence only
-// helps the committed (rtol 1e-4, atol 1e-6) bound, never hurts it.
+// the same style box_h_l_l2 uses for `v*v`. Since
+// `.cache/scratch/denoise/PLAN.md`'s "Decision 2" (the CPU cancellation
+// fix), src/denoise.rs's own CPU `cross_guided` sums each window
+// directly too, the same shape as this file's kernels, and casts each
+// factor to f64 before multiplying for the identical reason -- the two
+// implementations no longer differ in this respect. (An earlier version
+// of this CPU kernel formed `I*p_c` in f32 before widening the product,
+// forced by reusing the single-array `integral::sat` helper it no
+// longer calls.)
 // `box_h_ab` (reused) and `final_out_cross`'s own box-sum of a_c/b_c
 // stay Kahan-compensated f32, matching `coeff_ab`/`final_out`: nothing
 // downstream of a_c/b_c is squared or subtracted, so f32 is enough,

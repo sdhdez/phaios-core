@@ -209,11 +209,14 @@ pub fn hot_pixels_fn(
 /// RGB input (``C == 3``) uses a cross-guided filter: edges come from
 /// ``standard``'s luminance of the whole image, not each channel's own
 /// signal. Every other channel count, including ``C == 1``, is
-/// self-guided, reusing ``local_contrast``'s own guided filter.
+/// self-guided, computed directly on that channel.
 ///
 /// ``amount = 0.0`` is the exact identity. On a single-channel image,
-/// this kernel is bit-exact with
-/// ``local_contrast(img, GuidedFilterParams(radius, noise_sigma**2), -amount)``.
+/// this kernel agrees with
+/// ``local_contrast(img, GuidedFilterParams(radius, noise_sigma**2), -amount)``
+/// within the guided filter's own bound (rtol 1e-4, atol 1e-6), not
+/// bit-for-bit: both sum the same window statistics, but by different
+/// routes.
 ///
 /// Right after ``hot_pixels``, before ``straighten``/``resize`` and
 /// before ``exposure``: resampling would mix ``noise_sigma``'s
@@ -227,8 +230,9 @@ pub fn hot_pixels_fn(
 ///     Input array, shape ``(H, W, C)`` for any channel count, dtype
 ///     ``float32``, any memory layout.
 /// params : DenoiseParams
-///     Radius, noise sigma, blend amount, and the luminance standard
-///     used for the ``C == 3`` guide. Default: amount 0, the identity.
+///     Radius (at most ``MAX_RADIUS``), noise sigma, blend amount, and
+///     the luminance standard used for the ``C == 3`` guide. Default:
+///     amount 0, the identity.
 ///
 /// Returns
 /// -------
@@ -238,8 +242,9 @@ pub fn hot_pixels_fn(
 /// Raises
 /// ------
 /// ValueError
-///     If ``noise_sigma`` is negative or not finite, or ``amount`` is
-///     outside 0..=1 or not finite.
+///     If ``radius`` is above ``MAX_RADIUS``, ``noise_sigma`` is
+///     negative or not finite, or ``amount`` is outside 0..=1 or not
+///     finite.
 /// MemoryError
 ///     If the intermediates exceed the single-allocation limit.
 #[pyfunction]

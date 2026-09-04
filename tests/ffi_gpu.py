@@ -709,3 +709,14 @@ def test_gpu_denoise_same_validation_as_cpu(ctx):
     with pytest.raises(ValueError) as cpu_err:
         ph.denoise(img, ph.DenoiseParams(2, -1.0, 0.5))
     assert str(gpu_err.value) == str(cpu_err.value)
+
+
+@needs_device
+def test_gpu_denoise_same_validation_as_cpu_for_radius(ctx):
+    img = np.ones((4, 4, 1), dtype=np.float32)
+    resident = ctx.upload(img)
+    with pytest.raises(ValueError) as gpu_err:
+        gpu.denoise(resident, ph.DenoiseParams(33, 0.05, 0.5))
+    with pytest.raises(ValueError) as cpu_err:
+        ph.denoise(img, ph.DenoiseParams(33, 0.05, 0.5))
+    assert str(gpu_err.value) == str(cpu_err.value)

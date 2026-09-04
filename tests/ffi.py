@@ -1737,6 +1737,15 @@ def test_hot_pixel_params_repr_and_defaults():
 # ── denoise: guided-filter denoise (self- and cross-guided) ───────────────────
 
 
+def test_denoise_accepts_radius_at_the_maximum(grey_f32):
+    ph.denoise(grey_f32, ph.DenoiseParams(32, 0.05, 0.5))
+
+
+def test_denoise_rejects_radius_above_the_maximum(grey_f32):
+    with pytest.raises(ValueError, match="radius"):
+        ph.denoise(grey_f32, ph.DenoiseParams(33, 0.05, 0.5))
+
+
 def test_denoise_rejects_negative_noise_sigma(grey_f32):
     with pytest.raises(ValueError, match="noise_sigma"):
         ph.denoise(grey_f32, ph.DenoiseParams(4, -0.1, 0.5))
