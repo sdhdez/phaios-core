@@ -30,6 +30,7 @@ pub mod local_contrast;
 pub mod lut;
 pub mod quantize;
 pub mod shadow_rolloff;
+pub mod sharpen;
 pub mod split_toning;
 pub mod tone;
 pub mod vignette;
@@ -785,6 +786,58 @@ pub fn blur_fn(
     Ok(result.into_pyarray(py).unbind())
 }
 
+// ── Sharpen binding ─────────────────────────────────────────────────────────
+
+/// Sharpen with a threshold-gated Gaussian unsharp mask.
+///
+/// Computes ``out = img + amount * soft_gate(detail, threshold) * detail``
+/// where ``detail = img - blur(img, sigma)``. ``threshold`` gates the
+/// residual, in units of ``detail`` itself, so flat or near-noise-level
+/// regions are not amplified.
+///
+/// ``amount = 0.0`` or ``sigma = 0.0`` is the exact identity. The result
+/// is never clamped: the overshoot and undershoot this produces at an
+/// edge is unsharp masking's own ringing, not a defect this kernel
+/// suppresses.
+///
+/// Recommended after ``local_contrast``, before ``film_grain`` —
+/// sharpening amplifies noise, so it belongs before grain is added, not
+/// after.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)`` for any channel count, dtype
+///     ``float32``, any memory layout.
+/// params : SharpenParams
+///     Amount, blur sigma in pixels, and detail threshold. Default:
+///     amount 0, the identity.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``amount`` or ``threshold`` is negative or not finite, or
+///     ``sigma`` is outside the blur's domain.
+/// MemoryError
+///     If the intermediates exceed the single-allocation limit.
+#[pyfunction]
+#[pyo3(name = "sharpen", signature = (img, params = None))]
+pub fn sharpen_fn(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: Option<pyo3::PyRef<'_, sharpen::SharpenParams>>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let owned = params.map_or_else(sharpen::SharpenParams::default, |p| p.clone());
+    let result = py.detach(move || sharpen::sharpen(view, &owned))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
 // ── Glow binding ──────────────────────────────────────────────────────────────
 
 /// Spread light above ``threshold`` and add it back — halation,
@@ -1122,6 +1175,8 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(local_contrast_py, m)?)?;
 
     // Finishing
+    m.add_class::<sharpen::SharpenParams>()?;
+    m.add_function(wrap_pyfunction!(sharpen_fn, m)?)?;
     m.add_function(wrap_pyfunction!(film_grain_py, m)?)?;
     m.add_function(wrap_pyfunction!(split_toning_py, m)?)?;
     m.add_function(wrap_pyfunction!(vignette_py, m)?)?;

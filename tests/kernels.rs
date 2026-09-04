@@ -1068,3 +1068,226 @@ fn toe_curve_and_shoulder_compose_a_characteristic_curve() {
         "the straight section should carry the contrast the curve was given: {mid}"
     );
 }
+
+// ── Sharpen tests ──────────────────────────────────────────────────────────────
+
+use phaios_core::blur::{BlurParams, BlurShape, blur};
+use phaios_core::sharpen::{SharpenParams, sharpen};
+
+/// A smooth, low-frequency field is close to its own blur, so a correct
+/// unsharp mask changes it only a little — but deliberately not a
+/// *constant* field: `blur` maps any constant to itself exactly, so a
+/// constant input's `detail` is zero regardless of how `detail` is
+/// computed, and CONTRIBUTING.md warns exactly about tests that pass by
+/// luck for that reason. Here `detail` is measurably nonzero (the blur
+/// genuinely moves the field), so a kernel that gated the blurred image
+/// itself instead of the `img - blurred` residual diverges sharply from
+/// one that doesn't. This pins `out == img + amount*(img - blurred)`
+/// against a `blurred` computed independently, by calling `blur`
+/// directly rather than trusting `sharpen`'s internals.
+#[test]
+fn a_low_frequency_field_matches_the_formula_computed_independently() {
+    let (h, w) = (48, 64);
+    let img = ndarray::Array3::from_shape_fn((h, w, 1), |(y, x, _)| {
+        0.5 + 0.1 * ((x as f32 / w as f32) * std::f32::consts::TAU).sin()
+            + 0.05 * ((y as f32 / h as f32) * std::f32::consts::TAU).cos()
+    });
+    let sigma = 3.0_f32;
+    let amount = 0.6_f32;
+
+    let blurred = blur(img.view(), &BlurParams::new(sigma, BlurShape::Gaussian)).unwrap();
+    let out = sharpen(img.view(), &SharpenParams::new(amount, sigma, 0.0)).unwrap();
+
+    // Sanity: if the blur barely moved the field, this test could not
+    // tell a correct `detail` from an incorrect one either.
+    let max_detail = img
+        .iter()
+        .zip(blurred.iter())
+        .map(|(v, b)| (v - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_detail > 1e-4,
+        "field is too flat to distinguish detail from no detail: {max_detail}"
+    );
+
+    for ((v, b), o) in img.iter().zip(blurred.iter()).zip(out.iter()) {
+        let want = v + amount * (v - b);
+        assert!(
+            (want - o).abs() < 1e-4,
+            "expected {want}, got {o} (v={v}, blurred={b})"
+        );
+    }
+}
+
+/// Classic unsharp-mask behaviour: at a step, the local slope sampled a
+/// few pixels either side of the jump — well inside the blur's radius,
+/// so both samples feel the crossing — must come out *steeper* than the
+/// same window on the untouched step, from the overshoot/undershoot the
+/// gated detail adds back.
+///
+/// Mutation: flip the combining sign (`out = img - amount*T*detail`) and
+/// the overshoot/undershoot inverts, pulling each side *toward* the
+/// other instead of away from it — the sampled slope must come out
+/// shallower than the original step's, not merely different.
+#[test]
+fn a_step_edge_gets_steeper_not_shallower() {
+    let (h, w) = (5, 81);
+    let (lo, hi) = (0.2_f32, 0.8_f32);
+    let mid = w / 2;
+    let img = ndarray::Array3::from_shape_fn((h, w, 1), |(_, x, _)| if x < mid { lo } else { hi });
+
+    let sigma = 4.0_f32;
+    let k = 2_usize; // sample offset, well inside the blur's radius
+
+    let out = sharpen(img.view(), &SharpenParams::new(1.0, sigma, 0.0)).unwrap();
+
+    let row = h / 2;
+    let img_slope = img[[row, mid + k, 0]] - img[[row, mid - k, 0]];
+    let out_slope = out[[row, mid + k, 0]] - out[[row, mid - k, 0]];
+
+    assert!(
+        (img_slope - (hi - lo)).abs() < 1e-6,
+        "sanity: the untouched step must still be the plain jump here: {img_slope}"
+    );
+    assert!(
+        out_slope > img_slope,
+        "sharpened step must be steeper across the same window: {out_slope} vs {img_slope}"
+    );
+}
+
+/// `amount = 0.0` and `sigma = 0.0` are each an exact identity — no
+/// detail computation is needed to know a zero-strength or zero-radius
+/// sharpen does nothing, so the fast path is pinned bit-for-bit.
+#[test]
+fn amount_zero_and_sigma_zero_are_bit_exact_identities() {
+    let img = ndarray::Array3::from_shape_fn((11, 13, 2), |(y, x, c)| {
+        ((y * 13 + x * 3 + c) % 17) as f32 / 16.0
+    });
+    for params in [
+        SharpenParams::new(0.0, 2.0, 0.0),
+        SharpenParams::new(0.0, 2.0, 0.3),
+        SharpenParams::new(0.7, 0.0, 0.0),
+        SharpenParams::new(0.7, 0.0, 0.3),
+    ] {
+        let out = sharpen(img.view(), &params).unwrap();
+        for (a, b) in img.iter().zip(out.iter()) {
+            assert_eq!(a.to_bits(), b.to_bits(), "params={params:?}");
+        }
+    }
+}
+
+/// The Hermite band's *algebraic* zero: once `threshold` is at least as
+/// large as the biggest `|detail|` anywhere in the frame, every pixel's
+/// gate is exactly `0.0`, so sharpening is the identity regardless of
+/// `amount`. This is the test the maintainer's mutation check names
+/// directly: forcing `soft_gate` to a constant `1.0` must fail *this*
+/// assertion while leaving `a_low_frequency_field_matches_the_formula_
+/// computed_independently` (above) untouched — that test uses
+/// `threshold = 0`, where `T ≡ 1` is already the correct value, so a
+/// gate that is *always* `1` is indistinguishable from a correct one
+/// there.
+#[test]
+fn threshold_covering_all_detail_is_the_identity() {
+    let img = ndarray::Array3::from_shape_fn((17, 19, 1), |(y, x, _)| {
+        0.4 + 0.3 * (x as f32 * 0.7 + y as f32 * 1.3).sin()
+    });
+    let sigma = 2.5_f32;
+
+    let blurred_ref = blur(img.view(), &BlurParams::new(sigma, BlurShape::Gaussian)).unwrap();
+    let max_detail = img
+        .iter()
+        .zip(blurred_ref.iter())
+        .map(|(v, b)| (v - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(max_detail > 1e-3, "test image is too smooth: {max_detail}");
+
+    let threshold = max_detail * 1.001; // strictly above every |detail|
+    let out = sharpen(img.view(), &SharpenParams::new(0.9, sigma, threshold)).unwrap();
+    for (a, b) in img.iter().zip(out.iter()) {
+        assert!((a - b).abs() < 1e-6, "expected identity: {a} became {b}");
+    }
+}
+
+/// Linear in `amount` for a *fixed* image: `T` and `detail` do not
+/// depend on `amount`, only their product is scaled by it, so doubling
+/// `amount` must exactly double the change from the input.
+///
+/// Mutation: compute the gate from `amount * detail` instead of `detail`
+/// alone — doubling `amount` then also shifts pixels across the
+/// soft-knee band, breaking the doubling relationship for whichever
+/// pixels sit near it. `threshold` is set inside the image's achievable
+/// `|detail|` range so some pixels do sit near the band; at
+/// `threshold = 0` this mutation would be invisible (`T` is forced to 1
+/// either way).
+#[test]
+fn sharpen_is_linear_in_amount() {
+    let img = ndarray::Array3::from_shape_fn((23, 29, 1), |(y, x, _)| {
+        0.5 + 0.4 * (x as f32 * 0.31 + y as f32 * 0.53).sin()
+    });
+    let sigma = 2.0_f32;
+    let threshold = 0.02_f32;
+
+    let out1 = sharpen(img.view(), &SharpenParams::new(0.25, sigma, threshold)).unwrap();
+    let out2 = sharpen(img.view(), &SharpenParams::new(0.5, sigma, threshold)).unwrap();
+
+    for ((v, o1), o2) in img.iter().zip(out1.iter()).zip(out2.iter()) {
+        let (d1, d2) = (o1 - v, o2 - v);
+        assert!(
+            (d2 - 2.0 * d1).abs() < 1e-4,
+            "not linear in amount: d(0.25)={d1}, d(0.5)={d2}"
+        );
+    }
+}
+
+/// Amplification magnitude is non-decreasing in `|detail|`, on *both*
+/// signs — a bright spike and a dark dip of matching strength must
+/// amplify equally. Because `blur` is linear and the background is
+/// constant, `detail` at the centre of a fixed-shape spike scales
+/// exactly with the spike's amplitude, so sweeping the amplitude sweeps
+/// `|detail|` directly and predictably.
+///
+/// Mutation: drop `.abs()` before computing `u` — the ramp then reads
+/// signed `detail`, so on the negative (dark-dip) side `d - threshold`
+/// is always negative and `u` never leaves `0`, no matter how strong the
+/// dip gets. The positive (bright-spike) side is unaffected, so only the
+/// dark half of this test catches it.
+#[test]
+fn amplification_is_monotone_in_detail_magnitude_both_signs() {
+    let n = 25;
+    let base = 0.5_f32;
+    let sigma = 3.0_f32;
+    let threshold = 0.05_f32;
+
+    let spot = |amplitude: f32| {
+        ndarray::Array3::from_shape_fn((n, n, 1), |(y, x, _)| {
+            let (dy, dx) = (y.abs_diff(n / 2), x.abs_diff(n / 2));
+            if dy <= 1 && dx <= 1 {
+                base + amplitude
+            } else {
+                base
+            }
+        })
+    };
+
+    let amplitudes = [0.02_f32, 0.06, 0.15, 0.35, 0.8];
+    let mut bright_delta = Vec::new();
+    let mut dark_delta = Vec::new();
+    for &a in &amplitudes {
+        let (bright, dark) = (spot(a), spot(-a));
+        let params = SharpenParams::new(1.0, sigma, threshold);
+        let out_b = sharpen(bright.view(), &params).unwrap();
+        let out_d = sharpen(dark.view(), &params).unwrap();
+        bright_delta.push((out_b[[n / 2, n / 2, 0]] - bright[[n / 2, n / 2, 0]]).abs());
+        dark_delta.push((out_d[[n / 2, n / 2, 0]] - dark[[n / 2, n / 2, 0]]).abs());
+    }
+
+    for (name, deltas) in [("bright", &bright_delta), ("dark", &dark_delta)] {
+        for w in deltas.windows(2) {
+            assert!(w[1] >= w[0] - 1e-6, "{name} side not monotone: {deltas:?}");
+        }
+        assert!(
+            *deltas.last().unwrap() > *deltas.first().unwrap() + 1e-3,
+            "{name} side shows no real amplification growth: {deltas:?}"
+        );
+    }
+}

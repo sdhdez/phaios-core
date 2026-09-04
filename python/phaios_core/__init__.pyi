@@ -767,6 +767,45 @@ drew past the range they drew it over invents data."""
     def __repr__(self) -> str: ...
     __hash__: ClassVar[None]  # type: ignore[assignment]  # typeshed idiom for unhashable
 
+@final
+class SharpenParams:
+    """Parameters for [`sharpen`].
+
+```python
+# A modest capture sharpen, ignoring near-flat noise
+params = phaios_core.SharpenParams(amount=0.5, sigma=1.2, threshold=0.02)
+```"""
+
+    def __new__(cls, amount: float = 0.0, sigma: float = 0.0, threshold: float = 0.0) -> SharpenParams: ...
+
+    amount: float
+    """How much of the gated detail is added back. `0.0` is the
+identity and the default.
+
+Non-negative: this kernel adds detail, it does not remove it —
+for smoothing use [`crate::blur`], or a negative
+[`crate::local_contrast`] `strength`."""
+
+    sigma: float
+    """Standard deviation of the blur that `detail` is measured
+against, in pixels. `0.0` is the identity.
+
+[`crate::blur`]'s own domain, bounded above by its `MAX_SIGMA` —
+delegated, not restated."""
+
+    threshold: float
+    """Detail magnitude below which amplification fades out. `0.0`
+(the default) amplifies every pixel equally.
+
+In units of `|img − blur(img)|`, a high-frequency residual — not
+the raw pixel value the way [`crate::glow`]'s threshold is.
+Useful values are typically much smaller than a `glow` threshold."""
+
+    def __eq__(self, value: object, /) -> bool: ...
+    def __ne__(self, value: object, /) -> bool: ...
+    def __repr__(self) -> str: ...
+    __hash__: ClassVar[None]  # type: ignore[assignment]  # typeshed idiom for unhashable
+
 def crop(img: NDArray[np.float32], params: CropParams) -> NDArray[np.float32]:
     """Crop to a rectangle.
 
@@ -1398,6 +1437,46 @@ Raises
 ------
 ValueError
     If ``img`` is not shape ``(H, W, 1)``."""
+    ...
+
+def sharpen(img: NDArray[np.float32], params: SharpenParams | None = None) -> NDArray[np.float32]:
+    """Sharpen with a threshold-gated Gaussian unsharp mask.
+
+Computes ``out = img + amount * soft_gate(detail, threshold) * detail``
+where ``detail = img - blur(img, sigma)``. ``threshold`` gates the
+residual, in units of ``detail`` itself, so flat or near-noise-level
+regions are not amplified.
+
+``amount = 0.0`` or ``sigma = 0.0`` is the exact identity. The result
+is never clamped: the overshoot and undershoot this produces at an
+edge is unsharp masking's own ringing, not a defect this kernel
+suppresses.
+
+Recommended after ``local_contrast``, before ``film_grain`` —
+sharpening amplifies noise, so it belongs before grain is added, not
+after.
+
+Parameters
+----------
+img : numpy.ndarray
+    Input array, shape ``(H, W, C)`` for any channel count, dtype
+    ``float32``, any memory layout.
+params : SharpenParams
+    Amount, blur sigma in pixels, and detail threshold. Default:
+    amount 0, the identity.
+
+Returns
+-------
+numpy.ndarray
+    Shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+
+Raises
+------
+ValueError
+    If ``amount`` or ``threshold`` is negative or not finite, or
+    ``sigma`` is outside the blur's domain.
+MemoryError
+    If the intermediates exceed the single-allocation limit."""
     ...
 
 def film_grain(img: NDArray[np.float32], params: GrainParams) -> NDArray[np.float32]:

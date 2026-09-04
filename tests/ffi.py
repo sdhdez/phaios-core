@@ -791,6 +791,7 @@ _SAME_SHAPE_KERNELS = {  # shape-preserving, RGB and luminance alike
     "shadow_rolloff": lambda x: ph.shadow_rolloff(x, ph.ShadowRolloffParams(0.2, 0.5)),
     "blur": lambda x: ph.blur(x, ph.BlurParams(2.0)),
     "glow": lambda x: ph.glow(x, ph.GlowParams(0.3, 3.0, 0.4)),
+    "sharpen": lambda x: ph.sharpen(x, ph.SharpenParams(0.5, 3.0, 0.1)),
     # The three kernels whose own strided tests use a C-order view only,
     # which takes the same code path as its contiguous copy.
     "apply_lut": lambda x: ph.apply_lut(x, _LAYOUT_LUT, ph.LutParams()),
@@ -1619,6 +1620,83 @@ def test_glow_params_repr_and_defaults():
     assert p.amount == 0.0
     assert p == ph.GlowParams(0.0, 8.0, 0.0)
     assert "amount=0.35" in repr(ph.GlowParams(0.8, 8.0, 0.35))
+
+
+# ── sharpen: threshold-gated unsharp mask ─────────────────────────────────────
+
+
+def test_sharpen_amount_zero_is_the_exact_identity(rgb_f32):
+    np.testing.assert_array_equal(ph.sharpen(rgb_f32), rgb_f32)
+    np.testing.assert_array_equal(
+        ph.sharpen(rgb_f32, ph.SharpenParams(0.0, 3.0, 0.1)), rgb_f32
+    )
+
+
+def test_sharpen_sigma_zero_is_the_exact_identity(rgb_f32):
+    np.testing.assert_array_equal(
+        ph.sharpen(rgb_f32, ph.SharpenParams(0.5, 0.0, 0.1)), rgb_f32
+    )
+
+
+def test_sharpen_inherits_the_blur_sigma_bound(grey_f32):
+    # sharpen delegates its sigma to blur's validator, so the bound has
+    # to reach it without sharpen restating anything.
+    with pytest.raises(ValueError, match="sigma"):
+        ph.sharpen(grey_f32, ph.SharpenParams(0.5, 1e5, 0.1))
+
+
+@pytest.mark.parametrize("sigma", [4096.5, 1e4, 1e5, 3.4e38])
+def test_sharpen_rejects_sigma_above_the_maximum(grey_f32, sigma):
+    with pytest.raises(ValueError, match="sigma"):
+        ph.sharpen(grey_f32, ph.SharpenParams(0.5, sigma, 0.0))
+
+
+def test_sharpen_rejects_negative_amount(grey_f32):
+    with pytest.raises(ValueError, match="amount"):
+        ph.sharpen(grey_f32, ph.SharpenParams(-0.1, 3.0, 0.0))
+
+
+def test_sharpen_rejects_nan_threshold(grey_f32):
+    with pytest.raises(ValueError, match="threshold"):
+        ph.sharpen(grey_f32, ph.SharpenParams(0.5, 3.0, float("nan")))
+
+
+@pytest.mark.parametrize(
+    "amount,sigma,threshold",
+    [
+        (-0.1, 3.0, 0.0),
+        (float("nan"), 3.0, 0.0),
+        (float("inf"), 3.0, 0.0),
+        (0.5, 3.0, -0.1),
+        (0.5, 3.0, float("nan")),
+        (0.5, 3.0, float("inf")),
+        (0.5, -1.0, 0.0),
+    ],
+)
+def test_sharpen_rejects_out_of_domain(grey_f32, amount, sigma, threshold):
+    with pytest.raises(ValueError):
+        ph.sharpen(grey_f32, ph.SharpenParams(amount, sigma, threshold))
+
+
+def test_sharpen_wrong_dtype(rgb_f64):
+    with pytest.raises(Exception):
+        ph.sharpen(rgb_f64)
+
+
+def test_sharpen_params_repr_and_defaults():
+    p = ph.SharpenParams()
+    assert p.amount == 0.0
+    assert p.sigma == 0.0
+    assert p.threshold == 0.0
+    assert p == ph.SharpenParams(0.0, 0.0, 0.0)
+    # Checked field-by-field, not just "some number changed": a
+    # constructor that silently swapped the amount/threshold slots
+    # would still print a `sigma=1.2` that matches, since sigma's
+    # position is untouched by that particular mix-up.
+    r = repr(ph.SharpenParams(0.5, 1.2, 0.02))
+    assert "amount=0.5" in r
+    assert "sigma=1.2" in r
+    assert "threshold=0.02" in r
 
 
 # ── Type stubs ────────────────────────────────────────────────────────────────
