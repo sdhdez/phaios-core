@@ -56,6 +56,18 @@ jobs:
           fi
           echo "src/cuda/ is free of implicit state ✓"
 
+      - name: No image assets in the repository
+        run: |
+          # Sees tracked files, so it catches what .gitignore cannot: a
+          # `git add -f` of a photograph (CONTRIBUTING.md, "Examples").
+          HITS=$(git ls-files | grep -Ei '\.(dng|nef|cr2|cr3|arw|raf|orf|rw2|pef|srw|jpe?g|png|tiff?|webp|heic|heif|bmp|gif|exr|hdr|p[bgp]m|psd)$' || true)
+          if [ -n "$HITS" ]; then
+            echo "Image assets are never committed (CONTRIBUTING.md):"
+            echo "$HITS"
+            exit 1
+          fi
+          echo "no image assets tracked ✓"
+
       - name: cargo audit
         uses: rustsec/audit-check@v1
         with:

@@ -8,19 +8,52 @@ readme = "README.md"
 repository = "https://github.com/sdhdez/phaios-core"
 keywords = ["image-processing", "black-and-white", "photography", "pyo3"]
 categories = ["multimedia::images", "science"]
-# The dev tool under tools/ (own lockfile, GUI deps) and the repo's
-# internal working documents must not ship in the published crate/sdist.
+# What must never ship in the published crate or the sdist (which mirrors
+# `cargo package`). Git-tracked files bypass .gitignore, so this list is
+# the last line of defence against a `git add -f`.
 exclude = [
+    # The dev tool under tools/ (own lockfile, GUI deps).
     "tools/",
+    # Claude Code's project directory, local scratch, and repo-local
+    # tooling that lives in the working tree only.
     ".claude/",
     ".cache/",
+    "claude-md-templates/",
+    "design-briefs/",
+    "phaios-core.code-workspace",
     # Contributor and agent instructions, not consumer documentation:
     # the working agreement, local scratch conventions, and pointers to
     # the release runbook. Public on GitHub, where contributors find it.
     "CLAUDE.md",
-    "02-phaios-bootstrap.md",
-    "03-phase3-prompt.md",
-    "phase2-design-brief.md",
+    # Image assets are never committed (CONTRIBUTING.md, "Examples"):
+    # the same bracket-class patterns as .gitignore, case-insensitive by
+    # construction, matching at any depth.
+    "*.[Dd][Nn][Gg]",
+    "*.[Nn][Ee][Ff]",
+    "*.[Cc][Rr]2",
+    "*.[Cc][Rr]3",
+    "*.[Aa][Rr][Ww]",
+    "*.[Rr][Aa][Ff]",
+    "*.[Oo][Rr][Ff]",
+    "*.[Rr][Ww]2",
+    "*.[Pp][Ee][Ff]",
+    "*.[Ss][Rr][Ww]",
+    "*.[Jj][Pp][Gg]",
+    "*.[Jj][Pp][Ee][Gg]",
+    "*.[Pp][Nn][Gg]",
+    "*.[Tt][Ii][Ff]",
+    "*.[Tt][Ii][Ff][Ff]",
+    "*.[Ww][Ee][Bb][Pp]",
+    "*.[Hh][Ee][Ii][Cc]",
+    "*.[Hh][Ee][Ii][Ff]",
+    "*.[Bb][Mm][Pp]",
+    "*.[Gg][Ii][Ff]",
+    "*.[Ee][Xx][Rr]",
+    "*.[Hh][Dd][Rr]",
+    "*.[Pp][Gg][Mm]",
+    "*.[Pp][Bb][Mm]",
+    "*.[Pp][Pp][Mm]",
+    "*.[Pp][Ss][Dd]",
 ]
 
 [lib]

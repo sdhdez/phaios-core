@@ -8,6 +8,19 @@ The Rust crate and the Python wheel always carry the same version.
 
 ## [Unreleased] — 0.2.0-dev
 
+### Changed — the "no image assets" rule is now enforced, not stated
+
+- `.gitignore` ignores every raster and RAW extension anywhere in the
+  tree (bracket-class patterns, so upper-case camera extensions match
+  too), and `.cache/` at any depth rather than only at the root.
+- CI and the release `verify` job fail on any *tracked* image file — the
+  `git add -f` case `.gitignore` cannot see.
+- `Cargo.toml`'s `exclude` gains the same image patterns and the
+  repo-local tooling paths (`claude-md-templates/`, `design-briefs/`,
+  `phaios-core.code-workspace`) as a last backstop, and no longer names
+  working documents that no longer exist — both files ship in every
+  crate and sdist, so the names did too.
+
 ### Fixed — two CUDA kernels on high-dynamic-range input
 
 Both were found by widening the test inputs, not by reading the code. Every

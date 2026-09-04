@@ -43,6 +43,18 @@ jobs:
       - name: cargo test
         run: cargo test
 
+      - name: No image assets in the repository
+        run: |
+          # Same guard as ci.yml: tracked files bypass .gitignore, and a
+          # tag must never carry a photograph into either registry.
+          HITS=$(git ls-files | grep -Ei '\.(dng|nef|cr2|cr3|arw|raf|orf|rw2|pef|srw|jpe?g|png|tiff?|webp|heic|heif|bmp|gif|exr|hdr|p[bgp]m|psd)$' || true)
+          if [ -n "$HITS" ]; then
+            echo "::error::image assets are never committed (CONTRIBUTING.md):"
+            echo "$HITS"
+            exit 1
+          fi
+          echo "no image assets tracked ✓"
+
   # ── Build wheels ─────────────────────────────────────────────────────────
 
   linux:

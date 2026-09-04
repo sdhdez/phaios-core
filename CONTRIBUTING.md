@@ -72,7 +72,10 @@ self-contained, one concept each.
 - The test image is a Macbeth-style chart built in code. **No real image
   inputs in this crate, ever.** That rule is about committed assets;
   `tools/kernel-viewer/` loads images at runtime and its `testdata/` is
-  gitignored.
+  gitignored. Three layers enforce it: `.gitignore` ignores every raster
+  and RAW extension, CI fails on any tracked image file (so a
+  `git add -f` is caught), and `Cargo.toml`'s `exclude` keeps one out of
+  the crate even then.
 - A doc comment saying what the example demonstrates and what to look for
   in the output.
 - A new kernel gets a new example. A kernel with a GPU path gets a twin
