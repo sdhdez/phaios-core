@@ -1291,3 +1291,267 @@ fn amplification_is_monotone_in_detail_magnitude_both_signs() {
         );
     }
 }
+
+// ── Hot-pixel tests ──────────────────────────────────────────────────────────
+
+use phaios_core::hot_pixels::{HotPixelParams, hot_pixels};
+
+/// Builds an `(h, w, 1)` image that is a smooth, strictly monotonic ramp
+/// along `x` and constant along `y` — deliberately not a *flat* field, so
+/// CONTRIBUTING.md's warning about constant-image tests does not apply:
+/// a kernel that ignored its neighbourhood entirely could not pass these
+/// tests by accident.
+///
+/// Because every row is identical, the 3x3 window around `(row, col)`
+/// (any interior `row`) holds, before corruption, three copies each of
+/// `ramp(col-1)`, `ramp(col)` and `ramp(col+1)`. Replacing the one centre
+/// copy of `ramp(col)` with an outlier that ranks outside
+/// `[ramp(col-1), ramp(col+1)]` leaves two surviving copies of
+/// `ramp(col)` — still enough to occupy the sorted array's middle
+/// (5th-of-9) slot regardless of which side the outlier ranks on, so the
+/// window median is *exactly* `ramp(col)`, computable independently of
+/// `hot_pixels` itself with no floating-point tolerance needed.
+fn x_ramp(h: usize, w: usize) -> ndarray::Array3<f32> {
+    ndarray::Array3::from_shape_fn((h, w, 1), |(_, x, _)| 0.1 + 0.02 * x as f32)
+}
+
+/// A finer-grained ramp than [`x_ramp`] (0.001/column instead of
+/// 0.02/column, spanning roughly 0..0.1 over 101 columns), used where a
+/// test needs both a "dark" and a "highlight" window on the same scale —
+/// [`x_ramp`]'s coarser step would make a highlight-region deviation
+/// hard to distinguish from the ramp's own local structure.
+fn x_ramp_fine(h: usize, w: usize) -> ndarray::Array3<f32> {
+    ndarray::Array3::from_shape_fn((h, w, 1), |(_, x, _)| 0.001 * x as f32)
+}
+
+/// A bright (bright/very-large) planted outlier, replaced bit-exactly by
+/// the window median. Threshold and relative are both `0.0`
+/// (unconditional replacement), so this isolates `median9` itself.
+///
+/// This is one of the two assertions the mutation gate's `median9 ->
+/// window minimum` check targets: a minimum-based "median" is pulled
+/// toward whichever of `ramp(col-1)`/`ramp(col+1)` is smaller rather than
+/// staying at `ramp(col)`, or (if the outlier itself becomes the
+/// reported minimum) leaves the outlier in place — either way this
+/// assertion is expected to fail under that mutation. A *separate*
+/// dark-outlier assertion (below) exists so a regression that breaks one
+/// direction but not the other is still caught, and named individually.
+#[test]
+fn a_bright_outlier_on_a_ramp_is_replaced_by_the_window_median() {
+    let (h, w) = (9, 15);
+    let (row, col) = (4, 7);
+    let mut img = x_ramp(h, w);
+    let true_value = img[[row, col, 0]];
+    assert_ne!(
+        img[[row, col - 1, 0]].to_bits(),
+        img[[row, col + 1, 0]].to_bits(),
+        "sanity: the ramp must actually vary across this window"
+    );
+    img[[row, col, 0]] = 50.0; // far brighter than anything on the ramp
+
+    let out = hot_pixels(img.view(), &HotPixelParams::new(0.0, 0.0)).unwrap();
+
+    assert_eq!(
+        out[[row, col, 0]].to_bits(),
+        true_value.to_bits(),
+        "bright outlier must be replaced by the window median (the ramp's \
+         own value here): expected {true_value}, got {}",
+        out[[row, col, 0]]
+    );
+}
+
+/// The dark-outlier twin of the test above — see its documentation for
+/// the shared construction. Named separately so a `median9 -> window
+/// minimum`-style mutation, which plausibly affects the bright and dark
+/// directions differently, is caught (and reported) on each side
+/// independently rather than by one assertion that could pass for the
+/// wrong reason.
+#[test]
+fn a_dark_outlier_on_a_ramp_is_replaced_by_the_window_median() {
+    let (h, w) = (9, 15);
+    let (row, col) = (4, 7);
+    let mut img = x_ramp(h, w);
+    let true_value = img[[row, col, 0]];
+    img[[row, col, 0]] = -50.0; // far darker than anything on the ramp
+
+    let out = hot_pixels(img.view(), &HotPixelParams::new(0.0, 0.0)).unwrap();
+
+    assert_eq!(
+        out[[row, col, 0]].to_bits(),
+        true_value.to_bits(),
+        "dark outlier must be replaced by the window median (the ramp's \
+         own value here): expected {true_value}, got {}",
+        out[[row, col, 0]]
+    );
+}
+
+/// A plain two-level step is an exact identity under an unconditional
+/// median (`threshold = relative = 0.0`), at *every* pixel including the
+/// border rows/columns the index clamp produces: a step's own value is
+/// always at least 5-of-9 in its clamped window, even at the transition
+/// column (interior: a 3-6 or 6-3 split; at a border, the duplicated
+/// edge value only reinforces whichever side already has the majority),
+/// so the median always agrees with the pixel already there.
+///
+/// `assert_eq!` on bits, not a tolerance: this is provable exactly by
+/// hand, not merely expected to be close. Mutation: swapping the median
+/// for a mean would visibly soften the transition, since a mean of a
+/// 3-6/6-3 split is not equal to either endpoint.
+#[test]
+fn a_step_edge_is_an_exact_identity_at_threshold_zero_including_the_borders() {
+    let (h, w) = (7, 11);
+    let (lo, hi) = (0.1_f32, 0.9_f32);
+    let mid = w / 2;
+    let img = ndarray::Array3::from_shape_fn((h, w, 1), |(_, x, _)| if x < mid { lo } else { hi });
+
+    let out = hot_pixels(img.view(), &HotPixelParams::new(0.0, 0.0)).unwrap();
+
+    for ((y, x, c), &v) in img.indexed_iter() {
+        assert_eq!(
+            out[[y, x, c]].to_bits(),
+            v.to_bits(),
+            "step edge must be an exact identity at threshold=0, including \
+             the border rows/columns the index clamp produces: pixel \
+             ({y},{x}) expected {v}, got {}",
+            out[[y, x, c]]
+        );
+    }
+}
+
+/// A `threshold` set strictly above the actual `|p - m|` deviation keeps
+/// the pixel unchanged — the mirror image of the two replacement tests
+/// above, pinning the other side of the `>` comparison (an off-by-one
+/// direction or an accidentally non-strict `>=` would flip this).
+#[test]
+fn threshold_strictly_above_the_planted_deviation_is_the_identity() {
+    let (h, w) = (9, 15);
+    let (row, col) = (4, 7);
+    let mut img = x_ramp(h, w);
+    let true_value = img[[row, col, 0]];
+    let deviation = 0.1_f32; // far larger than the ramp's own 0.02 step
+    img[[row, col, 0]] = true_value + deviation;
+
+    let threshold = deviation + 0.05; // strictly above the planted deviation
+    let out = hot_pixels(img.view(), &HotPixelParams::new(threshold, 0.0)).unwrap();
+
+    for ((y, x, c), &v) in img.indexed_iter() {
+        assert_eq!(
+            out[[y, x, c]].to_bits(),
+            v.to_bits(),
+            "threshold above the deviation must be the identity: pixel \
+             ({y},{x}) expected {v}, got {}",
+            out[[y, x, c]]
+        );
+    }
+}
+
+/// With `threshold = 0.0`, the absolute-only form (`relative = 0.0`)
+/// replaces *any* nonzero deviation — including this one, planted on a
+/// bright (highlight) region of the ramp. Adding a large enough
+/// `relative` term must keep it instead: `limit` grows with the local
+/// median's own magnitude, and here it grows past the deviation.
+///
+/// Paired with the dark-median test below using the *same* deviation and
+/// the *same* `relative`, so together they isolate the relative term's
+/// effect (widens with brightness) from a kernel that is simply less
+/// aggressive everywhere. Mutation: `limit = threshold` (ignoring
+/// `relative` entirely) makes this assertion fail while the absolute
+/// tests above stay green, since `relative` is the only field this test
+/// varies.
+#[test]
+fn the_relative_term_keeps_a_highlight_deviation_the_absolute_form_would_replace() {
+    let (h, w) = (9, 101);
+    let (row, col) = (4, 95);
+    let mut img = x_ramp_fine(h, w);
+    let true_value = img[[row, col, 0]];
+    let deviation = 0.05_f32;
+    img[[row, col, 0]] = true_value + deviation;
+
+    // Sanity: the absolute-only form (relative = 0) does replace this
+    // deviation, which is the behaviour the relative term is meant to
+    // change for a bright/highlight median.
+    let absolute_only = hot_pixels(img.view(), &HotPixelParams::new(0.0, 0.0)).unwrap();
+    assert_eq!(
+        absolute_only[[row, col, 0]].to_bits(),
+        true_value.to_bits(),
+        "sanity: the absolute-only form must replace this deviation"
+    );
+
+    let relative = 1.0_f32; // limit = relative * |m| = 1.0 * ~0.095 > 0.05
+    let out = hot_pixels(img.view(), &HotPixelParams::new(0.0, relative)).unwrap();
+    let deviated = img[[row, col, 0]];
+    assert_eq!(
+        out[[row, col, 0]].to_bits(),
+        deviated.to_bits(),
+        "a highlight deviation within relative*|m| of the median must be \
+         kept: expected {deviated} (unchanged), got {}",
+        out[[row, col, 0]]
+    );
+}
+
+/// The dark-median twin of the test above: the *same* absolute
+/// deviation and the *same* `relative`, but planted on a low (dark)
+/// region of the ramp, where `relative * |m|` stays small. Still
+/// replaced — proving the previous test's identity was specifically
+/// `relative` tracking brightness, not `relative` disabling the kernel
+/// outright.
+#[test]
+fn the_relative_term_still_replaces_the_same_deviation_on_a_dark_median() {
+    let (h, w) = (9, 101);
+    let (row, col) = (4, 5);
+    let mut img = x_ramp_fine(h, w);
+    let true_value = img[[row, col, 0]];
+    let deviation = 0.05_f32;
+    img[[row, col, 0]] = true_value + deviation;
+
+    let relative = 1.0_f32; // limit = relative * |m| = 1.0 * ~0.005 < 0.05
+    let out = hot_pixels(img.view(), &HotPixelParams::new(0.0, relative)).unwrap();
+    assert_eq!(
+        out[[row, col, 0]].to_bits(),
+        true_value.to_bits(),
+        "the same deviation on a dark median must still be replaced: \
+         expected {true_value}, got {}",
+        out[[row, col, 0]]
+    );
+}
+
+/// An outlier confined to one channel of an RGB-shaped ramp must be
+/// corrected in that channel only — the other two, at every pixel, stay
+/// bit-exact to the input. Channels carry deliberately different
+/// ramps (not merely different constants) so a kernel that accidentally
+/// read another channel's window would move a *distinguishable* amount,
+/// not coincidentally match.
+///
+/// Mutation this catches: any window-gathering bug that reads across the
+/// channel axis (e.g. a fixed channel index, or the wrong stride).
+#[test]
+fn hot_pixels_filters_channels_independently() {
+    let (h, w) = (9, 15);
+    let (row, col) = (4, 7);
+    let bases = [0.1_f32, 0.3, 0.6];
+    let slopes = [0.02_f32, 0.01, 0.005];
+    let mut img =
+        ndarray::Array3::from_shape_fn((h, w, 3), |(_, x, c)| bases[c] + slopes[c] * x as f32);
+    let true_value = img[[row, col, 0]];
+    img[[row, col, 0]] = 50.0; // outlier in channel 0 only
+
+    let out = hot_pixels(img.view(), &HotPixelParams::new(0.0, 0.0)).unwrap();
+
+    assert_eq!(
+        out[[row, col, 0]].to_bits(),
+        true_value.to_bits(),
+        "the corrupted channel must still be corrected"
+    );
+    for ((y, x, c), &v) in img.indexed_iter() {
+        if c == 0 {
+            continue; // channel 0 is allowed to change; checked above
+        }
+        assert_eq!(
+            out[[y, x, c]].to_bits(),
+            v.to_bits(),
+            "channel {c} must be untouched by channel 0's outlier: pixel \
+             ({y},{x}) expected {v}, got {}",
+            out[[y, x, c]]
+        );
+    }
+}

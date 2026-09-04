@@ -792,6 +792,7 @@ _SAME_SHAPE_KERNELS = {  # shape-preserving, RGB and luminance alike
     "blur": lambda x: ph.blur(x, ph.BlurParams(2.0)),
     "glow": lambda x: ph.glow(x, ph.GlowParams(0.3, 3.0, 0.4)),
     "sharpen": lambda x: ph.sharpen(x, ph.SharpenParams(0.5, 3.0, 0.1)),
+    "hot_pixels": lambda x: ph.hot_pixels(x, ph.HotPixelParams(0.05, 0.02)),
     # The three kernels whose own strided tests use a C-order view only,
     # which takes the same code path as its contiguous copy.
     "apply_lut": lambda x: ph.apply_lut(x, _LAYOUT_LUT, ph.LutParams()),
@@ -1697,6 +1698,39 @@ def test_sharpen_params_repr_and_defaults():
     assert "amount=0.5" in r
     assert "sigma=1.2" in r
     assert "threshold=0.02" in r
+
+
+# ── hot_pixels: conditional-median hot-pixel filter ───────────────────────────
+
+
+def test_hot_pixels_rejects_negative_threshold(grey_f32):
+    with pytest.raises(ValueError, match="threshold"):
+        ph.hot_pixels(grey_f32, ph.HotPixelParams(-0.1))
+
+
+def test_hot_pixels_rejects_nan_relative(grey_f32):
+    with pytest.raises(ValueError, match="relative"):
+        ph.hot_pixels(grey_f32, ph.HotPixelParams(0.1, float("nan")))
+
+
+def test_hot_pixels_wrong_dtype(rgb_f64):
+    with pytest.raises(Exception):
+        ph.hot_pixels(rgb_f64, ph.HotPixelParams(0.1))
+
+
+def test_hot_pixel_params_repr_and_defaults():
+    # threshold has no default: no finite value is an identity for
+    # arbitrary input, unlike every other *Params class in this module.
+    with pytest.raises(TypeError):
+        ph.HotPixelParams()
+    p = ph.HotPixelParams(0.05)
+    assert p.threshold == pytest.approx(0.05)
+    assert p.relative == 0.0
+    assert p == ph.HotPixelParams(0.05, 0.0)
+    # Checked field-by-field, matching test_sharpen_params_repr_and_defaults.
+    r = repr(ph.HotPixelParams(0.05, 0.2))
+    assert "threshold=0.05" in r
+    assert "relative=0.2" in r
 
 
 # ── Type stubs ────────────────────────────────────────────────────────────────

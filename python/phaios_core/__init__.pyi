@@ -124,6 +124,38 @@ CW" is what a viewer must apply to display the frame upright)."""
     __hash__: ClassVar[None]  # type: ignore[assignment]  # typeshed idiom for unhashable
 
 @final
+class HotPixelParams:
+    """Parameters for [`hot_pixels`].
+
+```python
+# Replace samples that deviate from their 3x3 median by more than an
+# absolute term plus a term proportional to the median's magnitude.
+params = phaios_core.HotPixelParams(threshold=0.04, relative=0.02)
+```"""
+
+    def __new__(cls, threshold: float, relative: float = 0.0) -> HotPixelParams: ...
+
+    threshold: float
+    """Absolute term of the replace-vs-keep criterion, in the same units
+as the input. `0.0` is legal — it means "replace unconditionally"
+(an unconditional 3×3 median) — but no finite value is an
+identity for arbitrary input, so unlike `relative` there is no
+default."""
+
+    relative: float
+    """Relative term, scaling the tolerance with the local median's own
+magnitude (`relative · |m|`): photon shot noise grows with
+signal, so a fixed absolute tolerance that is correct in the
+midtones is either too loose in the shadows or too tight in the
+highlights. `0.0` (the default) reproduces the absolute-only
+criterion."""
+
+    def __eq__(self, value: object, /) -> bool: ...
+    def __ne__(self, value: object, /) -> bool: ...
+    def __repr__(self) -> str: ...
+    __hash__: ClassVar[None]  # type: ignore[assignment]  # typeshed idiom for unhashable
+
+@final
 class ResizeFilter:
     """Resampling filter for [`resize`]."""
 
@@ -857,6 +889,44 @@ Returns
 numpy.ndarray
     Shape ``(H, W, C)`` or ``(W, H, C)``, dtype ``float32``,
     C-contiguous."""
+    ...
+
+def hot_pixels(img: NDArray[np.float32], params: HotPixelParams) -> NDArray[np.float32]:
+    """Remove RAW sensor hot pixels with a conditional (switching) median.
+
+Computes, per channel, ``m = median9(window)`` over the 3x3
+neighbourhood clamped at the image border, then replaces the centre
+sample with ``m`` when ``|p - m| > threshold + relative * abs(m)``,
+and otherwise leaves it unchanged.
+
+Right after ``orient``, before ``straighten``/``resize``: resampling
+mixes a single bad sample into its neighbours, smearing a one-pixel
+defect into a blob before it can be corrected.
+
+Bit-exact across backends: the median step is a fixed comparator
+network of ``min``/``max`` pairs only, with no arithmetic.
+
+Parameters
+----------
+img : numpy.ndarray
+    Input array, shape ``(H, W, C)`` for any channel count, dtype
+    ``float32``, any memory layout.
+params : HotPixelParams
+    Absolute and relative terms of the replace-vs-keep criterion. No
+    default: no finite ``threshold`` is an identity for arbitrary
+    input.
+
+Returns
+-------
+numpy.ndarray
+    Shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+
+Raises
+------
+ValueError
+    If ``threshold`` or ``relative`` is negative or not finite.
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def resize(img: NDArray[np.float32], params: ResizeParams) -> NDArray[np.float32]:

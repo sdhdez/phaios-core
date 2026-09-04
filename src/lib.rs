@@ -25,6 +25,7 @@ pub mod geometry;
 pub mod glow;
 pub mod highlight_rolloff;
 pub mod histogram;
+pub mod hot_pixels;
 mod integral;
 pub mod local_contrast;
 pub mod lut;
@@ -148,6 +149,54 @@ pub fn orient(
 ) -> PyResult<Py<PyArray3<f32>>> {
     let view = img.as_array();
     let result = py.detach(move || geometry::orient(view, orientation))?;
+    Ok(result.into_pyarray(py).unbind())
+}
+
+/// Remove RAW sensor hot pixels with a conditional (switching) median.
+///
+/// Computes, per channel, ``m = median9(window)`` over the 3x3
+/// neighbourhood clamped at the image border, then replaces the centre
+/// sample with ``m`` when ``|p - m| > threshold + relative * abs(m)``,
+/// and otherwise leaves it unchanged.
+///
+/// Right after ``orient``, before ``straighten``/``resize``: resampling
+/// mixes a single bad sample into its neighbours, smearing a one-pixel
+/// defect into a blob before it can be corrected.
+///
+/// Bit-exact across backends: the median step is a fixed comparator
+/// network of ``min``/``max`` pairs only, with no arithmetic.
+///
+/// Parameters
+/// ----------
+/// img : numpy.ndarray
+///     Input array, shape ``(H, W, C)`` for any channel count, dtype
+///     ``float32``, any memory layout.
+/// params : HotPixelParams
+///     Absolute and relative terms of the replace-vs-keep criterion. No
+///     default: no finite ``threshold`` is an identity for arbitrary
+///     input.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     Shape ``(H, W, C)``, dtype ``float32``, C-contiguous.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``threshold`` or ``relative`` is negative or not finite.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
+#[pyfunction]
+#[pyo3(name = "hot_pixels")]
+pub fn hot_pixels_fn(
+    py: Python<'_>,
+    img: PyReadonlyArray3<f32>,
+    params: pyo3::PyRef<'_, hot_pixels::HotPixelParams>,
+) -> PyResult<Py<PyArray3<f32>>> {
+    let view = img.as_array();
+    let params_owned = params.clone();
+    let result = py.detach(move || hot_pixels::hot_pixels(view, &params_owned))?;
     Ok(result.into_pyarray(py).unbind())
 }
 
@@ -1123,6 +1172,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Param structs
     m.add_class::<geometry::CropParams>()?;
     m.add_class::<geometry::Orientation>()?;
+    m.add_class::<hot_pixels::HotPixelParams>()?;
     m.add_class::<geometry::ResizeFilter>()?;
     m.add_class::<geometry::ResizeParams>()?;
     m.add_class::<geometry::StraightenParams>()?;
@@ -1147,6 +1197,7 @@ fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Geometry
     m.add_function(wrap_pyfunction!(crop, m)?)?;
     m.add_function(wrap_pyfunction!(orient, m)?)?;
+    m.add_function(wrap_pyfunction!(hot_pixels_fn, m)?)?;
     m.add_function(wrap_pyfunction!(resize, m)?)?;
     m.add_function(wrap_pyfunction!(straighten, m)?)?;
 
