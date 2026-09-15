@@ -12,6 +12,14 @@
 //!
 //! The toolkit is a build-time requirement only; at runtime users need
 //! nothing but the NVIDIA driver.
+//!
+//! The script also exports `PHAIOS_NVCC_VERSION` (e.g. `13.4.59`) for
+//! `src/cuda/context.rs` to put in the backend fingerprint. The PTX and
+//! that string are produced by the same `nvcc` invocation and refreshed
+//! together, so the fingerprint always names the toolkit that built the
+//! PTX actually embedded in the binary — including when a toolkit is
+//! upgraded in place without this script re-running, in which case both
+//! stay at the old value and remain consistent with each other.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -23,6 +31,10 @@ fn main() {
     }
 
     let nvcc = find_nvcc();
+    println!(
+        "cargo:rustc-env=PHAIOS_NVCC_VERSION={}",
+        nvcc_version(&nvcc)
+    );
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
     let ptx_src_dir = PathBuf::from("src/cuda/ptx");
 
@@ -72,6 +84,47 @@ fn main() {
         "cuda feature enabled but no .cu files found in {}",
         ptx_src_dir.display()
     );
+}
+
+/// The toolkit release as `<major>.<minor>.<patch>`, e.g. `13.4.59`.
+///
+/// Parsed from the `V<major>.<minor>.<patch>` token on `nvcc --version`'s
+/// "Cuda compilation tools" line — the same three numbers every emitted
+/// `.ptx` carries in its own header comment. `release 13.4` alone is not
+/// enough: libdevice bodies can change between patch releases, and the
+/// bounded kernels inline them.
+///
+/// Fails the build rather than substituting a placeholder. A fingerprint
+/// is a reproducibility key (`docs/ffi.md` §6); an unparsed toolkit
+/// would silently weaken it for every render made with this binary.
+fn nvcc_version(nvcc: &std::path::Path) -> String {
+    let output = Command::new(nvcc)
+        .arg("--version")
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run {} --version: {e}", nvcc.display()));
+    assert!(
+        output.status.success(),
+        "{} --version failed (exit: {})",
+        nvcc.display(),
+        output.status
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.split_whitespace()
+        .find_map(|tok| {
+            let v = tok.trim_end_matches(',').strip_prefix('V')?;
+            let mut parts = v.split('.');
+            let ok = [parts.next()?, parts.next()?, parts.next()?]
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+            (ok && parts.next().is_none()).then(|| v.to_string())
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "cannot parse a V<major>.<minor>.<patch> release out of \
+                 `{} --version`; output was:\n{text}",
+                nvcc.display()
+            )
+        })
 }
 
 /// Locate `nvcc`: `$CUDA_PATH/bin`, then PATH, then the Arch default.

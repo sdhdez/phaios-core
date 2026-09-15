@@ -1486,10 +1486,32 @@ fn devices_enumeration_is_consistent() {
         if d.supported {
             let ctx = cuda::Context::new(d.ordinal)
                 .unwrap_or_else(|e| panic!("device {} reported supported but: {e}", d.ordinal));
+            // docs/ffi.md §6's key in full, not just its prefix:
+            // cuda/<device>/cc<maj>.<min>/ptx-compute_80/nvcc-<maj>.<min>.<patch>.
+            // `starts_with("cuda/")` passed just as happily while the key
+            // omitted the toolkit that compiled the PTX.
+            let fp = ctx.fingerprint();
+            let (head, nvcc) = fp
+                .rsplit_once("/nvcc-")
+                .unwrap_or_else(|| panic!("fingerprint has no nvcc segment: {fp}"));
             assert!(
-                ctx.fingerprint().starts_with("cuda/"),
-                "fingerprint format changed: {}",
-                ctx.fingerprint()
+                head.starts_with("cuda/") && head.ends_with("/ptx-compute_80"),
+                "fingerprint format changed: {fp}"
+            );
+            assert!(
+                head.contains(&format!(
+                    "/cc{}.{}/",
+                    d.compute_capability.0, d.compute_capability.1
+                )),
+                "fingerprint does not name the device's compute capability: {fp}"
+            );
+            let release: Vec<&str> = nvcc.split('.').collect();
+            assert!(
+                release.len() == 3
+                    && release
+                        .iter()
+                        .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())),
+                "nvcc segment is not <major>.<minor>.<patch>: {fp}"
             );
         }
     }

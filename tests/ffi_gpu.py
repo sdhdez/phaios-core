@@ -142,7 +142,28 @@ def ctx():
 def test_context_reports_identity(ctx):
     assert ctx.info.supported
     assert ctx.info.compute_capability >= (8, 0)
-    assert ctx.fingerprint.startswith("cuda/")
+    assert_fingerprint_format(ctx.fingerprint, ctx.info.compute_capability)
+
+
+def assert_fingerprint_format(fingerprint, compute_capability):
+    """Enforce docs/ffi.md §6's four-segment key, not just its prefix.
+
+    ``cuda/<device>/cc<maj>.<min>/ptx-compute_80/nvcc-<maj>.<min>.<patch>``.
+    A ``startswith("cuda/")`` check passed just as happily when the key
+    omitted the toolkit that built the PTX, which was the bug: two builds
+    under different CUDA toolkits claimed to be the same backend while
+    their transcendental kernels inlined different libdevice code.
+    """
+    head, sep, nvcc = fingerprint.rpartition("/nvcc-")
+    assert sep, f"fingerprint has no nvcc segment: {fingerprint}"
+    assert head.startswith("cuda/"), fingerprint
+    assert head.endswith("/ptx-compute_80"), fingerprint
+    major, minor = compute_capability
+    assert f"/cc{major}.{minor}/" in head, fingerprint
+    release = nvcc.split(".")
+    assert len(release) == 3 and all(
+        part.isdigit() for part in release
+    ), f"nvcc segment is not <major>.<minor>.<patch>: {fingerprint}"
 
 
 @needs_device
@@ -306,6 +327,13 @@ def test_fingerprint_is_stable_across_contexts():
     a = gpu.GpuContext()
     b = gpu.GpuContext()
     assert a.fingerprint == b.fingerprint
+
+
+@needs_device
+def test_image_fingerprint_matches_its_context(ctx):
+    img = ctx.upload(np.zeros((4, 4, 1), dtype=np.float32))
+    assert img.fingerprint == ctx.fingerprint
+    assert_fingerprint_format(img.fingerprint, ctx.info.compute_capability)
 
 
 # ── Bindings with no Python smoke coverage before the v0.2 audit ──────────────

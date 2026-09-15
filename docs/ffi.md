@@ -409,9 +409,23 @@ and target:
 
 - `cpu/<target-triple>`: the reference implementation, together with the
   platform libm it links against.
-- `cuda/<device>/cc<maj>.<min>/ptx-compute_80`: a CUDA device, together
-  with this crate's PTX revision. `GpuContext.fingerprint` returns this
-  string.
+- `cuda/<device>/cc<maj>.<min>/ptx-compute_80/nvcc-<maj>.<min>.<patch>`:
+  a CUDA device, together with the target architecture of this crate's
+  PTX and the CUDA toolkit that generated it.
+  `GpuContext.fingerprint` returns this string.
+
+  The `nvcc-` segment is load-bearing, not decoration. The PTX is not
+  committed: it is regenerated at build time by whatever toolkit is
+  present, and the bounded kernels below inline libdevice code for
+  `powf`, `expf`, `log2f` and `cbrtf` whose bodies change between
+  toolkits. Two builds of the same commit under different toolkits are
+  therefore two different backends, and until this segment existed they
+  reported the same key — this project moved 13.3 -> 13.4 and driver 610
+  -> 615 with the fingerprint unchanged, and nothing would have noticed
+  a drift, because the conformance suite compares against the CPU with
+  tolerances rather than against a stored golden GPU output. The
+  bit-exact kernels listed below use IEEE operations only and agree
+  across toolkits regardless.
 
 **Within one backend**, two calls with the same input, parameters and
 seed produce **bit-identical** output — in the same process, in another

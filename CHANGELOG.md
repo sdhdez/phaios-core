@@ -8,6 +8,29 @@ The Rust crate and the Python wheel always carry the same version.
 
 ## [Unreleased] — 0.2.0-dev
 
+### Changed — the backend fingerprint now names the CUDA toolkit
+
+`GpuContext.fingerprint` grew a fourth segment:
+`cuda/<device>/cc<maj>.<min>/ptx-compute_80/nvcc-<maj>.<min>.<patch>`,
+e.g. `cuda/NVIDIA GeForce RTX 5070 Ti/cc12.0/ptx-compute_80/nvcc-13.4.59`.
+`build.rs` captures the release from the same `nvcc --version` whose
+compiler produced the embedded PTX, so the two can never disagree.
+
+The key promises in `docs/ffi.md` §6 that two machines sharing it
+produce bit-identical output, but it recorded only the device and the
+PTX *target* architecture — not the toolkit that generated the PTX,
+which is not committed and is rebuilt by whatever toolkit is present.
+The ~11 bounded kernels inline libdevice bodies for `powf`, `expf`,
+`log2f` and `cbrtf` that change between toolkits, so two builds of one
+commit could differ in the low bits while claiming the same backend.
+This project has already moved 13.3 -> 13.4 with the fingerprint
+unchanged; nothing regressed, but nothing would have shown it either,
+since the conformance suite compares against the CPU with tolerances
+rather than against a stored golden GPU output. Changed now, before the
+release freezes the format. The `startswith("cuda/")` assertions that
+would have accepted either shape are replaced by full four-segment
+checks in `tests/ffi_gpu.py` and `tests/cuda_conformance.rs`.
+
 ### Fixed — the GPU entry points panicked on a machine with no NVIDIA driver
 
 `src/cuda/mod.rs` promised that without a driver `available()` is

@@ -86,6 +86,13 @@ impl GpuContext {
     /// The backend fingerprint — the reproducibility key of
     /// ``docs/ffi.md`` §6. Record it wherever exact reproduction is
     /// promised.
+    ///
+    /// ``cuda/<device>/cc<maj>.<min>/ptx-compute_80/nvcc-<maj>.<min>.<patch>``:
+    /// the device, the architecture the embedded PTX targets, and the
+    /// CUDA toolkit that compiled it. The toolkit is part of the key
+    /// because the PTX is rebuilt at build time and the kernels using
+    /// transcendentals inline libdevice code that differs between
+    /// toolkits.
     #[getter]
     fn fingerprint(&self) -> String {
         self.inner.fingerprint()

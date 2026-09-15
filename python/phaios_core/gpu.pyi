@@ -103,7 +103,14 @@ context are not valid with another."""
     def fingerprint(self) -> str:
         """The backend fingerprint — the reproducibility key of
 ``docs/ffi.md`` §6. Record it wherever exact reproduction is
-promised."""
+promised.
+
+``cuda/<device>/cc<maj>.<min>/ptx-compute_80/nvcc-<maj>.<min>.<patch>``:
+the device, the architecture the embedded PTX targets, and the
+CUDA toolkit that compiled it. The toolkit is part of the key
+because the PTX is rebuilt at build time and the kernels using
+transcendentals inline libdevice code that differs between
+toolkits."""
         ...
 
     def upload(self, img: NDArray[np.float32]) -> GpuImage:

@@ -71,8 +71,15 @@ img = gpu.luminance_bw(img)
 out = img.download()                 # download once
 ```
 
-Determinism is promised **per backend**: bit-identical output within a
-backend at any thread count or launch geometry, and bounded across them.
+Determinism is promised **per backend**, and a backend is named by
+`GpuContext.fingerprint`:
+`cuda/<device>/cc<maj>.<min>/ptx-compute_80/nvcc-<maj>.<min>.<patch>` —
+the device, the architecture the PTX targets, and the CUDA toolkit that
+compiled it. That last segment matters because the PTX is not committed:
+it is rebuilt from source by whatever toolkit is present, and the kernels
+that use transcendentals inline libdevice code which changes between
+toolkits. Bit-identical output within a backend at any thread count or
+launch geometry, and bounded across them.
 Kernels free of transcendentals — including all four geometry kernels —
 are bit-exact across CPU and GPU as well; `tests/cuda_conformance.rs`
 asserts this with `assert_eq!` and skips cleanly when no device is

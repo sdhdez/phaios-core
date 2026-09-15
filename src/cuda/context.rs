@@ -238,15 +238,32 @@ impl Context {
     }
 
     /// The backend fingerprint, the reproducibility key from
-    /// `docs/ffi.md` §6: `cuda/<device>/cc<maj>.<min>/ptx-compute_80`.
+    /// `docs/ffi.md` §6:
+    /// `cuda/<device>/cc<maj>.<min>/ptx-compute_80/nvcc-<maj>.<min>.<patch>`.
     ///
     /// Two machines with the same fingerprint produce bit-identical
     /// output for the same input, parameters and seed.
+    ///
+    /// The `nvcc-` segment is the toolkit that compiled the embedded PTX,
+    /// captured by `build.rs` from the same `nvcc` the compile used. It
+    /// is part of the key because it has to be: the PTX is regenerated at
+    /// build time by whatever toolkit is present, and the bounded kernels
+    /// (`hsl_bw`, `zone_system`, `local_contrast`, `denoise`, `film_grain`,
+    /// `split_toning`, `tone_curve` at power != 1, `encode_srgb`, `blur`,
+    /// `glow`, `sharpen`) inline libdevice bodies for `powf`, `expf`,
+    /// `log2f` and `cbrtf` that change between toolkits. Without it, two
+    /// builds from different toolkits reported the same fingerprint and
+    /// could differ in the low bits — this project moved 13.3 -> 13.4 with
+    /// the key unchanged. The bit-exact kernels use IEEE operations only
+    /// and are unaffected either way.
     #[must_use]
     pub fn fingerprint(&self) -> String {
         format!(
-            "cuda/{}/cc{}.{}/ptx-compute_80",
-            self.info.name, self.info.compute_capability.0, self.info.compute_capability.1
+            "cuda/{}/cc{}.{}/ptx-compute_80/nvcc-{}",
+            self.info.name,
+            self.info.compute_capability.0,
+            self.info.compute_capability.1,
+            env!("PHAIOS_NVCC_VERSION"),
         )
     }
 
