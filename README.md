@@ -96,7 +96,9 @@ anything with a user interface belong to consumers, permanently.
 
 ## Build prerequisites
 
-- **Rust** stable toolchain (`rustup default stable`)
+- **Rust** 1.88 or later (`rustup default stable`). That is the
+  crate's declared `rust-version`, set by a let-chain in `build.rs`
+  rather than by edition 2024, which would only need 1.85.
 - **Python** 3.12 or later (3.14 recommended — it is what the crate is
   developed against). The published wheel is `cp312-abi3`: one build
   serves every 3.12+ interpreter that has the GIL.

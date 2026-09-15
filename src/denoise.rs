@@ -37,7 +37,7 @@
 //! rather than carried forward (a sliding running sum is only a
 //! differently-shaped prefix table, and reintroduces the identical
 //! cancellation). The clipped-window convention itself is unchanged and
-//! matches [`crate::integral::window_sum`]'s: rows/columns independently
+//! matches `integral::window_sum`'s (private): rows/columns independently
 //! clamped to `[0, extent−1]`, area the product of what is actually
 //! covered.
 //!

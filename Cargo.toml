@@ -8,6 +8,11 @@ readme = "README.md"
 repository = "https://github.com/sdhdez/phaios-core"
 keywords = ["image-processing", "black-and-white", "photography", "pyo3"]
 categories = ["multimedia::images", "science"]
+# Floor set by the let-chain in build.rs's find_nvcc (stable since
+# 1.88), not by edition 2024 (1.85) or any dependency (criterion's
+# 1.86 is the highest). build.rs compiles with or without the cuda
+# feature, so this binds the library, not just the GPU path.
+rust-version = "1.88"
 # What must never ship in the published crate or the sdist (which mirrors
 # `cargo package`). Git-tracked files bypass .gitignore, so this list is
 # the last line of defence against a `git add -f`.

@@ -230,16 +230,24 @@ store is not copied; the Rust code borrows a read-only view for the
 duration of the call.
 
 Do not call `.to_owned()` on an input array. If you need a mutable copy
-for scratch work, allocate a fresh `Array3<f32>` with `ndarray::Array3::zeros`
+for scratch work, allocate a fresh `Array3<f32>` with `alloc::zeros3`
 and write into it.
 
 **Outputs** are allocated exactly once:
 
 ```rust
-let out = Array3::<f32>::zeros((h, w, c_out));
+let out = alloc::zeros3::<f32>((h, w, c_out))?;
 // ... fill out ...
 Ok(out.into_pyarray(py).unbind())
 ```
+
+Never `ndarray::Array3::zeros` on a shape derived from caller input: a
+failed `Vec` allocation *aborts* rather than unwinding, which no `except`
+can catch, and a zero-stride numpy broadcast reaches that from four bytes
+of storage. `alloc::zeros3` applies the 8 GiB single-allocation bound
+(`src/alloc.rs`) and returns `PhaiosError::Allocation`, which Python sees
+as `MemoryError`. `alloc::check_shape` is the same bound without the
+allocation, for the paths that hand the shape to something else.
 
 `PyArray3::from_array` (which copies) is forbidden on the hot path.
 

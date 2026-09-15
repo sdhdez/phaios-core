@@ -192,8 +192,8 @@ fn guided_filter(img: ArrayView2<f32>, radius: u32, eps: f32) -> Result<Array2<f
 // ── Public kernel ─────────────────────────────────────────────────────────────
 
 /// Validate shape and parameters. Shared verbatim by the CPU kernel and
-/// the CUDA kernel in [`crate::cuda`], so both backends reject exactly
-/// the same inputs with exactly the same messages.
+/// the CUDA kernel in `src/cuda/` (feature-gated), so both backends
+/// reject exactly the same inputs with exactly the same messages.
 pub(crate) fn validate(
     shape: &[usize],
     params: &GuidedFilterParams,

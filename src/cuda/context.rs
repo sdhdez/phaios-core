@@ -79,7 +79,7 @@
 //! passed in explicitly; a kernel's output depends on its arguments and
 //! nothing else. The mutable state a device genuinely needs — the loaded
 //! module cache — lives inside the context and cannot affect results.
-//! The driver-library probe [`driver_present`] adds none either: it
+//! The driver-library probe `driver_present` adds none either: it
 //! answers one question per call and caches nothing.
 
 use std::collections::HashMap;
@@ -157,7 +157,7 @@ pub struct DeviceInfo {
 /// empty list, because "no GPU" is an ordinary state of the world, not an
 /// exception.
 ///
-/// The missing-library case is handled by [`driver_present`] before
+/// The missing-library case is handled by `driver_present` before
 /// cudarc is touched; the remaining cases are ordinary `Err`s.
 #[must_use]
 pub fn devices() -> Vec<DeviceInfo> {
@@ -193,7 +193,7 @@ pub fn devices() -> Vec<DeviceInfo> {
 /// True if at least one supported CUDA device exists.
 ///
 /// Never raises, including on a machine with no NVIDIA driver installed:
-/// it delegates to [`devices`], which is gated on [`driver_present`].
+/// it delegates to [`devices`], which is gated on `driver_present`.
 #[must_use]
 pub fn available() -> bool {
     devices().iter().any(|d| d.supported)
@@ -224,7 +224,7 @@ impl Context {
     /// [`PhaiosError::Backend`] if the driver cannot be loaded, the
     /// ordinal does not exist, or the device's compute capability is
     /// below [`MIN_COMPUTE_CAPABILITY`]. Never panics: the
-    /// no-driver-library case is caught by [`driver_present`] before
+    /// no-driver-library case is caught by `driver_present` before
     /// cudarc is touched.
     pub fn new(ordinal: usize) -> Result<Self, PhaiosError> {
         if !driver_present() {

@@ -9,7 +9,7 @@
 //! exact-negation argument [`crate::denoise`]'s module documentation
 //! gives for the CPU kernel applies bit for bit here too, since both
 //! device kernels round the very same sequence of operations —
-//! [`denoise_device_c1_is_bit_exact_with_local_contrast_device`] in
+//! `denoise_device_c1_is_bit_exact_with_local_contrast_device` in
 //! `tests/cuda_conformance.rs` pins it empirically.
 //!
 //! **Self-guided, every other `C`.** `local_contrast_device` takes a
@@ -22,7 +22,7 @@
 //! this crate's own pipeline never actually produces — every real image
 //! is `C == 1` or `C == 3`), so this branch downloads the image once,
 //! slices each channel host-side exactly as
-//! [`crate::denoise::self_guided`] does, re-uploads it as its own
+//! `denoise::self_guided` (private) does, re-uploads it as its own
 //! `(H, W, 1)` image and calls `local_contrast_device` on it — the
 //! result is byte-for-byte what that function produces per channel, by
 //! construction, just not fully device-resident internally. `C == 1`

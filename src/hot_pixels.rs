@@ -69,7 +69,7 @@
 //!
 //! # Determinism
 //!
-//! The median step is comparison-and-selection only — [`median9`] is a
+//! The median step is comparison-and-selection only — `median9` is a
 //! fixed 19-comparator network of `f32::min`/`f32::max` pairs, with **no
 //! arithmetic** at all. That is a strictly stronger guarantee than
 //! "correctly-rounded arithmetic on both backends", the bound most of
@@ -239,7 +239,7 @@ pub(crate) fn median9(mut v: [f32; 9]) -> f32 {
 /// returns the empty array of the same shape.
 ///
 /// Order-sensitive; see the module documentation. Bit-exact across
-/// backends; see the module documentation and [`median9`].
+/// backends; see the module documentation and `median9`.
 ///
 /// # Errors
 /// - [`PhaiosError::Parameter`] if `threshold` or `relative` is negative

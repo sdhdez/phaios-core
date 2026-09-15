@@ -25,8 +25,8 @@ use ndarray::{Array3, ArrayView3};
 use crate::error::PhaiosError;
 
 /// Validate `stops`. Shared verbatim by the CPU kernel below and the
-/// CUDA kernel in [`crate::cuda`], so both backends reject exactly the
-/// same inputs with exactly the same message.
+/// CUDA kernel in `src/cuda/` (feature-gated), so both backends reject
+/// exactly the same inputs with exactly the same message.
 pub(crate) fn validate(stops: f32) -> Result<(), PhaiosError> {
     if !stops.is_finite() {
         return Err(PhaiosError::Parameter(format!(
