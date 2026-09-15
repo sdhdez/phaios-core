@@ -8,6 +8,22 @@ The Rust crate and the Python wheel always carry the same version.
 
 ## [Unreleased] — 0.2.0-dev
 
+### Fixed — the wheel declared no dependencies and would have shipped a blank PyPI page
+
+`[project].dependencies` was empty, so `pip install phaios-core` into a
+bare environment succeeded and the *first kernel call* then raised
+`PanicException` — rust-numpy resolves the NumPy array-API capsule
+lazily, and a `BaseException` walks straight through a consumer's
+`except Exception:`. Now `dependencies = ["numpy>=1.26"]`, the oldest
+numpy that supports this package's own Python floor of 3.12.
+`[project]` also declared no `readme`, and PEP 621 forbids the backend
+inferring one from `Cargo.toml`, so the built METADATA carried neither
+`Description` nor `Description-Content-Type` and the PyPI project page
+would have been empty; `readme = "README.md"` fixes both. Added the
+`Programming Language :: Python :: 3/3.12/3.13/3.14` classifiers the
+package never had, and raised the `requirements-dev.txt` numpy floor to
+the 2.x line the test suite is actually run against.
+
 ### Added — hot-pixel removal and guided-filter noise reduction
 
 `hot_pixels(img, HotPixelParams { threshold, relative = 0.0 })`: an

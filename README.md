@@ -90,7 +90,9 @@ anything with a user interface belong to consumers, permanently.
 ## Build prerequisites
 
 - **Rust** stable toolchain (`rustup default stable`)
-- **Python** 3.12 or later (3.13 recommended for performance)
+- **Python** 3.12 or later (3.14 recommended — it is what the crate is
+  developed against). The published wheel is `cp312-abi3`: one build
+  serves every 3.12+ interpreter that has the GIL.
 - **maturin** (installed via requirements-dev.txt)
 - *Optional, for `--features cuda`:* the CUDA toolkit (`nvcc`, which
   compiles the kernels to PTX at build time) and an NVIDIA driver. The
@@ -187,6 +189,12 @@ try:
 except ImportError:
     gpu = None
 ```
+
+Free-threaded interpreters (3.13t, 3.14t) are **not** covered by the
+published wheel: PyO3 0.29 ignores `abi3` when building against a
+free-threaded interpreter, which has no limited API of its own, so
+`pip install` there falls back to compiling the sdist and needs a Rust
+toolchain.
 
 ---
 
