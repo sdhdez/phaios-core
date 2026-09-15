@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -20,7 +20,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -69,7 +69,7 @@ jobs:
           echo "no image assets tracked ✓"
 
       - name: cargo audit
-        uses: rustsec/audit-check@v1
+        uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -98,10 +98,45 @@ jobs:
             cargo run --example "$ex"
           done
 
-      - name: Set up uv + Python 3.12
-        uses: astral-sh/setup-uv@v5
+  # The wheel is `cp312-abi3` (`abi3-py312` in Cargo.toml): one build is
+  # supposed to serve every 3.12+ interpreter that has the GIL. Until now CI
+  # only ever ran 3.12, so that promise was never exercised. Its own job
+  # rather than a matrix on `test`: the Rust half above has nothing to do
+  # with the interpreter and must not run three times.
+  #
+  # Free-threaded builds (3.13t, 3.14t) are deliberately absent — PyO3 0.29
+  # ignores `abi3` there, so they are not what this wheel targets; see
+  # README "Type hints".
+  python:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v6
         with:
-          python-version: "3.12"
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # Keyed per interpreter so the three jobs do not race for one
+          # cache entry; `restore-keys` still warms them from `test`.
+          key: ${{ runner.os }}-cargo-py${{ matrix.python }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Set up uv + Python ${{ matrix.python }}
+        uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ matrix.python }}
           enable-cache: true
 
       - name: Install dev dependencies
