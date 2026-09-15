@@ -989,4 +989,80 @@ mod tests {
             "expected finite output on the 0/0 case, got a non-finite value"
         );
     }
+
+    // ── box_h_cross_pair: direct sums, not sliding ──────────────────────────
+
+    /// Added after the step 4b mutation gate (`.cache/scratch/denoise/
+    /// PROGRESS.md`) found a real blind spot: replacing
+    /// [`box_h_cross_pair`]'s from-scratch loop with an incremental
+    /// sliding sum (add the entering element on the right, subtract the
+    /// departing one on the left as `x` advances) left every existing
+    /// end-to-end test green, including this module's own HDR
+    /// partial-channel-bar oracle test at `radius ∈ {2, 8}` and
+    /// `tests/cuda_conformance.rs`'s equivalent sweep up to
+    /// `radius = MAX_RADIUS`, across every width tried. A *correctly
+    /// bounded* sliding window's accumulator magnitude is tied to the
+    /// window's own `(2r+1)` pixels, not the whole image the way a
+    /// genuine summed-area table's is — measurably better-behaved,
+    /// empirically, than the module documentation's "reintroduces the
+    /// identical cancellation" claim suggests, at least at the radii and
+    /// dynamic ranges the shipped sweeps happen to cover.
+    ///
+    /// This test isolates the one function the mutation touches instead
+    /// of going through the full kernel and an independent oracle (whose
+    /// own summation order differs enough at extreme highlights to
+    /// confound the comparison on its own — see the HDR oracle test
+    /// above). A direct sum and a sliding sum are the *same* sequence of
+    /// left-to-right additions for as long as the window has only grown
+    /// (`x1` still `0`), so no dynamic range is needed to tell them apart
+    /// until the window first loses an element on the left; from then on
+    /// a sliding accumulator carries that element's contribution through
+    /// extra additions before subtracting it back out, rather than never
+    /// having included it. At ordinary unit-range values f64 has enough
+    /// mantissa to make both routes bit-identical regardless (checked
+    /// during development); one value twelve orders of magnitude above
+    /// its neighbours is what exposes the difference, at `x = 6` here
+    /// (radius 3, the spike at column 2 — the first `x` whose window no
+    /// longer reaches column 2). Mutation this catches: any accumulation
+    /// in [`box_h_cross_pair`] (or a future refactor introducing one)
+    /// that carries a running total across output positions instead of
+    /// summing each window fresh from its own pixels.
+    #[test]
+    fn box_h_cross_pair_matches_a_fresh_sum_once_a_value_leaves_the_window() {
+        let (h, w, r) = (1_usize, 20_usize, 3_usize);
+        let mut guide = Array2::<f32>::from_elem((h, w), 1e-4_f32);
+        let mut data = Array2::<f32>::from_elem((h, w), 1e-4_f32);
+        guide[[0, 2]] = 1e8_f32; // one extreme spike, everything else flat
+        data[[0, 2]] = 1e8_f32;
+
+        let (hsum_p, hsum_ip) = box_h_cross_pair(guide.view(), data.view(), r).unwrap();
+
+        // Independent direct-from-scratch reference: same clamped bounds,
+        // same left-to-right term order, so a correct box_h_cross_pair
+        // must match it bit for bit.
+        for x in 0..w {
+            let x1 = x.saturating_sub(r);
+            let x2 = (x + r).min(w - 1);
+            let mut want_p = 0.0_f64;
+            let mut want_ip = 0.0_f64;
+            for i in x1..=x2 {
+                want_p += data[[0, i]] as f64;
+                want_ip += guide[[0, i]] as f64 * data[[0, i]] as f64;
+            }
+            assert_eq!(
+                hsum_p[[0, x]].to_bits(),
+                want_p.to_bits(),
+                "x={x}: sum_p diverged from a fresh from-scratch sum over \
+                 the same clamped window (direct sum required, not a \
+                 sliding/incremental one)"
+            );
+            assert_eq!(
+                hsum_ip[[0, x]].to_bits(),
+                want_ip.to_bits(),
+                "x={x}: sum_ip diverged from a fresh from-scratch sum over \
+                 the same clamped window (direct sum required, not a \
+                 sliding/incremental one)"
+            );
+        }
+    }
 }
