@@ -29,6 +29,8 @@ freshly allocated C-contiguous array.
 | Kernel | Description | Since |
 |--------|-------------|-------|
 | `orient` | The eight Exif dihedral transforms (rotations, flips) | v0.2 |
+| `hot_pixels` | Conditional 3×3 median for stuck/hot RAW sensor pixels | v0.2 |
+| `denoise` | Guided-filter noise reduction, self- and cross-guided | v0.2 |
 | `straighten` | Small-angle rotation (±45°) with inscribed-rectangle crop | v0.2 |
 | `crop` | Exact rectangle extraction | v0.2 |
 | `resize` | Separable resampling: area / bilinear / Catmull-Rom | v0.2 |

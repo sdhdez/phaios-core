@@ -31,6 +31,8 @@ pipeline:
 |---|---|---|---|
 | `crop` | any | same C, smaller H/W | pure index copy; **geometry runs first** |
 | `orient` | any | same C, H/W may swap | pure index permutation; before `crop` |
+| `hot_pixels` | any | same | index-clamped 3×3 conditional median; channels filtered independently; right after `orient` |
+| `denoise` | any | same | guided-filter noise reduction; `C = 3` cross-guided from a shared luminance guide, every other count self-guided per channel; right after `hot_pixels` |
 | `straighten` | any | same C, inscribed H/W | Catmull-Rom resampling; after `orient`, before `crop` |
 | `resize` | any | same C, target H/W | separable polynomial resampling; last geometry stage or export prep |
 | `exposure` | any | same | a scalar multiply; valid before or after the B&W stage |
@@ -56,12 +58,22 @@ pipeline:
 | `histogram` | any | **not an image** | a reduction — returns a `Histogram`, see below |
 
 A kernel given the wrong channel count raises `ValueError`. The
-seventeen that accept "any" do so for three distinct reasons.
+nineteen that accept "any" do so for four distinct reasons.
 
 The four **geometry** kernels (`crop`, `orient`, `straighten`, `resize`)
 are channel-agnostic by nature: they move pixels without looking inside
 them, and they run first, before the pipeline has decided anything about
 colour.
+
+`hot_pixels` and `denoise` are **restoration** kernels: they run at
+native resolution, right after `orient` and before anything resamples
+or exposes, and their job — defect removal, noise reduction — is a
+purely spatial-statistical one that does not depend on what the
+channels represent, only on how many pixels' worth of neighbourhood
+each one has. `denoise` additionally special-cases `C = 3` (cross-guided
+from a shared luminance guide) without rejecting any other count
+(self-guided per channel), so "any" holds for it in the same sense it
+does for a colour-agnostic geometry kernel, not by accident.
 
 The six **tone** kernels (`exposure`, `vignette`, `tone_curve`,
 `shadow_rolloff`, `highlight_rolloff`, `encode_srgb`) run either side of
@@ -424,7 +436,15 @@ What is promised across backends:
   `color_filter_bw`, `vignette`, `tone_curve` at `power == 1`, every
   identity fast path, `film_grain`'s integer hash (asserted over
   2²⁰ coordinates), the geometry kernels `crop` and `orient` (pure
-  index permutations), the resampling kernels `resize` and
+  index permutations), `hot_pixels` (a fixed 19-comparator median-of-9
+  sorting network — comparisons and selection only, no arithmetic beyond
+  one subtraction and its comparison against the threshold, both
+  correctly rounded; `f32::min`/`f32::max` and CUDA's `fminf`/`fmaxf`
+  both implement IEEE-754-2008 `minNum`/`maxNum`, so a NaN in the window
+  cannot change *which* operations run on either backend, only the
+  values inside them — confirmed on hardware by
+  `hot_pixels_agrees_bit_for_bit_on_nan_and_inf_input`), the resampling
+  kernels `resize` and
   `straighten` (polynomial filters; straighten's sin/cos is computed
   once on the host and shared), and `highlight_rolloff` (a quadratic
   solve — IEEE-754-2008 §5.4.1 requires `sqrt` to be correctly rounded
@@ -462,7 +482,19 @@ What is promised across backends:
   `sharpen`, for the same reason: its blur is the same shared
   implementation, and the subtract/gate/combine pointwise kernel that
   follows it is free of transcendentals, so the blur is the only
-  inexact part of `sharpen` too. (rtol 1e-3, atol 1e-5) for
+  inexact part of `sharpen` too. (rtol 1e-4, atol 1e-6) for `denoise` —
+  `local_contrast`'s own GUIDED_FILTER class, inherited automatically at
+  `C = 1` since it is bit-for-bit the same device kernel
+  (`local_contrast_device` at `strength = -amount`), and confirmed
+  empirically at `C = 3` for the one new cancelling subtraction
+  cross-guided adds, `cov(I, p_c)`: worst measured ratios 0.0022×
+  (`C = 1`, unit range), 0.0012× (`C = 1`, HDR), 0.0106× (`C = 3`, unit
+  range), 0.0012× (`C = 3`, both the uniform- and partial-channel-bar
+  HDR sweeps, up to the required 1e8 highlight). `radius` is capped at
+  `MAX_RADIUS = 32` on both backends — `denoise` sums each window
+  directly from its own pixels rather than through a summed-area table
+  (docs/architecture.md §22), so cost is linear in `radius` and no
+  larger case is ever asserted. (rtol 1e-3, atol 1e-5) for
   `film_grain`'s Box–Muller half, whose splitmix64 hash underneath is
   exact and is asserted over a coordinate grid by `hash_grid`, not by
   the identity case in `examples/23_gpu_selftest.rs` — that one is a

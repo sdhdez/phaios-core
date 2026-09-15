@@ -8,6 +8,23 @@ The Rust crate and the Python wheel always carry the same version.
 
 ## [Unreleased] — 0.2.0-dev
 
+### Added — hot-pixel removal and guided-filter noise reduction
+
+`hot_pixels(img, HotPixelParams { threshold, relative = 0.0 })`: an
+index-clamped 3×3 conditional median for RAW sensor defects, replacing
+a sample only past `|p − m| > threshold + relative·|m|` — `relative`
+widens the criterion with local brightness, as photon shot noise does.
+Bit-exact across backends (a fixed comparator network, no arithmetic).
+`denoise(img, DenoiseParams { radius, noise_sigma, amount = 0.0,
+standard })`: the He–Sun–Tang guided filter's base term, self-guided per
+channel or cross-guided from a shared luminance guide at `C = 3`;
+`amount = 0.0` is the identity. Both paths sum each window directly, not
+through a global table (which cancelled at extreme highlights), so
+`radius` is capped at `MAX_RADIUS = 32`. CUDA twins: `hot_pixels`
+bit-exact; `denoise` inherits `local_contrast`'s GUIDED_FILTER bound,
+0.0106× worst case across the full HDR sweep. `examples/45–48_*.rs`,
+`benches/{kernels,gpu}.rs`, `docs/architecture.md` §21–22.
+
 ### Added — unsharp masking with a soft threshold
 
 `sharpen(img, SharpenParams)`: a plain, haloing Gaussian

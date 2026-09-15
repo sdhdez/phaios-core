@@ -1275,6 +1275,8 @@ pseudo-random values. Not CI gates — informational only.
 |--------|--------------|--------------|-------|
 | `crop` | **7.7 ms** | `crop/24MP/centre-half` | pure copy of the half-area rectangle |
 | `orient` | **112.7 ms** | `orient/24MP/rotate90` | known-slow: the transposing copy is cache-hostile and currently single-threaded; quarter-turn-heavy pipelines should batch it with straighten |
+| `hot_pixels` | **19.0 ms** | `hot_pixels/24MP/1ch` | 1 ch; fixed 9-tap comparator network, no transcendentals |
+| `denoise` | **131.8 / 686.8 ms** | `denoise/24MP/1ch-r4`, `3ch-r4` | 1ch self-guided / 3ch cross-guided, radius 4; direct O(radius) window sums |
 | `resize` | **32.6 ms** | `resize/24MP/to-2048-area` | separable area filter to a 2048-wide export |
 | `straighten` | **47.1 ms** | `straighten/24MP/2deg` | 16-tap Catmull-Rom per pixel |
 | `blur` | **50 / 71 ms** | `blur/24MP/sigma2-direct`, `sigma5.9-direct` | direct path; grows with σ at about 1.3 ms per tap |
@@ -1362,6 +1364,8 @@ one kernel in the table where the GPU is not far ahead.
 |---|---|---|---|
 | `crop` centre-half | **0.269 ms** | 9.71 ms | 3 ch; a copy of the half-area rectangle, device to device |
 | `orient` rotate90 | **1.838 ms** | 136.19 ms | 3 ch; the transposing access the CPU cache is worst at |
+| `hot_pixels` 1ch | **0.452 ms** | 19.02 ms | 1 ch; fixed 9-tap comparator network, 42.1x |
+| `denoise` r=4, 1ch/3ch | **8.038 / 40.84 ms** | 131.76 / 686.80 ms | self-/cross-guided; 14 launches at C=3; 16.4x / 16.8x |
 | `resize` to 2048 (area) | **1.460 ms** | 30.58 ms | 3 ch; separable, two passes |
 | `straighten` 2° | **2.269 ms** | 56.18 ms | 3 ch; 16-tap Catmull-Rom per pixel |
 | `exposure` +1 EV | **0.878 ms** | 29.12 ms | 3 ch in *and* out; the element-wise reference point |
@@ -1707,3 +1711,351 @@ dynamic-range sweep (`amount = 0.35`, `sigma = 12`, `threshold = 0`, a
 1e8 highlight) — close to `glow`'s own HDR-sweep worst case (0.0510×),
 consistent with both kernels propagating the same underlying blur error
 one stage differently.
+
+---
+
+## 21. Hot-pixel removal by conditional median
+
+```
+m     = median9(3×3 window, index-clamped at the border)
+limit = threshold + relative · |m|
+out   = if |p − m| > limit { m } else { p }
+```
+
+A stuck or thermally-excited photosite reads as a single-pixel value
+unrelated to its neighbourhood — an impulse (salt-and-pepper) outlier,
+not the additive, spatially-correlated noise a Gaussian blur is built to
+attenuate. Gonzalez, R. C., Woods, R. E., *Digital Image Processing*,
+4th ed. (Pearson, 2018), §5.2 "Salt-and-Pepper Noise" (p.370) names the
+model; §5.3 "Restoration in the Presence of Noise Only — Spatial
+Filtering" → "Order-Statistic Filters" → "Median Filter" (p.378) is why
+an order-statistic filter is the right tool: unlike a mean, a median is
+unmoved by a single arbitrarily-extreme sample in an odd-sized window,
+so long as that sample is a minority of the window (one of nine here).
+Tukey, J. W., *Exploratory Data Analysis*, Addison-Wesley (1977), is the
+standard source for median smoothing more generally.
+
+The *conditional*/"switching" refinement — replace only when the centre
+sample deviates from the window median by more than a criterion,
+otherwise keep it unchanged — is a well-established family in the
+impulse-noise restoration literature; cited here for the concept only,
+the same posture §8 takes toward the guided filter's originators and
+§20 takes toward Polesel et al.
+
+### The two-term criterion
+
+`limit = threshold + relative * |m|` has an absolute term and a term
+proportional to the local median's own magnitude. Photon shot noise
+grows with signal — its standard deviation scales with the square root
+of the photon count, so it still grows relative to a fixed baseline —
+so a single absolute threshold that correctly targets a midtone hot
+pixel is either too loose in the shadows or too tight in the
+highlights. `relative` lets the criterion widen with local brightness;
+`relative = 0.0` (the default) reproduces the absolute-only form. This
+was flagged as an open design question rather than decided silently
+(`.cache/scratch/denoise/PLAN.md`): an absolute-only criterion was the
+initial recommendation, and the two-term form was the maintainer's own
+resolution.
+
+### The comparator network, and why it is bit-exact
+
+[`median9`] is a fixed 19-comparator sorting network (`sort2` pairs of
+`f32::min`/`f32::max`, commonly attributed to S. M. Smith (1996) and
+widely reproduced, e.g. as `opt_med9` in N. Devillard's public-domain
+"Fast median search" (1998)) that extracts only the fifth-of-nine
+element — fewer comparators than a full sort of nine (25) needs. No
+arithmetic anywhere in it: comparisons and selection only, a *stronger*
+guarantee than "correctly-rounded arithmetic on both backends", the
+bound most of this crate's other bit-exact kernels rely on. The
+sequence is fixed — it never branches on the *value* being compared,
+only on constant indices — so host and device execute the identical
+sequence of operations for any input, transcribed pair-by-pair between
+`src/hot_pixels.rs` and `src/cuda/ptx/hot_pixels.cu`.
+
+`f32::min`/`f32::max` and CUDA's `fminf`/`fmaxf` both implement
+IEEE-754-2008 `minNum`/`maxNum`: when exactly one operand is NaN, the
+finite operand is returned. Because the comparator sequence is fixed
+regardless of the values flowing through it, this means a NaN anywhere
+in the nine-element window cannot change *which operations run* on
+either backend, only the values inside them — so the two backends agree
+bit-for-bit even when the window holds a NaN. Checked on hardware, not
+only on paper: `hot_pixels_agrees_bit_for_bit_on_nan_and_inf_input`
+(`tests/cuda_conformance.rs`), a NaN pixel and a +Inf pixel in an
+otherwise-flat field, passed on the installed RTX 5070 Ti during this
+kernel's own CUDA step. The one arithmetic step, `|p - m|` and the
+comparison against `limit = threshold + relative * |m|`, is ordinary
+correctly-rounded `f32` arithmetic on both backends (no fused
+multiply-add: `-fmad=false` on the device, and Rust never fuses) — the
+whole kernel is **bit-exact** between CPU and CUDA, added to
+`docs/ffi.md` §6's bit-exact list.
+
+### Borders
+
+Each of the four ±1 offsets is index-clamped independently to
+`[0, h-1] x [0, w-1]` (duplicate-edge padding), matching `blur`'s own
+clamp idiom — **not** `local_contrast`'s shrinking-window convention
+(§8), which would give a variable window at the border. A fixed
+comparator network needs exactly nine inputs everywhere, corners
+included, so a variable-size window is not an option here the way it is
+for a plain box sum.
+
+### Order
+
+Right after `orient`, before `straighten`/`resize`: a bad photosite is a
+single extreme sample, and any resampling filter mixes it into its
+neighbours, smearing a one-pixel defect into a blob before it can be
+told apart from real detail. Must also precede `denoise` (§22): an
+edge-preserving smoother reads a hot pixel's own extreme local variance
+as structure to protect, which would leave the defect largely intact —
+outliers before edge-aware smoothing is the standard restoration order
+(Gonzalez & Woods' own chapter order places order-statistic outlier
+filters before their smoothing filters, not after). Per-kernel doc
+comment only, not CLAUDE.md §3 itself, matching `blur`/`glow`/`sharpen`'s
+own precedent of documenting an order without it appearing on that
+canonical line.
+
+### Range
+
+Output is always one of the nine samples already present in the window
+— `out ∈ [min(window), max(window)]`, stronger than merely "never
+clamps": both branches (keep, replace) select an existing sample rather
+than compute a new one. Channels are filtered independently, so a
+defect in one channel of a multi-channel input cannot affect the
+others. Finite in ⇒ finite out: every output sample is copied unchanged
+from the input, and the one subtraction is silent on non-finite input,
+as elsewhere in this crate.
+
+### What this is not
+
+**Not a blur.** A Gaussian (or box) blur is a weighted mean: a single
+extreme sample still contributes to every output in its support,
+merely diluted. A median is a *selection*, not an average — the extreme
+sample is discarded outright as long as it is a minority of the window,
+which is the entire reason it is the right tool for an impulse outlier
+rather than for correlated sensor noise.
+
+**Not `denoise`.** `denoise` (§22) targets pervasive, correlated noise
+across many pixels with an edge-aware weighted smoother; `hot_pixels`
+targets a rare, single-pixel defect with an order-statistic selector
+that either leaves a sample untouched or replaces it outright. Running
+them in the wrong order breaks `denoise`, not `hot_pixels`: a hot pixel
+left in place reads as an edge to `denoise`'s guided filter and gets
+protected rather than smoothed, exactly as §22 documents.
+
+---
+
+## 22. Guided-filter noise reduction, self- and cross-guided
+
+```
+// self-guided (C == 1, and every C other than 3)
+q     = guided_filter(p, radius, eps)      // eps = noise_sigma², direct window sums
+out   = p − amount · (p − q)               // amount=0 → p; amount=1 → q
+
+// cross-guided (C == 3), guide I = luminance_bw(img, standard)
+a_c   = cov_w(I, p_c) / (var_w(I) + eps)   // 0/0 → 0, local_contrast's own convention
+b_c   = mean_w(p_c) − a_c · mean_w(I)
+q_c   = mean_w(a_c) · I + mean_w(b_c)      // uses the GUIDE, not p_c
+out_c = p_c − amount · (p_c − q_c)
+```
+
+The guided filter itself (background, local linear model, closed-form
+coefficients) is §8's; this section covers what `denoise` adds beyond a
+parameter rename of `local_contrast`, and why it needed genuinely new
+code rather than a wrapper. Reference: Kaiming He, Jian Sun, Xiaoou
+Tang, "Guided Image Filtering," IEEE *Transactions on Pattern Analysis
+and Machine Intelligence* 35(6), 2013, pp. 1397–1409, §3.4 (the
+colour-guide/colour-filtering-process formulation the cross-guided path
+below follows). See §8 for the self-guided ECCV 2010 formulation the
+self-guided path's own maths follows, and its provenance note on the
+reference MATLAB implementation's licence.
+
+### The alias question, and what actually needed new code
+
+At `strength = -amount`, `local_contrast`'s combine
+(`l + strength*(l-q)`, §8) is `l - amount*(l-q)` — the same shape as
+`denoise`'s self-guided combine above. Multiplying by the exact `-1.0`
+is a sign flip with no rounding, so a `denoise` that only wrapped that
+call on `(H, W, 1)` would have been a pure alias, and the crate should
+not ship one as a new kernel. What is genuinely new: cross-guided
+filtering for `C == 3` (below), `noise_sigma` in physical units rather
+than a bare regularisation constant, `amount ∈ [0, 1]` as a bounded
+blend rather than `strength`'s unbounded extrapolation, and — after the
+maintainer's step-4b fix — the module's own direct-summation strategy,
+which no longer literally calls `local_contrast::guided_filter` at all.
+Consequently the single-channel path's agreement with
+`local_contrast(strength = -amount)` is **bounded** (the same
+GUIDED_FILTER class the CUDA kernels are held to, rtol 1e-4/atol 1e-6),
+not bit-for-bit: measured at 0.0000× on the unit-range cross-check image
+in `tests/kernels.rs` (`denoise_single_channel_agrees_with_local_
+contrast_at_negative_amount`) — bit-identical in practice on that image,
+but no longer guaranteed to be by construction, since the two kernels
+sum their window statistics by different routes (see "Direct sums, not
+summed-area tables," below).
+
+### Cross-guided: what it adds, and why the luminance guide
+
+`C == 3` uses a **cross-guided** filter (He–Sun–Tang §3.4): edges come
+from a shared luminance guide `I = luminance_bw(img, standard)` rather
+than each channel's own signal, so a channel with little structure of
+its own (a colour cast over an otherwise flat sky, say) is smoothed
+according to the *guide's* edges, not mistaken structure in its own
+noise. `local_contrast` is hard-restricted to `(H, W, 1)` and its
+self-guided formulation is deliberately not generalised (§8's own
+"the CUDA path is a third formulation again — keep it that way"), so
+this is not a code path `local_contrast` could have grown into.
+
+He–Sun–Tang's paper also describes a *colour-guide* variant, where the
+guide itself carries three channels and each window's linear model
+needs a 3×3 covariance-matrix solve per pixel instead of a scalar
+division. Considered and rejected for this crate
+(`.cache/scratch/denoise/PLAN.md`, "Decision 2"): it does not fix the
+cancellation the step-4b fix below addresses, and it roughly triples
+the per-pixel cost for a benefit this crate has no use for — a shared
+*luminance* guide is exactly what a B&W-first pipeline (CLAUDE.md §1)
+already has lying around at this stage, one call from a kernel every
+other stage already uses.
+
+### `noise_sigma`
+
+`eps = noise_sigma²` ties the guided filter's regularisation term to an
+estimate of the input's noise variance — the reading He, Sun and Tang
+give ε in their colour-guide formulation. `noise_sigma = 0.0` is the
+no-regularisation limit: legal (mirrors `eps = 0.0` in `local_contrast`,
+§8) but not on its own an identity.
+
+### `amount`
+
+A bounded blend in `0..=1`, not `strength`'s unbounded extrapolation:
+`0.0` (the default) is the only true identity switch, exact by the same
+cancellation argument as the alias question above (`p - 0.0*(p-q) ==
+p`); `1.0` is the full guided-filter base term. Affine in between —
+tripling `amount` exactly triples the residual, mirroring
+`local_contrast`'s own strength-linearity (§8).
+
+### Direct sums, not summed-area tables — and why `radius` is capped
+
+An earlier version of this module built `cov_w`/`var_w`/`mean_w` from
+global f64 summed-area tables queried in O(1) per window, the technique
+`local_contrast` itself still uses. It failed at extreme highlights:
+cross-guided's `cov(I, p_c)` differences two *separately* accumulated
+global tables whose entries reach ~1e16 at a 1e8 highlight, and two
+entries differing only by a dark window's own tiny contribution round
+to the *same* f64 value there — every window from the bright region
+onward, including windows that are themselves entirely dark, got the
+wrong residual (measured 5.1e5 off an independent oracle at one such
+pixel, `.cache/scratch/denoise/PROGRESS.md` step 4). The device never
+had this problem: its kernels sum each window directly from its own
+`(2r+1)²` pixels, so a running total's magnitude is bounded by the
+*window*, never by the image.
+
+The fix (maintainer decision, after step 4): **both denoise paths now
+sum each window directly from its own pixels, exactly as the device
+does** — two passes, horizontal then vertical, each output resummed
+from scratch rather than carried forward. A sliding running sum was
+considered as a cheaper alternative and is *not* what this module does;
+empirically (the step-4b mutation gate,
+`.cache/scratch/denoise/PROGRESS.md`), a correctly-bounded sliding
+window turns out to be measurably better-behaved than a genuine
+summed-area table — its accumulator stays tied to the window's own
+content rather than growing with the image — but it still drifts from a
+fresh from-scratch sum once a window first loses an element on the
+left, and direct summation is the form this crate can state a clean
+invariant about (a window's own magnitude bounds its own error) without
+relying on how forgiving any particular input happens to be. The
+shrinking-window border convention is unchanged and matches
+`local_contrast`'s own (§8): rows/columns independently clamped, area
+the product of what is actually covered.
+
+Direct summation makes cost linear in `radius` rather than the
+O(1)-per-pixel a global table gave, so `radius` is bounded above by
+`MAX_RADIUS = 32` — validated identically on both backends
+(`"radius is {radius}, above the maximum of {MAX_RADIUS}"`). `denoise`
+is meant for a small, physically-motivated noise correlation length,
+not large-radius structure work; a caller wanting a larger smoothing
+radius wants `local_contrast`, whose own guided filter keeps the O(1)
+table and bears its cancellation risk deliberately, at f64.
+
+### Order
+
+Native resolution, right after `hot_pixels` (§21), before
+`straighten`/`resize`, and before `exposure`. Two reasons to precede
+resampling and exposure: `noise_sigma` is a per-pixel physical
+quantity, and resampling mixes neighbours with filter-dependent
+weights, changing per-output-pixel noise statistics unrelated to the
+physical model it is meant to describe; exposure is a multiply, so
+running after it would couple `noise_sigma` to the caller's creative
+stop choice rather than the sensor's own noise. Must follow
+`hot_pixels`: the guided filter is edge-preserving, so an uncorrected
+hot pixel's extreme local variance reads as structure to protect, and —
+since `a_c`/`b_c` are window-averaged — smears a wrong coefficient up
+to `radius` away.
+
+### Range and channels
+
+Never clamps. `C == 3` is cross-guided; every other channel count,
+including `C == 1`, is self-guided per channel — no count is rejected,
+matching this crate's "any" convention (`docs/ffi.md` §1). Finite in ⇒
+finite out, on the same terms `local_contrast` documents: sums of
+finite values, ratios guarded by `+ eps`, the 0/0 → 0 convention
+avoiding NaN at `eps = 0`.
+
+### Scratch
+
+Self-guided: **≈24 B/px**, independent of channel count — a transient
+pair of f64 row-sum tables (16 B/px) alongside the f32 coefficient pair
+computed from them (8 B/px), released before the next channel's tables
+are built. Cross-guided: a **20 B/px shared baseline** (the guide plus
+its f64 row-sum pair, live for the whole call) plus a **24 B/px** worst
+per-channel moment — **≈44 B/px, ≈1.06 GB at 24 MP**. The fix above
+changed the summation *method*, not the array shapes or types the
+module holds, so these figures are unchanged from the SAT-based
+version's own estimate.
+
+### What this is not
+
+**Not `local_contrast`.** `local_contrast`'s guided filter is a detail
+*enhancement* tool — `strength` extrapolates past the base term to add
+back high-frequency detail (§8). `denoise` only ever blends *toward*
+the base term (`amount ∈ [0, 1]`); it has no enhancement mode, and its
+cross-guided path is genuinely new code `local_contrast` does not have
+at all.
+
+### On the device
+
+Self-guided (`C == 1`, and every other `C` via a per-channel host round
+trip): zero new device kernels — a direct call to `local_contrast_
+device(img, &GuidedFilterParams{radius, eps}, -amount)`, so the
+exact-negation argument above makes it bit-exact against the CPU
+self-guided path by construction (confirmed:
+`denoise_device_c1_is_bit_exact_with_local_contrast_device`).
+Cross-guided (`C == 3`) adds three new kernels — `box_h_cross` and
+`coeff_ab_cross` generalise `local_contrast.cu`'s `box_h_l_l2`/
+`coeff_ab` from one array to a guide/channel pair, `final_out_cross`
+generalises `final_out` to take the guide and the channel separately —
+alongside three reused unchanged (`luminance_bw_kernel`, `box_h_l_l2`,
+`box_h_ab`). Total: 1 + 1 + 3×4 = **14 launches** for `C == 3`, against
+4 for `local_contrast` alone.
+
+Agreement class for both dispatched paths: `local_contrast`'s own
+**GUIDED_FILTER** (rtol 1e-4, atol 1e-6), added to `docs/ffi.md` §6.
+Measured worst-case ratios, all comfortably inside the bound
+(`.cache/scratch/denoise/PROGRESS.md`, the step-4b mutation-gate's final
+re-verification on the clean, committed tree):
+
+| Sweep | Worst ratio | Where |
+|---|---|---|
+| `C = 1`, unit range | 0.0022× | radius=4, noise_sigma=0.05, amount=1 |
+| `C = 1`, HDR (1e0..1e8) | 0.0012× | radius=8, noise_sigma=0.7, hl=1e0 |
+| `C = 3`, unit range | 0.0106× | radius=4, noise_sigma=0.05, amount=1 |
+| `C = 3`, uniform-bar HDR | 0.0012× | radius=8, noise_sigma=0.7, hl=1e0 |
+| `C = 3`, partial-channel-bar HDR | 0.0012× | radius=8, noise_sigma=0.7, hl=1e0 |
+
+The partial-channel-bar sweep (`R`/`B` bright, `G` dark — a genuine
+covariance between two different bright/dark signals, which the
+uniform-bar sweep cannot exercise, since there `cov(I, p_c)` degenerates
+to `var(I)` exactly as the self-guided path's `cov(I, I)` does) is the
+harder case, and the exact construction that diverged by up to
+142924.7× before the direct-summation fix; every extreme-highlight
+number that was previously unbounded or diverging now sits three to
+five orders of magnitude under the bound at every radius/noise_sigma/
+highlight combination tested.
