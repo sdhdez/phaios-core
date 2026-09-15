@@ -88,6 +88,8 @@ difference.
 | `20_blur.rs` | `blur` | Impulse response against a true Gaussian on both paths; the border-clamp case |
 | `21_glow.rs` | `glow` | Halation vs diffusion vs glare; why glare cannot be a tone curve |
 | `43_sharpen.rs` | `sharpen` | Halo at a step edge; the same threshold gate turning off inside a flat patch |
+| `45_hot_pixels.rs` | `hot_pixels` | Huge planted defects removed; a genuine fine line and a highlight texture bump survive |
+| `47_denoise.rs` | `denoise` | Flat-patch noise quieted, patch edges kept; an RGB channel smoothed by the shared guide, not its own signal |
 | `15_gpu_exposure.rs` | CUDA backend | Needs `--features cuda`; bit-exactness and the resident-image pattern |
 
 Several examples print measurements as well as writing files — the

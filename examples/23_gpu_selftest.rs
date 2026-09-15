@@ -374,8 +374,9 @@ fn run(
 #[allow(clippy::too_many_lines)]
 fn check_all(ctx: &cuda::Context) -> Vec<Row> {
     use phaios_core::{
-        blur, bw, encode, exposure, film_grain, geometry, glow, highlight_rolloff, histogram,
-        local_contrast, lut, quantize, shadow_rolloff, sharpen, split_toning, tone, vignette,
+        blur, bw, denoise, encode, exposure, film_grain, geometry, glow, highlight_rolloff,
+        histogram, hot_pixels, local_contrast, lut, quantize, shadow_rolloff, sharpen,
+        split_toning, tone, vignette,
     };
 
     let rgb = pseudo_random_image(257, 389, 3);
@@ -452,6 +453,48 @@ fn check_all(ctx: &cuda::Context) -> Vec<Row> {
             let cpu = geometry::straighten(rgb.view(), &params)?;
             let gpu = ctx.download(&cuda::kernels::straighten_device(&dev, &params)?)?;
             ck.exact(&format!("{degrees} deg"), &cpu, &gpu);
+        }
+        Ok(())
+    }));
+
+    // ── hot-pixel removal and denoise: right after orient, before ─────────
+    // ── straighten/resize in each kernel's own documented order ───────────
+
+    rows.push(run("hot_pixels", EXACT, |ck| {
+        let dev = ctx.upload(mono.view())?;
+        for (threshold, relative) in [(0.1_f32, 0.0_f32), (0.05, 0.05)] {
+            let params = hot_pixels::HotPixelParams::new(threshold, relative);
+            let cpu = hot_pixels::hot_pixels(mono.view(), &params)?;
+            let gpu = ctx.download(&cuda::kernels::hot_pixels_device(&dev, &params)?)?;
+            ck.exact(&format!("t={threshold} rel={relative}"), &cpu, &gpu);
+        }
+        Ok(())
+    }));
+
+    rows.push(run("denoise", GUIDED_FILTER.label, |ck| {
+        let dev_mono = ctx.upload(mono.view())?;
+        let dev_rgb = ctx.upload(rgb.view())?;
+        for (radius, amount) in [(1_u32, 0.5_f32), (8, 1.0)] {
+            let params =
+                denoise::DenoiseParams::new(radius, 0.05, amount, bw::LuminanceStandard::Bt709);
+
+            let cpu = denoise::denoise(mono.view(), &params)?;
+            let gpu = ctx.download(&cuda::kernels::denoise_device(&dev_mono, &params)?)?;
+            ck.bounded(
+                &format!("C=1 r={radius} a={amount}"),
+                &cpu,
+                &gpu,
+                GUIDED_FILTER,
+            );
+
+            let cpu3 = denoise::denoise(rgb.view(), &params)?;
+            let gpu3 = ctx.download(&cuda::kernels::denoise_device(&dev_rgb, &params)?)?;
+            ck.bounded(
+                &format!("C=3 r={radius} a={amount}"),
+                &cpu3,
+                &gpu3,
+                GUIDED_FILTER,
+            );
         }
         Ok(())
     }));

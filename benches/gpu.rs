@@ -47,6 +47,7 @@ mod gpu {
     use phaios_core::blur::{BlurParams, BlurShape};
     use phaios_core::bw::{ColorFilter, HslWeightedParams, LuminanceStandard};
     use phaios_core::cuda::{Context, DeviceImage, kernels as k};
+    use phaios_core::denoise::DenoiseParams;
     use phaios_core::film_grain::GrainParams;
     use phaios_core::geometry::{
         CropParams, Orientation, ResizeFilter, ResizeParams, StraightenParams,
@@ -54,6 +55,7 @@ mod gpu {
     use phaios_core::glow::GlowParams;
     use phaios_core::highlight_rolloff::RolloffParams;
     use phaios_core::histogram::HistogramParams;
+    use phaios_core::hot_pixels::HotPixelParams;
     use phaios_core::local_contrast::GuidedFilterParams;
     use phaios_core::lut::LutParams;
     use phaios_core::quantize::{Dither, QuantizeParams};
@@ -173,6 +175,34 @@ mod gpu {
             &sync,
             "gpu/straighten/24MP/2deg",
             k::straighten_device(&rgb, &st).unwrap()
+        );
+
+        // ── hot-pixel removal and denoise ──────────────────────────────
+        let hp = HotPixelParams::new(0.04, 0.02);
+        bench!(
+            c,
+            &ctx,
+            &sync,
+            "gpu/hot_pixels/24MP/1ch",
+            k::hot_pixels_device(&luma, &hp).unwrap()
+        );
+        // Two ids, one per channel-count dispatch branch, so each divides
+        // its CPU twin directly -- C=1 is a direct local_contrast_device
+        // reuse, C=3 launches the 14-kernel cross-guided sequence.
+        let dn = DenoiseParams::new(4, 0.02, 0.6, LuminanceStandard::Bt709);
+        bench!(
+            c,
+            &ctx,
+            &sync,
+            "gpu/denoise/24MP/1ch-r4",
+            k::denoise_device(&luma, &dn).unwrap()
+        );
+        bench!(
+            c,
+            &ctx,
+            &sync,
+            "gpu/denoise/24MP/3ch-r4",
+            k::denoise_device(&rgb, &dn).unwrap()
         );
 
         // ── tone and colour ─────────────────────────────────────────

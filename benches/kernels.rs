@@ -17,6 +17,7 @@ use phaios_core::bw::{
     ColorFilter, HslWeightedParams, LuminanceStandard, channel_mixer_bw, color_filter_bw, hsl_bw,
     luminance_bw,
 };
+use phaios_core::denoise::{DenoiseParams, denoise};
 use phaios_core::encode::encode_srgb;
 use phaios_core::exposure::exposure;
 use phaios_core::film_grain::{GrainParams, film_grain};
@@ -27,6 +28,7 @@ use phaios_core::geometry::{
 use phaios_core::glow::{GlowParams, glow};
 use phaios_core::highlight_rolloff::{RolloffParams, highlight_rolloff};
 use phaios_core::histogram::{HistogramParams, histogram};
+use phaios_core::hot_pixels::{HotPixelParams, hot_pixels};
 use phaios_core::local_contrast::{GuidedFilterParams, local_contrast};
 use phaios_core::lut::{LutParams, apply_lut};
 use phaios_core::quantize::{Dither, QuantizeParams, quantize_u8, quantize_u16};
@@ -79,6 +81,29 @@ fn bench_geometry(c: &mut Criterion) {
     let angle = StraightenParams::new(2.0);
     c.bench_function("straighten/24MP/2deg", |b| {
         b.iter(|| straighten(black_box(img.view()), black_box(&angle)).unwrap())
+    });
+}
+
+fn bench_hot_pixels(c: &mut Criterion) {
+    let img = pseudo_random_image(H, W, 1);
+    let params = HotPixelParams::new(0.04, 0.02);
+    c.bench_function("hot_pixels/24MP/1ch", |b| {
+        b.iter(|| hot_pixels(black_box(img.view()), black_box(&params)).unwrap())
+    });
+}
+
+fn bench_denoise(c: &mut Criterion) {
+    // Two ids, one per channel-count dispatch branch: C=1 is self-guided,
+    // C=3 is cross-guided -- genuinely different cost, not a parameter
+    // change (src/denoise.rs's own module documentation).
+    let grey = pseudo_random_image(H, W, 1);
+    let rgb = pseudo_random_image(H, W, 3);
+    let params = DenoiseParams::new(4, 0.02, 0.6, LuminanceStandard::Bt709);
+    c.bench_function("denoise/24MP/1ch-r4", |b| {
+        b.iter(|| denoise(black_box(grey.view()), black_box(&params)).unwrap())
+    });
+    c.bench_function("denoise/24MP/3ch-r4", |b| {
+        b.iter(|| denoise(black_box(rgb.view()), black_box(&params)).unwrap())
     });
 }
 
@@ -308,6 +333,8 @@ fn bench_encode_srgb(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_geometry,
+    bench_hot_pixels,
+    bench_denoise,
     bench_exposure,
     bench_luminance_bw,
     bench_channel_mixer_bw,

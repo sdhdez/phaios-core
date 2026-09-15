@@ -352,3 +352,21 @@ path = "examples/43_sharpen.rs"
 name = "44_gpu_sharpen"
 path = "examples/44_gpu_sharpen.rs"
 required-features = ["cuda"]
+
+[[example]]
+name = "45_hot_pixels"
+path = "examples/45_hot_pixels.rs"
+
+[[example]]
+name = "46_gpu_hot_pixels"
+path = "examples/46_gpu_hot_pixels.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "47_denoise"
+path = "examples/47_denoise.rs"
+
+[[example]]
+name = "48_gpu_denoise"
+path = "examples/48_gpu_denoise.rs"
+required-features = ["cuda"]
