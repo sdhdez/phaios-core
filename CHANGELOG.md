@@ -8,6 +8,23 @@ The Rust crate and the Python wheel always carry the same version.
 
 ## [Unreleased] — 0.2.0-dev
 
+### Fixed — the GPU entry points panicked on a machine with no NVIDIA driver
+
+`src/cuda/mod.rs` promised that without a driver `available()` is
+`false`, `devices()` is empty "and nothing raises", and README said the
+same. cudarc 0.19.9's `dynamic-loading` path does not provide that: when
+none of its 34 candidate library names loads, `culib()` calls
+`panic!` rather than returning an `Err`, and `devices()`'s
+`let Ok(count) = … else` catches an `Err`, not an unwind. All three
+entry points therefore raised `PanicException` — a `BaseException` that
+walks through `except Exception:` and kills the calling thread, which
+CLAUDE.md §2 rules out explicitly. Each now probes for the driver
+library with cudarc's own fallible `is_culib_present` before touching
+it, so `gpu.available()` is `False`, `gpu.devices()` is `[]` and
+`gpu.GpuContext(0)` raises a catchable `RuntimeError`. No published
+wheel was affected — they are CPU-only — so this bit anyone building
+`--features cuda` themselves on a driverless machine.
+
 ### Fixed — the wheel declared no dependencies and would have shipped a blank PyPI page
 
 `[project].dependencies` was empty, so `pip install phaios-core` into a

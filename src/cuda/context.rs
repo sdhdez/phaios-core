@@ -39,6 +39,8 @@
 //! passed in explicitly; a kernel's output depends on its arguments and
 //! nothing else. The mutable state a device genuinely needs — the loaded
 //! module cache — lives inside the context and cannot affect results.
+//! The driver-library probe [`driver_present`] adds none either: it
+//! answers one question per call and caches nothing.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -64,6 +66,39 @@ fn backend_err(what: &str, e: impl std::fmt::Display) -> PhaiosError {
     PhaiosError::Backend(format!("{what}: {e}"))
 }
 
+/// True when the NVIDIA driver library can be loaded at all.
+///
+/// This exists because cudarc's error type cannot express "no driver".
+/// Under `dynamic-loading`, cudarc resolves `libcuda` lazily on the
+/// first driver call, and when no candidate name loads it **panics**
+/// (`panic_no_lib_found`, `cudarc/src/lib.rs:200`) rather than returning
+/// an `Err`. PyO3 converts that unwind into `PanicException`, which
+/// inherits from `BaseException` and so walks straight through a
+/// consumer's `except Exception:` — the exact failure mode CLAUDE.md §2
+/// rules out. Every public entry point that touches the driver
+/// ([`devices`] and [`Context::new`]; every kernel needs a [`Context`])
+/// is therefore gated on this first, so a machine with no driver gets
+/// `false`, an empty list and [`PhaiosError::Backend`] instead of an
+/// unwind.
+///
+/// `cudarc::driver::sys::is_culib_present` is cudarc's own fallible
+/// probe over the same candidate-name list `culib()` searches, returning
+/// `bool` where `culib()` panics — so this borrows cudarc's search
+/// order rather than second-guessing it, and no `catch_unwind` or extra
+/// dependency is needed.
+///
+/// **No state is introduced**: the probe opens a candidate library,
+/// answers the question and drops the handle. It does not call `cuInit`,
+/// caches nothing, and cannot affect any kernel's result. Each call
+/// re-probes; on a machine that does have a driver the library is
+/// already resident, so the repeat is a refcount bump.
+fn driver_present() -> bool {
+    // SAFETY: `is_culib_present` only attempts `dlopen` on a fixed list
+    // of library names and drops each handle it obtains. It takes no
+    // pointers, dereferences nothing, and initialises no driver state.
+    unsafe { cudarc::driver::sys::is_culib_present() }
+}
+
 /// Information about one CUDA device, safe to expose to Python.
 #[derive(Clone, Debug)]
 pub struct DeviceInfo {
@@ -77,11 +112,18 @@ pub struct DeviceInfo {
     pub supported: bool,
 }
 
-/// Enumerate CUDA devices. **Never fails**: any error — no driver, no
-/// device, broken installation — yields an empty list, because "no GPU"
-/// is an ordinary state of the world, not an exception.
+/// Enumerate CUDA devices. **Never fails and never panics**: any error —
+/// no driver library at all, no device, broken installation — yields an
+/// empty list, because "no GPU" is an ordinary state of the world, not an
+/// exception.
+///
+/// The missing-library case is handled by [`driver_present`] before
+/// cudarc is touched; the remaining cases are ordinary `Err`s.
 #[must_use]
 pub fn devices() -> Vec<DeviceInfo> {
+    if !driver_present() {
+        return Vec::new();
+    }
     let Ok(count) = CudaContext::device_count() else {
         return Vec::new();
     };
@@ -108,7 +150,10 @@ pub fn devices() -> Vec<DeviceInfo> {
     out
 }
 
-/// True if at least one supported CUDA device exists. Never raises.
+/// True if at least one supported CUDA device exists.
+///
+/// Never raises, including on a machine with no NVIDIA driver installed:
+/// it delegates to [`devices`], which is gated on [`driver_present`].
 #[must_use]
 pub fn available() -> bool {
     devices().iter().any(|d| d.supported)
@@ -136,8 +181,17 @@ impl Context {
     /// # Errors
     /// [`PhaiosError::Backend`] if the driver cannot be loaded, the
     /// ordinal does not exist, or the device's compute capability is
-    /// below [`MIN_COMPUTE_CAPABILITY`].
+    /// below [`MIN_COMPUTE_CAPABILITY`]. Never panics: the
+    /// no-driver-library case is caught by [`driver_present`] before
+    /// cudarc is touched.
     pub fn new(ordinal: usize) -> Result<Self, PhaiosError> {
+        if !driver_present() {
+            return Err(PhaiosError::Backend(
+                "CUDA driver unavailable: the NVIDIA driver library \
+                 (libcuda) is not installed or not on the loader's search path"
+                    .to_string(),
+            ));
+        }
         let count =
             CudaContext::device_count().map_err(|e| backend_err("CUDA driver unavailable", e))?;
         if ordinal >= count.max(0) as usize {

@@ -11,8 +11,12 @@
 //!
 //! Built only with the `cuda` cargo feature. The feature adds a
 //! build-time requirement (nvcc) but no runtime one beyond the NVIDIA
-//! driver, which is dlopened: on machines without it,
-//! [`available`] is `false`, [`devices`] is empty, and nothing raises.
+//! driver, which is dlopened: on machines without it, [`available`] is
+//! `false`, [`devices`] is empty, `Context::new` returns
+//! `PhaiosError::Backend`, and nothing raises. That last clause is not
+//! free — cudarc *panics* when no `libcuda` candidate loads — so every
+//! entry point that touches the driver probes for the library first;
+//! see `context::driver_present`.
 
 pub mod context;
 pub mod kernels;

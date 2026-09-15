@@ -97,8 +97,10 @@ anything with a user interface belong to consumers, permanently.
 - *Optional, for `--features cuda`:* the CUDA toolkit (`nvcc`, which
   compiles the kernels to PTX at build time) and an NVIDIA driver. The
   driver library is loaded dynamically, so a CUDA-enabled build still
-  runs on a machine without a GPU — it reports no devices rather than
-  failing to load.
+  runs on a machine without a GPU — `gpu.available()` is `False`,
+  `gpu.devices()` is empty and `gpu.GpuContext(...)` raises
+  `RuntimeError`, none of which requires the driver to be installed at
+  all.
 
 ## Quick start
 
