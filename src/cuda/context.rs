@@ -8,10 +8,11 @@
 //! # Driver-API entry points used (the exit-strategy ledger)
 //!
 //! Everything this crate does reaches the driver through the calls below,
-//! all stable since the CUDA 4 era, over a C ABI NVIDIA guarantees
-//! backward-compatible. Replacing cudarc means `dlopen("libcuda.so.1")`
-//! plus these, resolved via `cuGetProcAddress` so the versioned symbols
-//! (`cuMemAlloc_v2` and friends) are picked up correctly:
+//! over a C ABI NVIDIA guarantees backward-compatible. Replacing cudarc
+//! means `dlopen("libcuda.so.1")` plus these, resolved with `dlsym` —
+//! which is what cudarc itself does; it does *not* use `cuGetProcAddress`,
+//! so the versioned names (`cuMemcpyHtoDAsync_v2` and friends) are
+//! requested literally.
 //!
 //! | Entry point | Used for |
 //! |---|---|
@@ -19,18 +20,57 @@
 //! | `cuDeviceGetCount` | enumeration |
 //! | `cuDeviceGet` | enumeration |
 //! | `cuDeviceGetName` | device info |
-//! | `cuDeviceGetAttribute` | compute capability check |
+//! | `cuDeviceGetAttribute` | compute capability, memory-pool support |
 //! | `cuDevicePrimaryCtxRetain` | context creation |
+//! | `cuDevicePrimaryCtxRelease_v2` | context teardown |
+//! | `cuCtxGetCurrent`, `cuCtxSetCurrent` | binding the context to the calling thread, before every allocation, copy and launch |
 //! | `cuModuleLoadData` | loading embedded PTX |
 //! | `cuModuleGetFunction` | kernel lookup |
-//! | `cuMemAlloc` | device buffers |
-//! | `cuMemcpyHtoD` | upload |
-//! | `cuMemcpyDtoH` | download |
-//! | `cuMemFree` | buffer release |
+//! | `cuModuleUnload` | module teardown |
+//! | `cuMemAllocAsync` | device buffers |
+//! | `cuMemFreeAsync` | buffer release |
+//! | `cuMemsetD8Async` | the one `alloc_zeros` (histogram bins) |
+//! | `cuMemcpyHtoDAsync_v2` | upload |
+//! | `cuMemcpyDtoHAsync_v2` | download |
+//! | `cuMemcpyDtoDAsync_v2` | device-to-device copy (blur, sharpen, glow, zone, grain, denoise, elementwise) |
 //! | `cuLaunchKernel` | dispatch |
 //! | `cuStreamSynchronize` | completion |
+//! | `cuEventCreate`, `cuEventDestroy_v2` | cudarc's own per-allocation bookkeeping, two events per buffer |
+//!
+//! Four things a reimplementation has to know, none of them obvious from
+//! the cudarc call sites:
+//!
+//! - **The allocation path is stream-ordered, not classic.** cudarc takes
+//!   `cuMemAllocAsync`/`cuMemFreeAsync` whenever the device reports
+//!   `CU_DEVICE_ATTRIBUTE_MEMORY_POOLS_SUPPORTED`, and falls back to
+//!   `cuMemAlloc_v2`/`cuMemFree_v2` (plus a stream sync before each free)
+//!   when it does not — likewise `cuMemcpy*_v2` and `cuMemsetD8_v2` for
+//!   the copies. Both paths are live; the async one is what runs on any
+//!   modern card, including this project's. They are not interchangeable:
+//!   the pool path returns memory to a pool rather than to the driver.
+//! - **`cuMemAllocAsync` sets the version floor, at CUDA 11.2.** Every
+//!   other entry point here is far older — the `_v2` suffixes are the
+//!   CUDA 4.0 64-bit-pointer revision, and `cuDevicePrimaryCtx*` is CUDA
+//!   7.0. The `cuda-12000` feature floor in `Cargo.toml` is about which
+//!   generated declarations compile, not about what the driver must
+//!   export.
+//! - **No stream is ever created.** `default_stream()` hands back the
+//!   null (legacy default) stream without a driver call, so there is no
+//!   `cuStreamCreate`/`cuStreamDestroy_v2` here, and because the context
+//!   stays in single-stream mode there is no `cuEventRecord` or
+//!   `cuStreamWaitEvent` either — cudarc creates the events but never
+//!   records them.
+//! - **The event traffic is cudarc's, not this crate's.** A replacement
+//!   would simply not allocate the two `CUevent`s per buffer.
 //!
 //! **Keep this table current**: one line per new call, checked in review.
+//! It was last verified empirically, not by reading the call sites:
+//! breakpoints on 34 candidate driver symbols under gdb, over
+//! `examples/41_gpu_blur` (upload, blur, device-to-device copy, download)
+//! and `examples/39_gpu_histogram_lut` (the `alloc_zeros` path). The 22
+//! symbols above are exactly the ones that fired; `cuStreamCreate`,
+//! `cuGetProcAddress`, `cuEventRecord`, `cuStreamWaitEvent` and every
+//! synchronous `cuMem*` form fired zero times.
 //!
 //! # No hidden state
 //!
@@ -168,7 +208,9 @@ pub fn available() -> bool {
 pub struct Context {
     pub(crate) ctx: Arc<CudaContext>,
     pub(crate) stream: Arc<CudaStream>,
-    /// PTX modules already loaded on this context, keyed by kernel name.
+    /// PTX modules already loaded on this context, keyed by the address
+    /// of the embedded PTX source — one module per `.ptx` file. Keying by
+    /// *kernel name* was the bug a previous audit caught; see `function`.
     /// Loading is idempotent and keyed content is `include_str!`-embedded,
     /// so this cache can only affect *speed*, never results.
     modules: Arc<Mutex<HashMap<usize, Arc<CudaModule>>>>,

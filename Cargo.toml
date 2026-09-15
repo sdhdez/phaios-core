@@ -97,14 +97,22 @@ thiserror = "2"
 # HuggingFace engineer, and Candle + cubecl-cuda build on this crate.
 # justification: safe host-side CUDA driver-API bindings for the optional
 # `cuda` feature. Chosen over hand-rolled FFI for its versioned symbol
-# resolution (cuMemAlloc_v2 etc.), where a mistake is silent memory
-# corruption. `dynamic-loading` dlopens libcuda at runtime, so a
+# resolution (cuMemcpyHtoDAsync_v2 etc.), where a mistake is silent
+# memory corruption. `dynamic-loading` dlopens libcuda at runtime, so a
 # CUDA-enabled build carries no DT_NEEDED on libcuda and imports cleanly
-# on machines with no NVIDIA driver. Feature floor cuda-12000: every
-# entry point we use predates CUDA 12 by a decade, and a 12.0 API
-# surface keeps older user drivers viable. Exit strategy documented in
-# src/cuda/context.rs (13 entry points, replaceable via dlopen +
-# cuGetProcAddress in days if this crate is ever abandoned).
+# on machines with no NVIDIA driver. Feature floor cuda-12000: the newest
+# entry point we reach is cuMemAllocAsync (CUDA 11.2); everything else is
+# CUDA 7.0 or older, so a 12.0 API surface keeps older user drivers
+# viable while staying above the floor. The feature selects which
+# generated declarations compile, nothing about the nvcc that build.rs
+# runs — this crate compiles PTX and links no toolkit library. cudarc's
+# newest bindings are CUDA 13.3 while the toolkit here is 13.4: harmless,
+# since a 13.x driver exports every CUDA-12.0 symbol and nothing here
+# passes a versioned struct. Exit strategy documented in
+# src/cuda/context.rs: 22 entry points, dlopen + dlsym (not
+# cuGetProcAddress — cudarc does not use it), with two allocation paths
+# to reproduce rather than one, which makes it more than the "days" an
+# earlier version of this comment claimed.
 cudarc = { version = "0.19.9", optional = true, default-features = false, features = [
     "std",
     "driver",
