@@ -160,10 +160,10 @@ tutorials you may have seen:
 
 - **Plan before code.** Produce a written plan, wait for approval, then
   implement.
-- **Adding or changing a kernel:** follow the seven-item checklist in
-  `CONTRIBUTING.md`. The work is not complete until all seven exist —
-  the benchmark and the `docs/architecture.md` section are the two most
-  often forgotten.
+- **Adding or changing a kernel:** follow the eight-item checklist in
+  `CONTRIBUTING.md`. The work is not complete until all eight exist —
+  the benchmark, the `docs/architecture.md` section and the
+  `docs/kernels.md` section are the ones most often forgotten.
 - **Python-visible changes need the stub.** A new or changed
   `#[pyfunction]`, `#[pyclass]` field, default or docstring is not
   complete until `python/phaios_core/__init__.pyi` (or `gpu.pyi`)
