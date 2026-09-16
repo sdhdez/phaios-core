@@ -51,6 +51,10 @@ impl GpuInfo {
 /// Construct once, pass to every GPU kernel call. Dropping it releases
 /// nothing shared: contexts are independent, and images produced by one
 /// context are not valid with another.
+///
+/// ``GpuContext(index=0)`` opens that device. It raises ``RuntimeError``,
+/// never ``PanicException``, if no device exists, the driver is missing,
+/// or the device is older than compute capability 8.0 (Ampere).
 #[pyclass(name = "GpuContext", frozen)]
 pub struct GpuContext {
     pub(crate) inner: cuda::Context,
@@ -58,11 +62,8 @@ pub struct GpuContext {
 
 #[pymethods]
 impl GpuContext {
-    /// Open CUDA device ``index`` (default 0).
-    ///
-    /// Raises ``RuntimeError`` — never ``PanicException`` — if no device
-    /// exists, the driver is missing, or the device is older than
-    /// compute capability 8.0 (Ampere).
+    // PyO3 drops `#[new]` docstrings, so the constructor's contract is
+    // documented on the class above, where `help()` can find it.
     #[new]
     #[pyo3(signature = (index = 0))]
     fn new(py: Python<'_>, index: usize) -> PyResult<Self> {
@@ -153,12 +154,18 @@ impl GpuImage {
 }
 
 /// True if at least one supported CUDA device is present. Never raises.
+///
+/// Holds the GIL: enumeration is a bounded driver call, and its result
+/// is needed before any other GPU work can start.
 #[pyfunction]
 fn available() -> bool {
     cuda::available()
 }
 
 /// Enumerate CUDA devices. Never raises; an empty list means none.
+///
+/// Holds the GIL: enumeration is a bounded driver call, and its result
+/// is needed before any other GPU work can start.
 #[pyfunction]
 fn devices() -> Vec<GpuInfo> {
     cuda::devices()

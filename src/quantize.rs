@@ -12,7 +12,7 @@
 //! The fix is older than digital imaging: perturb each sample by
 //! sub-LSB noise *before* rounding, so the error becomes noise instead
 //! of structure. With a triangular probability density of ±1 LSB the
-//! the **first two moments** of the quantisation error are rendered
+//! **first two moments** of the quantisation error are rendered
 //! independent of the signal — its mean and its variance become
 //! constant. That is the precise claim, and it is weaker than full
 //! statistical independence, which needs *subtractive* dither; higher
@@ -235,8 +235,9 @@ where
 /// is already well above black.
 ///
 /// # Errors
-/// Infallible for every 3-D input; the `Result` is for signature
-/// consistency with the other kernels and for future parameters.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit. No other error is possible: every 3-D
+///   input is valid.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn quantize_u8(
     img: ArrayView3<f32>,
@@ -258,8 +259,9 @@ pub fn quantize_u8(
 /// Order-sensitive: terminal, after [`crate::encode::encode_srgb`].
 ///
 /// # Errors
-/// Infallible for every 3-D input; the `Result` is for signature
-/// consistency with the other kernels.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit. No other error is possible: every 3-D
+///   input is valid.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn quantize_u16(
     img: ArrayView3<f32>,

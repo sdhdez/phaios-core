@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! sRGB transfer encoding (terminal pipeline stage).
+//! sRGB transfer encoding.
 //!
 //! Applies the IEC 61966-2-1 piecewise transfer function to convert
-//! scene-referred linear f32 values to display-referred sRGB. This
-//! must be the **last** kernel in the pipeline; all other kernels
-//! operate on linear data.
+//! scene-referred linear f32 values to display-referred sRGB. This is
+//! the last kernel that operates on linear data, and the only one
+//! producing display-referred output. Only [`crate::quantize`] may
+//! follow it.
 //!
 //! The transfer function is:
 //!
@@ -46,7 +47,8 @@ fn encode_pixel(x: f32) -> f32 {
 /// Apply the IEC 61966-2-1 sRGB transfer to a linear image.
 ///
 /// Element-wise mapping: `encode_pixel(x)` is applied to every value.
-/// Order-sensitive: this is always the last stage of the pipeline.
+/// Order-sensitive: every other stage operates on linear data, so this
+/// runs after all of them. Only [`crate::quantize`] may follow.
 ///
 /// Input shape: any `(H, W, C)` — linear scene-referred f32 values. Any
 /// memory layout is accepted (strided views and Fortran-order arrays
@@ -65,9 +67,9 @@ fn encode_pixel(x: f32) -> f32 {
 /// Reference: IEC 61966-2-1:1999.
 ///
 /// # Errors
-/// Currently infallible — every 3-D `f32` input is valid. The `Result`
-/// is retained for API stability and for future variants that may
-/// validate the channel count.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit. No other error is possible: every 3-D
+///   `f32` input is valid.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn encode_srgb(img: ArrayView3<f32>) -> Result<Array3<f32>, PhaiosError> {
     let mut out = crate::alloc::zeros3::<f32>(img.dim())?;

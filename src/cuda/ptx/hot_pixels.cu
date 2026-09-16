@@ -6,7 +6,7 @@
 // pair-by-pair with fminf/fmaxf (IEEE-754-2008 minNum/maxNum, matching
 // Rust's f32::min/f32::max bit for bit -- see that file's module doc for
 // why), and the same two-term criterion. No transcendentals and no
-// shared state (CLAUDE.md section 2), so with -fmad=false (build.rs)
+// shared state, so with -fmad=false (build.rs)
 // every operation here is correctly rounded on both sides and the whole
 // kernel is bit-exact against the CPU.
 

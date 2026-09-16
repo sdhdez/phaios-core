@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Criterion benchmarks for phaios-core kernels.
 //!
-//! One benchmark per kernel on a synthetic 24 MP (4323 × 5765) f32
-//! image. Input arrays are pre-allocated outside the timed loop.
+//! One or more benchmarks per kernel on a synthetic 24 MP
+//! (4323 × 5765) f32 image, where a kernel has genuinely different cost
+//! paths. Input arrays are pre-allocated outside the timed loop.
 //! Output allocation is included in the measured time (mirrors real
 //! usage). Run with: `cargo bench` — the bench profile is already
 //! optimised, so there is no `--release` flag to pass.

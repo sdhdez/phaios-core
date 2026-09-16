@@ -9,13 +9,19 @@
 //! This example runs the whole v0.2 chain the other way — one
 //! [`Context::upload`], eleven `*_device` kernels whose inputs and
 //! outputs never leave the card, one [`Context::download`] — in the
-//! canonical order of `CLAUDE.md` §3:
+//! this order:
 //!
 //! ```text
 //! exposure → luminance_bw → zone_system → local_contrast → film_grain
 //!   → split_toning → vignette → shadow_rolloff → tone_curve
 //!   → highlight_rolloff → encode_srgb
 //! ```
+//!
+//! That is not the canonical pipeline order, which puts
+//! `shadow_rolloff` and `tone_curve` before `film_grain` and
+//! `split_toning`. What this example demonstrates is residency, and the
+//! drift table below is read the same way whichever order the eleven
+//! stages run in.
 //!
 //! The same eleven stages are then written out twice more — once on the
 //! CPU, once as per-call offload — because the whole point is the
@@ -28,8 +34,9 @@
 //!   is *cumulative*: it carries everything upstream of it, and a
 //!   bit-exact kernel downstream of a divergent one still prints a
 //!   difference. Divergence enters at `local_contrast`, where the device
-//!   sums each window with Kahan compensation in f32 against the CPU's
-//!   f64 summed-area table. It is a few ULP there and it is still a few
+//!   replaces the CPU's global f64 summed-area tables with separable
+//!   window sums: f64 for the L and L² statistics, Kahan-compensated f32
+//!   for the a/b coefficient sums downstream. It is a few ULP there and it is still a few
 //!   ULP eight stages later: the middle column, the committed
 //!   whole-chain bound as a multiple, barely moves. **That** is the
 //!   property residency needs — a long device-resident chain is no less

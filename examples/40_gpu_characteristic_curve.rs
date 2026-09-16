@@ -76,8 +76,8 @@ use phaios_core::tone::{ToneCurveParams, tone_curve};
 /// The three stages in pipeline order, on the host.
 ///
 /// Copied from `19_characteristic_curve.rs` unchanged, on purpose: it is
-/// the specification this example checks the device against (CLAUDE.md
-/// §2), so it must not be paraphrased.
+/// the specification this example checks the device against
+/// (`docs/ffi.md` §6), so it must not be paraphrased.
 fn characteristic_cpu(
     img: ArrayView3<f32>,
     toe: &ShadowRolloffParams,

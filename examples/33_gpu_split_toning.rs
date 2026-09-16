@@ -149,7 +149,7 @@ fn main() {
     let dev_bw = k::luminance_bw_device(&dev_rgb, LuminanceStandard::Bt709).unwrap();
 
     // The CPU side of the comparison, from the same chart. The CPU
-    // implementation is the specification (CLAUDE.md §2).
+    // implementation is the specification (`docs/ffi.md` §6).
     let bw = phaios_core::bw::luminance_bw(rgb.view(), LuminanceStandard::Bt709).unwrap();
 
     let configs: [(&str, SplitToningParams); 5] = [

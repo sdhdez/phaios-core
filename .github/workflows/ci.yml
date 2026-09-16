@@ -40,7 +40,7 @@ jobs:
       - name: cargo test
         run: cargo test
 
-      # CLAUDE.md §2: kernels are pure functions and the CUDA backend holds
+      # Kernels are pure functions and the CUDA backend holds
       # no implicit state — the device, stream and module cache live in a
       # Context the caller constructs and passes. Comment lines are stripped
       # before matching: context.rs documents the rule by naming the very

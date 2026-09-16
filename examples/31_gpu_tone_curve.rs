@@ -172,7 +172,7 @@ fn main() {
     let rgb = Array3::from_shape_vec((shared::HEIGHT, shared::WIDTH, 3), raw).unwrap();
 
     // The CPU chain, as example 09 computes it. It is the specification
-    // (CLAUDE.md §2); the device output is measured against it, never
+    // (`docs/ffi.md` §6); the device output is measured against it, never
     // the other way round.
     let cpu_bw = phaios_core::bw::luminance_bw(rgb.view(), LuminanceStandard::Bt709).unwrap();
 

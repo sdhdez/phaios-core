@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Exact geometry: crop and the eight dihedral orientations.
+//! Geometry: crop, the eight dihedral orientations, resize and
+//! straighten.
 //!
 //! These are the operations that must be **bit-exact** and **owned by
 //! the core**, because their parameters live in consumers' sidecar
@@ -7,9 +8,10 @@
 //! same sidecar would render different images and the reproducibility
 //! promise would break silently.
 //!
-//! Both kernels are pure index permutations — no arithmetic on pixel
-//! values at all — so they are bit-identical across every backend,
-//! unconditionally.
+//! `crop` and `orient` are pure index permutations, with no arithmetic
+//! on pixel values at all. `resize` and `straighten` do resample, but
+//! their filters are polynomial. All four are bit-identical across
+//! every backend, unconditionally.
 //!
 //! **Pipeline position: geometry runs first**, before exposure and the
 //! look pipeline. Two kernels make the order load-bearing:
@@ -219,8 +221,10 @@ pub(crate) fn validate_crop(shape: &[usize], params: &CropParams) -> Result<(), 
 /// load-bearing.
 ///
 /// # Errors
-/// [`PhaiosError::Parameter`] if the rectangle does not lie entirely
-/// within the frame.
+/// - [`PhaiosError::Parameter`] if the rectangle does not lie entirely
+///   within the frame.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn crop(img: ArrayView3<f32>, params: &CropParams) -> Result<Array3<f32>, PhaiosError> {
     validate_crop(img.shape(), params)?;
@@ -249,8 +253,9 @@ pub fn crop(img: ArrayView3<f32>, params: &CropParams) -> Result<Array3<f32>, Ph
 /// expressed in the upright frame.
 ///
 /// # Errors
-/// Currently infallible — every input and orientation is valid. The
-/// `Result` is kept for signature consistency across kernels.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit. No other error is possible: every input
+///   and orientation is valid.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn orient(img: ArrayView3<f32>, orientation: Orientation) -> Result<Array3<f32>, PhaiosError> {
     let (h, w, c) = img.dim();
@@ -424,7 +429,10 @@ pub(crate) fn axis_taps(scale: f32, i: usize) -> (f32, f32) {
 /// Output shape: `(height, width, C)`, C-contiguous.
 ///
 /// # Errors
-/// [`PhaiosError::Parameter`] if either target dimension is zero.
+/// - [`PhaiosError::Parameter`] if either target dimension is zero, or
+///   if the input image is empty.
+/// - [`PhaiosError::Allocation`] if an intermediate exceeds the
+///   backend's single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn resize(img: ArrayView3<f32>, params: &ResizeParams) -> Result<Array3<f32>, PhaiosError> {
     validate_resize(img.shape(), params)?;
@@ -655,8 +663,10 @@ pub(crate) fn straighten_geometry(
 /// Output shape: the inscribed rectangle, C-contiguous.
 ///
 /// # Errors
-/// [`PhaiosError::Parameter`] if `degrees` is not finite, exceeds
-/// ±45°, or leaves no whole pixel inscribed.
+/// - [`PhaiosError::Parameter`] if `degrees` is not finite, exceeds
+///   ±45°, or leaves no whole pixel inscribed.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn straighten(
     img: ArrayView3<f32>,
@@ -1067,7 +1077,7 @@ mod tests {
         // is therefore the sole guard between a caller and a request the
         // allocator cannot meet — and a failed `Vec` allocation *aborts*
         // through `handle_alloc_error`, which no Python `except` can catch
-        // (CLAUDE.md section 2).
+        // (`docs/ffi.md` §1).
         //
         // That makes this the one abort the oversized-input sweep in
         // tests/ffi.py cannot reach: there the oversize is in the input

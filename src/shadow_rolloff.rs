@@ -238,8 +238,9 @@ pub(crate) fn validate(params: &ShadowRolloffParams) -> Result<(), PhaiosError> 
 /// darker channel, so their ratios widen. Measured on a pixel of
 /// `(0.10, 0.12, 0.14)` at `knee = 0.2, strength = 0.8`, the chroma
 /// ratio `(max − min) / max` goes from 0.286 to 0.384. Toned shadows
-/// therefore deepen *and* intensify; if that is unwanted, apply the toe
-/// before `split_toning` rather than after.
+/// therefore deepen *and* intensify. The canonical order runs the toe
+/// before `split_toning`, so this only applies to a pipeline that moves
+/// it after.
 ///
 /// Order-sensitive: this belongs at the start of the tone stages, on
 /// linear scene-referred data, before the contrast is set. Applying it
@@ -249,6 +250,8 @@ pub(crate) fn validate(params: &ShadowRolloffParams) -> Result<(), PhaiosError> 
 /// # Errors
 /// - [`PhaiosError::Parameter`] if `knee` or `strength` is outside
 ///   0..=1, or is not finite.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn shadow_rolloff(
     img: ArrayView3<f32>,

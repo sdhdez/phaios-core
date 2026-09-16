@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! GPU kernels, one module per CPU kernel they mirror.
+//! GPU kernels, grouped by the CPU kernels they mirror. A module can
+//! hold several: `elementwise` holds eight, `geometry` four, `analysis`
+//! two, `quantize` two.
 //!
-//! Each module offers two forms:
+//! Each kernel offers two forms:
 //!
 //! - `<name>_device(&DeviceImage, ...) -> DeviceImage` — the resident
 //!   form: input and output stay on the GPU, so a pipeline pays PCIe
@@ -10,7 +12,13 @@
 //!   upload, run, download. Convenient for a single kernel; the
 //!   transfers dominate for cheap ones.
 //!
-//! Both validate identically to the CPU kernel they mirror.
+//! Three terminal kernels are the exception to the resident form:
+//! `histogram_device` returns a host `Histogram`, and
+//! `quantize_u8_device` and `quantize_u16_device` return host
+//! `Array3<u8>` and `Array3<u16>`. A reduction and a terminal stage
+//! have nothing to chain into.
+//!
+//! Both forms validate identically to the CPU kernel they mirror.
 
 mod analysis;
 mod blur;
@@ -63,8 +71,12 @@ pub(crate) fn be(what: &'static str) -> impl Fn(cudarc::driver::DriverError) -> 
 /// Block size is whatever `cudarc::driver::LaunchConfig::for_num_elems`
 /// picks (1024 threads at the time of writing) — deliberately not pinned
 /// here, because the determinism contract is independent of launch
-/// geometry: every kernel indexes by absolute element and none reduces
-/// across threads, so a different block size cannot change a result.
+/// geometry: every kernel launched through this helper indexes by
+/// absolute element and none reduces across threads, so a different
+/// block size cannot change a result. The histogram kernels do reduce
+/// across threads, through atomics, and use their own launch geometry.
+/// Their accumulation is over integers, so it is order-independent
+/// anyway.
 pub(crate) fn grid_1d(n: usize) -> cudarc::driver::LaunchConfig {
     cudarc::driver::LaunchConfig::for_num_elems(n as u32)
 }

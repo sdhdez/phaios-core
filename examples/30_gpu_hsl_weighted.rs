@@ -208,7 +208,7 @@ fn main() {
     for (name, weights) in configs {
         let params = HslWeightedParams::new(weights, LuminanceStandard::Bt709, 30.0);
 
-        // The CPU kernel is the specification (CLAUDE.md §2); the device
+        // The CPU kernel is the specification (`docs/ffi.md` §6); the device
         // output is measured against it, never the other way round.
         let cpu = phaios_core::bw::hsl_bw(rgb.view(), &params).unwrap();
         let gpu = ctx

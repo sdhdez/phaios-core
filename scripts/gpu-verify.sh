@@ -6,7 +6,8 @@
 # The hosted CI runner has neither nvcc nor an NVIDIA device, so
 # .github/workflows/ci.yml deliberately skips every target gated behind
 # `required-features = ["cuda"]`. This script is the mirror image of that
-# job: it runs exactly the half CI cannot, and nothing else.
+# job: it runs the half CI cannot, plus the same fmt, clippy and test
+# gates with the cuda feature turned on.
 #
 # It exists so that verifying the GPU backend is not the maintainer's
 # private privilege. Anyone with a supported device can run this, and the
@@ -45,7 +46,7 @@ cargo clippy --all-targets --features cuda -- -D warnings
 
 step "Test suite, GPU required"
 # PHAIOS_REQUIRE_GPU turns cuda_conformance.rs's device-missing skip into a
-# hard panic, so a green run here cannot mean "quietly skipped 54 tests".
+# hard panic, so a green run here cannot mean "quietly skipped 75 tests".
 PHAIOS_REQUIRE_GPU=1 cargo test --features cuda
 
 step "Examples gated behind --features cuda"
@@ -75,7 +76,7 @@ if [ -d .phaios-venv ] && [ -f tests/ffi_gpu.py ]; then
     echo "         rebuild with: maturin develop --release --features cuda"
   fi
 else
-  echo "skipped: no .phaios-venv; see CLAUDE.md §7 to create one"
+  echo "skipped: no .phaios-venv; see README.md \"Quick start\" to create one"
 fi
 
 step "Summary — please share this if you are reporting a result"

@@ -55,9 +55,10 @@
 //!
 //! # Determinism
 //!
-//! Evaluation is one subtraction, one multiply, a floor, and a linear
-//! interpolation — multiply and add. Every operation is exact or
-//! correctly rounded, so the kernel is bit-exact across backends.
+//! Evaluation is two subtractions, one division, one multiply, a floor,
+//! and a linear interpolation written as a convex combination. Every
+//! operation is exact or correctly rounded, so the kernel is bit-exact
+//! across backends.
 
 use ndarray::{Array3, ArrayView1, ArrayView3};
 use pyo3::{pyclass, pymethods};
@@ -233,6 +234,8 @@ pub(crate) fn validate(lut: ArrayView1<f32>, params: &LutParams) -> Result<(), P
 /// - [`PhaiosError::Parameter`] if the table has fewer than two entries,
 ///   contains a non-finite value, or the domain bounds are not finite
 ///   with `max > min`.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn apply_lut(
     img: ArrayView3<f32>,
@@ -248,7 +251,7 @@ pub fn apply_lut(
     // source's memory order, so a reversed view stays negative-stride and
     // `as_slice` returns None a second time — the review found that the
     // `expect` then fired as a PanicException across the FFI, on caller
-    // layout, which CLAUDE.md §2 forbids by name. `Context::upload` uses
+    // layout, which `docs/ffi.md` §1 forbids by name. `Context::upload` uses
     // `as_standard_layout` for exactly this reason. Reversed tables are
     // not exotic: `np.flip(cdf)` is the documented way to build a
     // histogram-matching transfer.

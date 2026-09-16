@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Example 03 — Colour filter B&W simulation.
 //!
-//! Applies all six Wratten-style presets (None, Yellow #8 K2, Orange #21,
-//! Red #25 A, Green #11 X1, Blue #47 C5) and writes one PPM per preset.
+//! Applies all six presets and writes one PPM per preset: the
+//! unfiltered reference (None) and five Wratten filters (Yellow #8 K2,
+//! Orange #21, Red #25 A, Green #11 X1, Blue #47 C5).
 //!
 //! What to look for:
 //! - Red #25 A makes the blue patch (#03, blue sky) very dark and

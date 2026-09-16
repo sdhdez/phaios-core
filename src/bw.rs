@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Black-and-white conversion kernels.
 //!
-//! Three conversion methods for v0.1:
+//! Four conversion methods:
 //!
 //! 1. **Standard luminance** — weighted sum Y = w·RGB using ITU-R
 //!    BT.601, BT.709 (default), or BT.2020 luminance coefficients.
@@ -10,6 +10,10 @@
 //! 3. **Coloured-filter simulation** — multiply RGB by a Wratten-style
 //!    per-channel transmission vector, then collapse with a chosen
 //!    luminance standard.
+//! 4. **Hue-weighted luminance** — scale each pixel's luminance by a
+//!    weight interpolated around the hue circle from eight band
+//!    centres, the digital equivalent of a continuously tunable filter
+//!    set. See [`hsl_bw`].
 //!
 //! References:
 //! - ITU-R BT.709-6, "Parameter values for the HDTV standards for
@@ -134,8 +138,8 @@ pub(crate) fn validate_rgb(img: ArrayView3<f32>) -> Result<(), PhaiosError> {
 /// The CUDA entry points cannot pass an `ArrayView3`, and used to repeat
 /// this check by hand — three copies whose messages agreed only because
 /// `{:?}` on a slice and `[{h}, {w}, {c}]` happen to render the same.
-/// CLAUDE.md §2 asks that both backends reject identical inputs with
-/// identical messages; one implementation is how that is guaranteed
+/// Both backends must reject identical inputs with identical messages
+/// (`docs/ffi.md` §4); one implementation is how that is guaranteed
 /// rather than merely observed.
 pub(crate) fn validate_rgb_shape(shape: &[usize]) -> Result<(), PhaiosError> {
     if shape[2] != 3 {
@@ -159,7 +163,9 @@ pub(crate) fn validate_rgb_shape(shape: &[usize]) -> Result<(), PhaiosError> {
 /// Reference: ITU-R BT.709-6 (2015), Part 2, item 3.2.
 ///
 /// # Errors
-/// Returns [`PhaiosError::Shape`] if the input is not `(H, W, 3)`.
+/// - [`PhaiosError::Shape`] if the input is not `(H, W, 3)`.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn luminance_bw(
     img: ArrayView3<f32>,
@@ -188,7 +194,9 @@ pub fn luminance_bw(
 /// Input shape: `(H, W, 3)`. Output shape: `(H, W, 1)`.
 ///
 /// # Errors
-/// Returns [`PhaiosError::Shape`] if the input is not `(H, W, 3)`.
+/// - [`PhaiosError::Shape`] if the input is not `(H, W, 3)`.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn channel_mixer_bw(
     img: ArrayView3<f32>,
@@ -219,7 +227,9 @@ pub fn channel_mixer_bw(
 /// Reference: Kodak Wratten Gelatin Filters datasheet, B3-203 (5th ed.).
 ///
 /// # Errors
-/// Returns [`PhaiosError::Shape`] if the input is not `(H, W, 3)`.
+/// - [`PhaiosError::Shape`] if the input is not `(H, W, 3)`.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn color_filter_bw(
     img: ArrayView3<f32>,
@@ -247,9 +257,10 @@ pub fn color_filter_bw(
 /// Centre of each hue band, in degrees.
 ///
 /// The eight bands a photographer expects from a B&W mixer. They are not
-/// evenly spaced: the warm end (red/orange/yellow) is subdivided more
-/// finely than the cool end, because that is where skin, foliage and sky
-/// separations matter most.
+/// evenly spaced. Red, orange and yellow sit 30° apart, and so do blue,
+/// purple and magenta. The 60° gaps are yellow to green, green to aqua,
+/// aqua to blue, and magenta back to red. The finer spacing is where
+/// skin, foliage and sky separations matter most.
 pub const HUE_BAND_CENTRES_DEG: [f32; 8] = [0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 300.0];
 
 /// Names of the eight hue bands, in the order of [`HUE_BAND_CENTRES_DEG`].
@@ -437,6 +448,8 @@ pub(crate) fn validate_hsl(params: &HslWeightedParams) -> Result<(), PhaiosError
 /// - [`PhaiosError::Shape`] if the input is not `(H, W, 3)`.
 /// - [`PhaiosError::Parameter`] if `sigma_deg` is not finite and
 ///   positive, or any weight is not finite.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn hsl_bw(
     img: ArrayView3<f32>,

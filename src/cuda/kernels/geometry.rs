@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Crop and orientation on the CUDA backend — bit-exact by
-//! construction, being pure index permutations.
+//! Geometry on the CUDA backend: crop, orient, resize and straighten.
+//!
+//! All four are bit-exact against the CPU. `crop` and `orient` because
+//! they are pure index permutations, `resize` and `straighten` because
+//! their filters are polynomial.
 
 use cudarc::driver::PushKernelArg;
 use ndarray::{Array3, ArrayView3};

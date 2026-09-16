@@ -9,8 +9,10 @@
 //! **This kernel changes the shape of the data.** It takes `(H, W, 1)`
 //! monochrome luminance and returns `(H, W, 3)` linear sRGB — the only
 //! kernel in the crate that adds channels. Everything downstream of it
-//! ([`crate::vignette`], [`crate::tone`]'s parametric curve,
-//! [`crate::encode`]) accepts any channel count for exactly this reason.
+//! ([`crate::shadow_rolloff`], [`crate::tone`]'s parametric curve,
+//! [`crate::vignette`], [`crate::highlight_rolloff`],
+//! [`crate::encode`], [`crate::quantize`]) accepts any channel count
+//! for exactly this reason.
 //!
 //! # Why OKLab
 //!
@@ -314,7 +316,9 @@ pub(crate) const NEUTRAL_ROW_SUM: f32 = 0.210_454_26 + 0.793_617_8 - 0.004_072_0
 ///
 /// Order-sensitive: this is a finishing stage. It must follow the B&W
 /// conversion (it needs single-channel input) and precede
-/// [`crate::encode::encode_srgb`] (it produces linear values).
+/// [`crate::encode::encode_srgb`] (it produces linear values). In the
+/// canonical order it sits between [`crate::film_grain`] and
+/// [`crate::vignette`], so the tone stages have already run.
 ///
 /// Reference: Björn Ottosson, "A perceptual color space for image
 /// processing" (2020).
@@ -323,6 +327,8 @@ pub(crate) const NEUTRAL_ROW_SUM: f32 = 0.210_454_26 + 0.793_617_8 - 0.004_072_0
 /// - [`PhaiosError::Shape`] if the input is not `(H, W, 1)`.
 /// - [`PhaiosError::Parameter`] if `pivot` is outside 0..=1, `balance`
 ///   is outside −1..=1, or any tint component is not finite.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn split_toning(
     img: ArrayView3<f32>,

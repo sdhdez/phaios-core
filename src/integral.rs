@@ -156,9 +156,10 @@ mod tests {
 
     #[test]
     fn window_sum_clamps_at_the_borders() {
-        // Replicate-border semantics: a window centred at a corner covers
-        // only the pixels that exist, and reports the area it actually
-        // summed so the caller's mean stays correct.
+        // A window centred at a corner shrinks to the pixels that
+        // exist, and reports the area it actually summed so the
+        // caller's mean stays correct. This is not replicate padding:
+        // no edge sample is counted twice.
         let img = ndarray::Array2::<f32>::ones((5, 5));
         let table = sat(img.view(), |v| v as f64).unwrap();
 

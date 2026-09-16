@@ -24,9 +24,11 @@
 //! 5. Build SATs of a and b; per pixel: `mean_a`, `mean_b`.
 //! 6. `q = mean_a · L + mean_b`.
 //!
-//! Boundary windows are clamped to the image extent (replicate-border
-//! padding semantics). All accumulation is done in f64 to avoid
-//! precision loss in the SATs.
+//! Boundary windows shrink to the image extent. Rows and columns are
+//! clamped independently and the mean is divided by the area actually
+//! covered, not by (2r+1)². This is not replicate padding: no edge
+//! sample is counted more than once. All accumulation is done in f64
+//! to avoid precision loss in the SATs.
 //!
 //! **Memory.** Four full-resolution f64 tables would dominate the
 //! footprint if they were all live at once, so each is dropped as soon
@@ -243,6 +245,8 @@ pub(crate) fn validate(
 ///   `strength` is non-finite. A negative `eps` makes `a = var/(var+ε)`
 ///   singular wherever the local variance approaches `−ε`, producing
 ///   infinities in the output.
+/// - [`PhaiosError::Allocation`] if an intermediate exceeds the
+///   backend's single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn local_contrast(
     img: ArrayView3<f32>,

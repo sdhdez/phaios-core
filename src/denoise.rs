@@ -68,8 +68,9 @@
 //! an estimate of the input's noise variance, the reading He, Sun and
 //! Tang give ε in their colour-guide formulation. `noise_sigma = 0.0` is
 //! the no-regularisation limit — legal (mirrors `eps = 0.0` in
-//! [`crate::local_contrast`]) but not on its own an identity; `amount =
-//! 0.0` is the only true identity switch.
+//! [`crate::local_contrast`]) but not on its own an identity. `amount =
+//! 0.0` is the only identity switch, and it is a value identity rather
+//! than a short-circuit: the filter still runs.
 //!
 //! # Memory
 //!
@@ -642,7 +643,10 @@ fn cross_guided(
 /// input (`H`, `W` or `C` is `0`) returns the empty array of the same
 /// shape.
 ///
-/// `amount = 0.0` is the exact identity.
+/// `amount = 0.0` returns the input value for value, but the filter is
+/// still evaluated: there is no short-circuit, and the passthrough comes
+/// from `p + (−0.0)·(p − q)` collapsing. One consequence is that a `-0.0`
+/// input can come back as `+0.0`, depending on the sign of `p − q`.
 ///
 /// # Errors
 /// - [`PhaiosError::Parameter`] if `radius` is above [`MAX_RADIUS`],

@@ -5,7 +5,8 @@
 //! manner of developed silver-halide grain:
 //!
 //! ```text
-//! out = L + intensity · 4·L·(1−L) · bandpass(noise, size)
+//! out = max(L + intensity · 4·t·(1−t) · bandpass(noise, size), 0)
+//! where t = clamp(L, 0, 1)
 //! ```
 //!
 //! # Determinism
@@ -27,8 +28,9 @@
 //! parameter, and it is why this kernel needs no RNG dependency.
 //!
 //! The hash is splitmix64, the finalizer from Sebastiano Vigna's
-//! SplittableRandom / xoshiro family: four multiply-xor-shift rounds
-//! that pass BigCrush as a bit mixer. Gaussians come from the
+//! SplittableRandom / xoshiro family: an additive step, two
+//! xor-shift-multiply rounds and a final xor-shift, which pass BigCrush
+//! as a bit mixer. Gaussians come from the
 //! Box–Muller transform (G. E. P. Box and Mervin E. Muller, "A Note on
 //! the Generation of Random Normal Deviates", *Annals of Mathematical
 //! Statistics* 29(2), 1958, pp. 610–611).
@@ -217,6 +219,9 @@ pub(crate) fn bandpass_geometry(size_pixels: f32) -> (usize, usize, f32) {
 /// out = max(L + intensity · 4·t·(1−t) · bandpass(noise), 0)   where t = clamp(L, 0, 1)
 /// ```
 ///
+/// `intensity = 0.0`, the default, is a literal passthrough: the input
+/// is returned verbatim, the clamp at zero included.
+///
 /// The band-pass is a difference of two box filters over the same white
 /// noise field, with radii `floor(size/2)` and `round(size)`, which
 /// concentrates the noise energy around the requested scale. The inner
@@ -240,14 +245,18 @@ pub(crate) fn bandpass_geometry(size_pixels: f32) -> (usize, usize, f32) {
 /// Input shape: `(H, W, 1)`, any layout. Output: `(H, W, 1)`,
 /// C-contiguous.
 ///
-/// Order-sensitive: a finishing stage, applied after tone work. Grain
-/// added before a tone curve would be reshaped by it, and the envelope
-/// would no longer sit on the midtones the viewer sees.
+/// Order-sensitive: a finishing stage, after [`crate::shadow_rolloff`]
+/// and [`crate::tone`]'s parametric curve, before
+/// [`crate::split_toning`]. Grain added before a tone curve would be
+/// reshaped by it, and the envelope would no longer sit on the midtones
+/// the viewer sees.
 ///
 /// # Errors
 /// - [`PhaiosError::Shape`] if the input is not `(H, W, 1)`.
 /// - [`PhaiosError::Parameter`] if `intensity` is negative or
 ///   non-finite, or `size_pixels` is not finite and positive.
+/// - [`PhaiosError::Allocation`] if an intermediate exceeds the
+///   backend's single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn film_grain(img: ArrayView3<f32>, params: &GrainParams) -> Result<Array3<f32>, PhaiosError> {
     validate(img.shape(), params)?;

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Adams/Archer Zone System tone curve.
+//! Tone curves: the Adams/Archer Zone System, and the ASC CDL
+//! slope/offset/power primary.
 //!
 //! Implements the eleven-zone system (0..=10) with the Gaussian-blending
 //! modernisation from Phil Davis (1999). Each zone is one stop apart;
@@ -31,8 +32,10 @@ use crate::error::PhaiosError;
 
 /// Zone System tone offsets.
 ///
-/// Maps zone index (0..=10) to a stop offset in −3..+3. Zones not
-/// present in the map are treated as having a 0-stop offset.
+/// Maps zone index (0..=10) to a stop offset in stops. Zones not
+/// present in the map are treated as having a 0-stop offset. The index
+/// is enforced; the offset only has to be finite and is never clamped,
+/// so −3..+3 is a useful range rather than a limit.
 ///
 /// ```python
 /// # Lift Zone V by half a stop, deepen Zone III by 0.3 stops
@@ -51,7 +54,8 @@ impl ZoneParams {
     /// The map is not validated here — [`zone_system`] rejects zone
     /// indices outside 0..=10 and non-finite offsets when it runs. The
     /// constructor stays infallible because its signature shipped in
-    /// v0.1 and the public API is stable (CLAUDE.md §2).
+    /// v0.1, and a shipped signature is stable until the next major
+    /// version.
     #[new]
     pub fn new(offsets: HashMap<i32, f32>) -> Self {
         Self { offsets }
@@ -167,6 +171,8 @@ impl ZoneParams {
 ///   offset is not finite. A zone index of, say, 99 used to be accepted
 ///   and then contribute nothing (its Gaussian is zero everywhere in
 ///   range), silently swallowing what is almost always a caller bug.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn zone_system(img: ArrayView3<f32>, params: &ZoneParams) -> Result<Array3<f32>, PhaiosError> {
     validate_zones(img.shape(), params)?;
@@ -175,7 +181,7 @@ pub fn zone_system(img: ArrayView3<f32>, params: &ZoneParams) -> Result<Array3<f
     // per-instance `RandomState` seed, and f32 addition is not
     // associative, so an unsorted Gaussian sum would make the output
     // depend on that seed — different bytes for the same input on every
-    // process. CLAUDE.md §2: determinism.
+    // process. See `docs/ffi.md` §6, determinism.
     let mut offsets: Vec<(f32, f32)> = params
         .offsets
         .iter()
@@ -334,8 +340,10 @@ pub(crate) fn validate_tone_curve(params: &ToneCurveParams) -> Result<(), Phaios
 /// Syntax", version 1.2 (2009), §2.1.
 ///
 /// # Errors
-/// Returns [`PhaiosError::Parameter`] if any field is not finite, or if
-/// `power` is not strictly positive.
+/// - [`PhaiosError::Parameter`] if any field is not finite, or if
+///   `power` is not strictly positive.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn tone_curve(
     img: ArrayView3<f32>,

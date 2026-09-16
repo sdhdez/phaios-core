@@ -90,7 +90,11 @@ class GpuContext:
 
 Construct once, pass to every GPU kernel call. Dropping it releases
 nothing shared: contexts are independent, and images produced by one
-context are not valid with another."""
+context are not valid with another.
+
+``GpuContext(index=0)`` opens that device. It raises ``RuntimeError``,
+never ``PanicException``, if no device exists, the driver is missing,
+or the device is older than compute capability 8.0 (Ampere)."""
 
     def __new__(cls, index: int = 0) -> GpuContext: ...
 
@@ -147,11 +151,17 @@ the ``GpuContext`` first is safe."""
     def __repr__(self) -> str: ...
 
 def available() -> bool:
-    """True if at least one supported CUDA device is present. Never raises."""
+    """True if at least one supported CUDA device is present. Never raises.
+
+Holds the GIL: enumeration is a bounded driver call, and its result
+is needed before any other GPU work can start."""
     ...
 
 def devices() -> list[GpuInfo]:
-    """Enumerate CUDA devices. Never raises; an empty list means none."""
+    """Enumerate CUDA devices. Never raises; an empty list means none.
+
+Holds the GIL: enumeration is a bounded driver call, and its result
+is needed before any other GPU work can start."""
     ...
 
 def exposure(img: GpuImage, stops: float) -> GpuImage:

@@ -71,7 +71,10 @@ use crate::error::PhaiosError;
 #[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 pub struct HistogramParams {
-    /// Number of bins spanning `[min, max]`. Must be at least 2.
+    /// Number of bins spanning `[min, max]`, at least 2 and at most
+    /// 4194304. The channel count and the bin count together must also
+    /// keep the accumulator under 256 MiB, which is the binding limit on
+    /// a multi-channel image.
     ///
     /// 256 matches an 8-bit display and is the sensible default for a
     /// histogram a person looks at. Larger values are for analysis —

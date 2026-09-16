@@ -865,7 +865,7 @@ def test_all_kernels_are_layout_agnostic_by_value(label, rgb_f32, grey_f32):
     `np.ascontiguousarray` of the variant, and the Fortran, reversed and
     zero-stride variants reach it by a different route.
 
-    CLAUDE.md section 2 makes layout-agnostic input a hard constraint:
+    `docs/ffi.md` section 1 makes layout-agnostic input a hard constraint:
     `PyReadonlyArray3` accepts strided, Fortran-order and negative-stride
     arrays, and a consumer passing `img[::2, ::2]` is normal.
 

@@ -170,7 +170,7 @@ pub fn apply_lut_device(
     // source's memory order, so a reversed view stays negative-stride and
     // `as_slice` returns None a second time — the review found that the
     // `expect` then fired as a PanicException across the FFI, on caller
-    // layout, which CLAUDE.md §2 forbids by name. `Context::upload` uses
+    // layout, which `docs/ffi.md` §1 forbids by name. `Context::upload` uses
     // `as_standard_layout` for exactly this reason. Reversed tables are
     // not exotic: `np.flip(cdf)` is the documented way to build a
     // histogram-matching transfer.

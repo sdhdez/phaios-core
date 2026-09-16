@@ -30,7 +30,7 @@
 //!   darkens toward the corners of the *crop*;
 //!   `35_gpu_geometry_vignette_then_crop.ppm` keeps the off-centre falloff
 //!   of the original frame. Geometry runs first in the pipeline
-//!   (CLAUDE.md §3) precisely so that the first behaviour is what a
+//!   precisely so that the first behaviour is what a
 //!   sidecar reproduces — and the property survives the port, because
 //!   residency does not reorder anything.
 //!

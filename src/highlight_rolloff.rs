@@ -67,7 +67,7 @@ use crate::error::PhaiosError;
 /// # Hold two stops of highlight detail above the knee
 /// params = phaios_core.RolloffParams(knee=0.75, white_point=4.0)
 ///
-/// # The default is a hard clip at 1.0 — identical to np.clip(x, 0, 1)
+/// # The default is a hard clip at 1.0, identical to np.clip(x, None, 1.0)
 /// params = phaios_core.RolloffParams()
 /// ```
 #[pyclass(from_py_object)]
@@ -226,6 +226,8 @@ pub(crate) fn validate(params: &RolloffParams) -> Result<(), PhaiosError> {
 /// # Errors
 /// - [`PhaiosError::Parameter`] if `knee` is outside 0..=1, or if
 ///   `white_point` is not finite or is below 1.0.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn highlight_rolloff(
     img: ArrayView3<f32>,

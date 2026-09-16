@@ -2027,7 +2027,7 @@ fn shadow_rolloff_device_rejects_what_the_cpu_rejects() {
 ///
 /// Compared by rendered string rather than by variant: the message is
 /// what reaches a Python caller, and the whole reason validation is
-/// extracted into shared `validate*` helpers (CLAUDE.md §2) is that the
+/// extracted into shared `validate*` helpers (`docs/ffi.md` §6) is that the
 /// two backends should be indistinguishable at that boundary.
 fn rejects_identically<T, U>(
     label: &str,

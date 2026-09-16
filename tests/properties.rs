@@ -6,8 +6,8 @@
 //! zone index of 11. What they cannot do, by construction, is cover the
 //! *whole* domain of a `validate*` function: every finite `f32`, every
 //! shape, every combination. Those validators are `pub(crate)` and shared
-//! verbatim by the CPU and CUDA backends (CLAUDE.md §2, `docs/ffi.md`
-//! throughout), so a gap here is a gap in both backends at once, and the
+//! verbatim by the CPU and CUDA backends (`docs/ffi.md` throughout), so
+//! a gap here is a gap in both backends at once, and the
 //! cross-backend conformance suite (`tests/cuda_conformance.rs`) cannot
 //! see it: it compares two backends' answers to the same input, never
 //! asks whether an input should have been rejected in the first place.
@@ -32,8 +32,7 @@
 //!   or a pixel pass would take. Tested on `resize`, the kernel whose
 //!   output size is most directly caller-controlled.
 //! - **P5** — layout-agnostic: the same logical array gives bit-identical
-//!   output whatever its physical memory layout (CLAUDE.md §2,
-//!   `docs/ffi.md` §2).
+//!   output whatever its physical memory layout (`docs/ffi.md` §1).
 //! - **P6** — deterministic: the same input, params and (where relevant)
 //!   seed give bit-identical output on repeated calls; for `film_grain`
 //!   and dithered `quantize_*`, two different seeds give different
@@ -342,8 +341,8 @@ fn describe_panic(payload: Box<dyn std::any::Any + Send>) -> String {
 }
 
 /// Call `f`, converting a Rust panic into a plain `Err` message instead of
-/// aborting the test case before proptest can shrink it. CLAUDE.md §2: no
-/// kernel may panic on caller input, so a panic caught here already *is*
+/// aborting the test case before proptest can shrink it. `docs/ffi.md`
+/// §4: no kernel may panic on caller input, so a panic caught here already *is*
 /// the property failure; this just gives it a message instead of a raw
 /// unwind, and lets shrinking continue to find the minimal case.
 fn catch_call<T>(f: impl FnOnce() -> T) -> Result<T, String> {
@@ -364,7 +363,7 @@ fn expect_rejected_message<T>(
     match result {
         Err(panic_msg) => Err(TestCaseError::fail(format!(
             "kernel panicked on invalid input instead of returning Err \
-             (CLAUDE.md section 2: no panics on caller input): {panic_msg}"
+             (docs/ffi.md section 4: no panics on caller input): {panic_msg}"
         ))),
         Ok(Ok(_)) => Err(TestCaseError::fail(
             "expected Err for invalid input, kernel returned Ok",

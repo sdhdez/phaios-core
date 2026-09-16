@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The `phaios_core` Python extension module.
 
-Exposes the numerical kernels as Python-callable functions. All
-arrays are `numpy.float32`, C-contiguous, shape `(H, W, C)`."""
+Exposes the numerical kernels as Python-callable functions. Image
+arrays are `numpy.float32`, C-contiguous, shape `(H, W, C)`;
+`quantize_u8` and `quantize_u16` return `uint8` and `uint16`, and
+`apply_lut` takes a 1-D `float32` table."""
 
 import numpy as np
 from numpy.typing import NDArray
@@ -291,8 +293,10 @@ roughly half weight."""
 class ZoneParams:
     """Zone System tone offsets.
 
-Maps zone index (0..=10) to a stop offset in −3..+3. Zones not
-present in the map are treated as having a 0-stop offset.
+Maps zone index (0..=10) to a stop offset in stops. Zones not
+present in the map are treated as having a 0-stop offset. The index
+is enforced; the offset only has to be finite and is never clamped,
+so −3..+3 is a useful range rather than a limit.
 
 ```python
 # Lift Zone V by half a stop, deepen Zone III by 0.3 stops
@@ -484,15 +488,21 @@ params = phaios_core.VignetteParams(amount=0.35, feather=0.6, roundness=0.0)
 
 −1..+1 is the useful range: at `+1.0` the corners reach black, at
 `−1.0` they are doubled. Values beyond that are allowed; the
-result is clamped at zero so the image never goes negative."""
+result is clamped at zero so the image never goes negative. The
+identity path at `amount = 0.0`, the default, returns the input
+verbatim, clamp included."""
 
     feather: float
     """Width of the transition, 0..=1.
 
 `1.0` spreads the falloff from the centre all the way to the
-corners — the gentlest, most natural-looking option. Smaller
+corners, the gentlest and most natural-looking option. Smaller
 values push the transition outwards, concentrating it near the
-corners; `0.0` is a hard edge with no gradient at all."""
+corners. `0.0` is not a hard edge: it places the whole transition
+at distance 1, which no pixel centre reaches, so the kernel
+becomes a no-op apart from the clamp at zero. Any value at or
+below `1 / max(H, W)` leaves every pixel untouched. A near-hard
+edge needs a small positive value, `0.02` to `0.05`."""
 
     roundness: float
     """Corner shape, 0..=1. `0.0` is a circle, `1.0` follows the frame.
@@ -594,7 +604,7 @@ class RolloffParams:
 # Hold two stops of highlight detail above the knee
 params = phaios_core.RolloffParams(knee=0.75, white_point=4.0)
 
-# The default is a hard clip at 1.0 — identical to np.clip(x, 0, 1)
+# The default is a hard clip at 1.0, identical to np.clip(x, None, 1.0)
 params = phaios_core.RolloffParams()
 ```"""
 
@@ -717,7 +727,10 @@ params = phaios_core.HistogramParams(bins=65536)
     def __new__(cls, bins: int = 256, min: float = 0.0, max: float = 1.0) -> HistogramParams: ...
 
     bins: int
-    """Number of bins spanning `[min, max]`. Must be at least 2.
+    """Number of bins spanning `[min, max]`, at least 2 and at most
+4194304. The channel count and the bin count together must also
+keep the accumulator under 256 MiB, which is the binding limit on
+a multi-channel image.
 
 256 matches an 8-bit display and is the sensible default for a
 histogram a person looks at. Larger values are for analysis —
@@ -905,7 +918,9 @@ numpy.ndarray
 Raises
 ------
 ValueError
-    If the rectangle exceeds the frame."""
+    If the rectangle exceeds the frame.
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def orient(img: NDArray[np.float32], orientation: Orientation) -> NDArray[np.float32]:
@@ -929,7 +944,12 @@ Returns
 -------
 numpy.ndarray
     Shape ``(H, W, C)`` or ``(W, H, C)``, dtype ``float32``,
-    C-contiguous."""
+    C-contiguous.
+
+Raises
+------
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def hot_pixels(img: NDArray[np.float32], params: HotPixelParams) -> NDArray[np.float32]:
@@ -1022,10 +1042,11 @@ MemoryError
 def resize(img: NDArray[np.float32], params: ResizeParams) -> NDArray[np.float32]:
     """Resample to a new size with a separable polynomial filter.
 
-``ResizeFilter.Area`` computes exact fractional pixel coverage — the
-correct choice for downscaling; ``ResizeFilter.CatmullRom`` (Keys
-1981) is the photographic default for upscaling. Bit-exact across
-backends. A same-size resize is the exact identity.
+``ResizeFilter.Area`` computes exact fractional pixel coverage, the
+correct choice for downscaling. ``ResizeFilter.CatmullRom`` (Keys
+1981) is the photographic default for upscaling.
+``ResizeFilter.Bilinear`` is the cheap linear alternative. Bit-exact
+across backends. A same-size resize is the exact identity.
 
 Parameters
 ----------
@@ -1042,7 +1063,9 @@ numpy.ndarray
 Raises
 ------
 ValueError
-    If a target dimension is zero or the input is empty."""
+    If a target dimension is zero or the input is empty.
+MemoryError
+    If the intermediates exceed the single-allocation limit."""
     ...
 
 def straighten(img: NDArray[np.float32], params: StraightenParams) -> NDArray[np.float32]:
@@ -1070,15 +1093,17 @@ Raises
 ------
 ValueError
     If the angle is not finite, exceeds ±45°, or leaves no whole
-    pixel inscribed."""
+    pixel inscribed.
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def exposure(img: NDArray[np.float32], stops: float) -> NDArray[np.float32]:
     """Apply exposure compensation in EV stops.
 
-Computes ``out = img * 2**stops``. This is the first pipeline stage:
-it operates on linear scene-referred data, where a stop is by
-definition a factor of two.
+Computes ``out = img * 2**stops``. This is the first tonal stage,
+after geometry, ``hot_pixels`` and ``denoise``. It operates on linear
+scene-referred data, where a stop is by definition a factor of two.
 
 Values are not clamped — highlights pushed above 1.0 stay there so
 later tone stages can recover them.
@@ -1100,7 +1125,9 @@ numpy.ndarray
 Raises
 ------
 ValueError
-    If ``stops`` is not finite."""
+    If ``stops`` is not finite.
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def luminance_bw(img: NDArray[np.float32], standard: LuminanceStandard = LuminanceStandard.Bt709) -> NDArray[np.float32]:
@@ -1122,7 +1149,9 @@ numpy.ndarray
 Raises
 ------
 ValueError
-    If ``img`` is not shape ``(H, W, 3)``."""
+    If ``img`` is not shape ``(H, W, 3)``.
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def channel_mixer_bw(img: NDArray[np.float32], wr: float, wg: float, wb: float) -> NDArray[np.float32]:
@@ -1144,7 +1173,9 @@ numpy.ndarray
 Raises
 ------
 ValueError
-    If ``img`` is not shape ``(H, W, 3)``."""
+    If ``img`` is not shape ``(H, W, 3)``.
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def color_filter_bw(img: NDArray[np.float32], filter: ColorFilter = ColorFilter.NoFilter, standard: LuminanceStandard = LuminanceStandard.Bt709) -> NDArray[np.float32]:
@@ -1170,7 +1201,9 @@ numpy.ndarray
 Raises
 ------
 ValueError
-    If ``img`` is not shape ``(H, W, 3)``."""
+    If ``img`` is not shape ``(H, W, 3)``.
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def hsl_bw(img: NDArray[np.float32], params: HslWeightedParams) -> NDArray[np.float32]:
@@ -1201,7 +1234,9 @@ Raises
 ------
 ValueError
     If ``img`` is not shape ``(H, W, 3)``, if ``sigma_deg`` is not
-    finite and positive, or if any weight is not finite."""
+    finite and positive, or if any weight is not finite.
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def zone_system(img: NDArray[np.float32], params: ZoneParams) -> NDArray[np.float32]:
@@ -1224,7 +1259,10 @@ numpy.ndarray
 Raises
 ------
 ValueError
-    If ``img`` is not shape ``(H, W, 1)``."""
+    If ``img`` is not shape ``(H, W, 1)``, if a zone index is outside
+    0..=10, or if an offset is not finite.
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def tone_curve(img: NDArray[np.float32], params: ToneCurveParams) -> NDArray[np.float32]:
@@ -1254,7 +1292,9 @@ numpy.ndarray
 Raises
 ------
 ValueError
-    If any parameter is not finite, or ``power`` is not positive."""
+    If any parameter is not finite, or ``power`` is not positive.
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def blur(img: NDArray[np.float32], params: BlurParams | None = None) -> NDArray[np.float32]:
@@ -1265,9 +1305,9 @@ sigma = 0.0 is the exact identity. Borders clamp, so a constant
 image is preserved everywhere including its edges — and an impulse
 near an edge loses the tail that falls outside.
 
-Below sigma 4 this is a direct separable convolution; at or above it,
-three box passes whose variances sum to sigma-squared, which costs
-the same at any radius.
+Below sigma 6 this is a direct separable convolution; at or
+above it, three box passes whose variances sum to sigma-squared,
+which costs the same at any radius.
 
 The result is in **pixels of the image as given**, so a blur on a
 half-size preview is not the same picture as the same sigma on the
@@ -1388,7 +1428,9 @@ Raises
 ------
 ValueError
     If ``knee`` is outside 0..=1, or ``white_point`` is not finite or
-    is below 1.0."""
+    is below 1.0.
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def shadow_rolloff(img: NDArray[np.float32], params: ShadowRolloffParams | None = None) -> NDArray[np.float32]:
@@ -1412,7 +1454,9 @@ The default ``ShadowRolloffParams()`` has ``strength=0`` and is the
 exact identity.
 
 Order-sensitive: apply at the start of the tone stages, on linear
-scene-referred data, before the contrast is set.
+scene-referred data, before the contrast is set. In the canonical
+order it runs before ``tone_curve``, ``film_grain`` and
+``split_toning``.
 
 Parameters
 ----------
@@ -1430,7 +1474,9 @@ numpy.ndarray
 Raises
 ------
 ValueError
-    If ``knee`` or ``strength`` is outside 0..=1, or is not finite."""
+    If ``knee`` or ``strength`` is outside 0..=1, or is not finite.
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def quantize_u8(img: NDArray[np.float32], params: QuantizeParams | None = None) -> NDArray[np.uint8]:
@@ -1461,7 +1507,12 @@ params : QuantizeParams
 Returns
 -------
 numpy.ndarray
-    Shape ``(H, W, C)``, dtype ``uint8``, C-contiguous."""
+    Shape ``(H, W, C)``, dtype ``uint8``, C-contiguous.
+
+Raises
+------
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def quantize_u16(img: NDArray[np.float32], params: QuantizeParams | None = None) -> NDArray[np.uint16]:
@@ -1485,7 +1536,12 @@ params : QuantizeParams
 Returns
 -------
 numpy.ndarray
-    Shape ``(H, W, C)``, dtype ``uint16``, C-contiguous."""
+    Shape ``(H, W, C)``, dtype ``uint16``, C-contiguous.
+
+Raises
+------
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def histogram(img: NDArray[np.float32], params: HistogramParams | None = None) -> Histogram:
@@ -1570,7 +1626,9 @@ Raises
 ValueError
     If the table has fewer than 2 entries or a non-finite value, or
     the domain is not finite with ``max > min`` or spans more than
-    float32 can represent."""
+    float32 can represent.
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def local_contrast(img: NDArray[np.float32], params: GuidedFilterParams, strength: float) -> NDArray[np.float32]:
@@ -1596,7 +1654,10 @@ numpy.ndarray
 Raises
 ------
 ValueError
-    If ``img`` is not shape ``(H, W, 1)``."""
+    If ``img`` is not shape ``(H, W, 1)``, if ``eps`` is negative or
+    not finite, or if ``strength`` is not finite.
+MemoryError
+    If the intermediates exceed the single-allocation limit."""
     ...
 
 def sharpen(img: NDArray[np.float32], params: SharpenParams | None = None) -> NDArray[np.float32]:
@@ -1666,7 +1727,9 @@ Raises
 ------
 ValueError
     If ``img`` is not shape ``(H, W, 1)``, if ``intensity`` is
-    negative or non-finite, or if ``size_pixels`` is not positive."""
+    negative or non-finite, or if ``size_pixels`` is not positive.
+MemoryError
+    If the intermediates exceed the single-allocation limit."""
     ...
 
 def split_toning(img: NDArray[np.float32], params: SplitToningParams) -> NDArray[np.float32]:
@@ -1674,8 +1737,9 @@ def split_toning(img: NDArray[np.float32], params: SplitToningParams) -> NDArray
 
 **Changes the shape of the data**: takes ``(H, W, 1)`` monochrome
 luminance and returns ``(H, W, 3)`` linear sRGB. It is the only
-kernel that adds channels, which is why ``vignette``, ``tone_curve``
-and ``encode_srgb`` all accept any channel count.
+kernel that adds channels, which is why ``shadow_rolloff``,
+``tone_curve``, ``vignette``, ``highlight_rolloff``, ``encode_srgb``
+and the two ``quantize`` kernels all accept any channel count.
 
 Works in OKLab (Ottosson 2020), so the tint adds chroma without
 moving the lightness that the tone stages established. Only the
@@ -1700,7 +1764,9 @@ Raises
 ValueError
     If ``img`` is not shape ``(H, W, 1)``, if ``pivot`` is outside
     0..=1, if ``balance`` is outside -1..=1, or if a tint component
-    is not finite."""
+    is not finite.
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def vignette(img: NDArray[np.float32], params: VignetteParams) -> NDArray[np.float32]:
@@ -1708,8 +1774,10 @@ def vignette(img: NDArray[np.float32], params: VignetteParams) -> NDArray[np.flo
 
 Scales each pixel by ``1 - amount * falloff(distance)``, where the
 distance is measured in normalised frame coordinates: the centre is
-0 and the corners are 1. Positive ``amount`` darkens the corners,
-negative lightens them; the result is clamped at zero.
+0 and the frame edges are 1. Coordinates are pixel centres, so the
+largest distance any pixel reaches is just under 1. Positive
+``amount`` darkens the corners, negative lightens them; the result
+is clamped at zero.
 
 Because the coordinates are normalised, the result is
 resolution-independent — a preview and the full-size frame get the
@@ -1733,15 +1801,18 @@ Raises
 ------
 ValueError
     If any parameter is not finite, or if ``feather`` or
-    ``roundness`` is outside 0..=1."""
+    ``roundness`` is outside 0..=1.
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...
 
 def encode_srgb(img: NDArray[np.float32]) -> NDArray[np.float32]:
     """Apply the IEC 61966-2-1 sRGB transfer encoding.
 
-This is always the last kernel in the pipeline. Converts scene-referred
-linear f32 values to display-referred sRGB. Values are not clamped —
-caller should clamp to [0, 1] beforehand if required.
+This is the last kernel operating on linear data, and the only one
+producing display-referred output. Only ``quantize_u8`` or
+``quantize_u16`` may follow it. Values are not clamped; the caller
+should clamp to [0, 1] beforehand if required.
 
 Parameters
 ----------
@@ -1753,5 +1824,10 @@ img : numpy.ndarray
 Returns
 -------
 numpy.ndarray
-    Shape ``(H, W, C)``, dtype ``float32``, display-referred sRGB."""
+    Shape ``(H, W, C)``, dtype ``float32``, display-referred sRGB.
+
+Raises
+------
+MemoryError
+    If the output exceeds the single-allocation limit."""
     ...

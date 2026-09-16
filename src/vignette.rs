@@ -42,15 +42,21 @@ pub struct VignetteParams {
     ///
     /// −1..+1 is the useful range: at `+1.0` the corners reach black, at
     /// `−1.0` they are doubled. Values beyond that are allowed; the
-    /// result is clamped at zero so the image never goes negative.
+    /// result is clamped at zero so the image never goes negative. The
+    /// identity path at `amount = 0.0`, the default, returns the input
+    /// verbatim, clamp included.
     #[pyo3(get, set)]
     pub amount: f32,
     /// Width of the transition, 0..=1.
     ///
     /// `1.0` spreads the falloff from the centre all the way to the
-    /// corners — the gentlest, most natural-looking option. Smaller
+    /// corners, the gentlest and most natural-looking option. Smaller
     /// values push the transition outwards, concentrating it near the
-    /// corners; `0.0` is a hard edge with no gradient at all.
+    /// corners. `0.0` is not a hard edge: it places the whole transition
+    /// at distance 1, which no pixel centre reaches, so the kernel
+    /// becomes a no-op apart from the clamp at zero. Any value at or
+    /// below `1 / max(H, W)` leaves every pixel untouched. A near-hard
+    /// edge needs a small positive value, `0.02` to `0.05`.
     #[pyo3(get, set)]
     pub feather: f32,
     /// Corner shape, 0..=1. `0.0` is a circle, `1.0` follows the frame.
@@ -151,13 +157,15 @@ pub(crate) fn validate(params: &VignetteParams) -> Result<(), PhaiosError> {
 /// Apply a radial vignette.
 ///
 /// For each pixel, normalised coordinates `(nx, ny)` are formed with the
-/// frame centre at the origin and the corners at `(±1, ±1)`. Two
-/// distance measures are blended by `roundness`:
+/// frame centre at the origin and the frame edges at `±1`. Coordinates
+/// are pixel centres, so the extreme value is `1 − 1/w` horizontally
+/// and `1 − 1/h` vertically, just inside the edge. Two distance
+/// measures are blended by `roundness`:
 ///
 /// - the Euclidean distance `√(nx² + ny²) / √2` — a circle, which
-///   reaches 1 only at the corners;
+///   approaches 1 at the corners;
 /// - the Chebyshev distance `max(|nx|, |ny|)` — a rectangle following
-///   the frame, which reaches 1 along the whole border.
+///   the frame, which approaches 1 along the whole border.
 ///
 /// The blended distance is passed through a smoothstep from
 /// `1 − feather` to `1`, and the pixel is scaled by
@@ -172,13 +180,16 @@ pub(crate) fn validate(params: &VignetteParams) -> Result<(), PhaiosError> {
 /// luminance and on a split-toned three-channel image. Output:
 /// `(H, W, C)`, C-contiguous.
 ///
-/// Order-sensitive: apply after tone stages. Vignetting before them
-/// makes the tone curve act on the darkened corners, which is a
-/// different picture and rarely the intended one.
+/// Order-sensitive: apply after the tone stages, and after
+/// [`crate::split_toning`]. Vignetting before them makes the tone curve
+/// act on the darkened corners, which is a different picture and rarely
+/// the intended one.
 ///
 /// # Errors
 /// - [`PhaiosError::Parameter`] if any field is not finite, or if
 ///   `feather` or `roundness` is outside 0..=1.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn vignette(img: ArrayView3<f32>, params: &VignetteParams) -> Result<Array3<f32>, PhaiosError> {
     validate(params)?;
@@ -328,6 +339,34 @@ mod tests {
                 "preview and full frame disagree at ({sy}, {sx}): {a} vs {b}"
             );
         }
+    }
+
+    #[test]
+    fn zero_feather_is_a_no_op_apart_from_the_clamp() {
+        // `feather = 0.0` puts the whole transition at distance 1. Pixel
+        // centres stop at `1 - 1/max(H, W)`, so no pixel is scaled and
+        // the kernel reduces to the clamp at zero. This pins the
+        // documented behaviour of `VignetteParams::feather`.
+        let img = Array3::<f32>::from_shape_fn((32, 48, 1), |(y, x, _)| y as f32 - x as f32);
+        let out = vignette(img.view(), &VignetteParams::new(0.8, 0.0, 0.0)).unwrap();
+        for ((y, x, c), &v) in img.indexed_iter() {
+            assert_eq!(out[[y, x, c]], v.max(0.0), "changed at ({y}, {x})");
+        }
+
+        // Rectangular iso-lines reach furthest out, and still fall short.
+        let out = vignette(img.view(), &VignetteParams::new(0.8, 0.0, 1.0)).unwrap();
+        for ((y, x, c), &v) in img.indexed_iter() {
+            assert_eq!(out[[y, x, c]], v.max(0.0), "changed at ({y}, {x})");
+        }
+
+        // A small positive feather does reach the corners.
+        let flat_img = flat(32, 48, 1);
+        let out = vignette(flat_img.view(), &VignetteParams::new(0.8, 0.2, 0.0)).unwrap();
+        assert!(
+            out[[0, 0, 0]] < 0.5,
+            "a 0.2 feather should darken the corner, got {}",
+            out[[0, 0, 0]]
+        );
     }
 
     #[test]

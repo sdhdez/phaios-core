@@ -50,7 +50,7 @@
 //! bad photosite is a single extreme sample, and any resampling filter
 //! (rotation, scaling) mixes it into its neighbours, smearing a
 //! one-pixel defect into a blob before it can be told apart from real
-//! detail. Also before this crate's planned `denoise` stage: an
+//! detail. Also before [`crate::denoise`]: an
 //! edge-aware smoother reads a hot pixel's own extreme local contrast as
 //! structure to protect, which would leave the defect largely intact
 //! rather than removing it.
@@ -266,7 +266,7 @@ pub fn hot_pixels(
         // Each offset clamped independently — duplicate-edge padding, a
         // fixed nine-input window even at the corners. This clamp and
         // the row-major gather order below must match the CUDA kernel
-        // exactly (step 2) for the two backends to agree bit-for-bit.
+        // exactly for the two backends to agree bit-for-bit.
         let y0 = y.saturating_sub(1);
         let y2 = (y + 1).min(h - 1);
         let x0 = x.saturating_sub(1);

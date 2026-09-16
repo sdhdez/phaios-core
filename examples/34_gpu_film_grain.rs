@@ -129,7 +129,7 @@ fn code(v: f32) -> u8 {
 }
 
 /// Standard deviation of an image, in f64 so the accumulation order
-/// cannot move the printed digits (CLAUDE.md §2, ordered reductions).
+/// cannot move the printed digits (`docs/ffi.md` §6, ordered reductions).
 fn sigma(img: &Array3<f32>) -> f64 {
     let n = img.len() as f64;
     let mean = img.iter().map(|&v| f64::from(v)).sum::<f64>() / n;
@@ -170,7 +170,7 @@ fn main() {
     let dev_bw = k::luminance_bw_device(&dev_rgb, LuminanceStandard::Bt709).unwrap();
 
     // The CPU side of the comparison. The CPU implementation is the
-    // specification (CLAUDE.md §2), never the other way round.
+    // specification (`docs/ffi.md` §6), never the other way round.
     let bw = phaios_core::bw::luminance_bw(rgb.view(), LuminanceStandard::Bt709).unwrap();
 
     let configs: [(&str, GrainParams); 5] = [

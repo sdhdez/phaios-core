@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Crop and dihedral orientation, device side. Mirrors src/geometry.rs.
-// Pure index permutations — no arithmetic on pixel values — so both
-// kernels are bit-exact against the CPU by construction.
+// Geometry, device side. Mirrors src/geometry.rs. Four kernels:
+// crop_kernel, orient_kernel, resample_kernel (resize) and
+// straighten_kernel. All four are bit-exact against the CPU. The first
+// two are pure index permutations, with no arithmetic on pixel values.
+// The other two resample, but their filters are polynomial.
 
 extern "C" __global__ void crop_kernel(const float* __restrict__ input,
                                        float* __restrict__ output,

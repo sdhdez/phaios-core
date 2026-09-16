@@ -16,7 +16,7 @@
 //!   the top of this range.
 //! - **σ ≥ 6: three box passes**, widths chosen so their variances sum
 //!   to σ². Cost is independent of σ, where direct convolution grows
-//!   without bound: at σ = 32 a truncated kernel would need 386 taps per
+//!   without bound: at σ = 32 a truncated kernel would need 257 taps per
 //!   axis.
 //!
 //! The crossover sits where the two *cost* the same, because on accuracy
@@ -175,7 +175,7 @@ pub(crate) fn box_series_sigma(widths: &[usize]) -> f32 {
 /// the same σ error, and at σ = 8 the gap is 0.0099 against 0.0033.
 ///
 /// Three at a time is enough freedom to hit σ closely — the worst σ
-/// error over 4…64 stays under 1% — while forcing every pass to do real
+/// error over 6…64 stays under 1% — while forcing every pass to do real
 /// work, which is what makes the central limit theorem apply.
 const MAX_WIDTH_RATIO: usize = 3;
 

@@ -114,8 +114,8 @@ fn backend_err(what: &str, e: impl std::fmt::Display) -> PhaiosError {
 /// (`panic_no_lib_found`, `cudarc/src/lib.rs:200`) rather than returning
 /// an `Err`. PyO3 converts that unwind into `PanicException`, which
 /// inherits from `BaseException` and so walks straight through a
-/// consumer's `except Exception:` — the exact failure mode CLAUDE.md §2
-/// rules out. Every public entry point that touches the driver
+/// consumer's `except Exception:` — the exact failure mode `docs/ffi.md`
+/// §4 rules out. Every public entry point that touches the driver
 /// ([`devices`] and [`Context::new`]; every kernel needs a [`Context`])
 /// is therefore gated on this first, so a machine with no driver gets
 /// `false`, an empty list and [`PhaiosError::Backend`] instead of an

@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Error types for phaios-core.
 //!
-//! `PhaiosError` is the crate's single error type. All public functions
-//! return `Result<_, PhaiosError>`. At the FFI boundary, `PhaiosError`
-//! converts to `pyo3::PyErr` via the `From` impl below.
+//! `PhaiosError` is the crate's single error type. Every kernel returns
+//! `Result<_, PhaiosError>`. The infallible parts of the public API do
+//! not: `LuminanceStandard::weights`, `ColorFilter::transmission`,
+//! `film_grain::splitmix64`, `film_grain::pixel_hash`, `cuda::devices`,
+//! `cuda::available`, and every parameter class's `new`, `__eq__` and
+//! `__repr__`. At the FFI boundary, `PhaiosError` converts to
+//! `pyo3::PyErr` via the `From` impl below.
 
 use pyo3::PyErr;
 use pyo3::exceptions::{PyMemoryError, PyRuntimeError, PyValueError};
@@ -47,10 +51,10 @@ pub enum PhaiosError {
     /// only way to keep §2's no-panics-across-FFI promise here.
     ///
     /// The check cannot be delegated to the allocator: on Linux with the
-    /// default heuristic overcommit, `Vec::try_reserve` succeeded for a
-    /// 111 GiB request on a 60 GiB machine, and the process died later
-    /// under the OOM killer when the kernel wrote to the pages. So the
-    /// limit is an explicit constant — see `crate::alloc`.
+    /// default heuristic overcommit, `Vec::try_reserve_exact` succeeded
+    /// for a 111 GiB request on a 60 GiB machine, and the process died
+    /// later under the OOM killer when the kernel wrote to the pages. So
+    /// the limit is an explicit constant — see `crate::alloc`.
     ///
     /// Maps to Python `MemoryError`, which is what numpy raises for the
     /// same request, rather than `ValueError`: the arguments are

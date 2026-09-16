@@ -3,8 +3,10 @@
 //!
 //! Multiplies every value by `2^stops`. This opens the *look* pipeline —
 //! the geometry kernels (`orient`, `straighten`, `crop`, `resize`) run
-//! before it, on the delivered scene-referred linear f32 data — and it is
-//! the only kernel meaningful on both RGB and luminance input.
+//! before it, on the delivered scene-referred linear f32 data. It is
+//! meaningful on both RGB and luminance input, as are `tone_curve`,
+//! `apply_lut`, `encode_srgb`, `histogram` and the two `quantize`
+//! kernels.
 //!
 //! In linear scene-referred data a stop *is* a factor of two — that is
 //! what makes the operation a single multiply. Applying it after a
@@ -54,7 +56,9 @@ pub(crate) fn validate(stops: f32) -> Result<(), PhaiosError> {
 /// the caller's to spend downstream.
 ///
 /// # Errors
-/// Returns [`PhaiosError::Parameter`] if `stops` is not finite.
+/// - [`PhaiosError::Parameter`] if `stops` is not finite.
+/// - [`PhaiosError::Allocation`] if the output exceeds the backend's
+///   single-allocation limit.
 #[must_use = "kernel returns a new array; ignoring it wastes work"]
 pub fn exposure(img: ArrayView3<f32>, stops: f32) -> Result<Array3<f32>, PhaiosError> {
     validate(stops)?;

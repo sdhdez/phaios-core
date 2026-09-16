@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The element-wise finishing kernels: `encode_srgb`, `tone_curve`,
-//! `vignette`, `highlight_rolloff`, `shadow_rolloff`, and the
-//! (H, W, 3) → (H, W, 1) `luminance_bw`.
+//! `vignette`, `highlight_rolloff`, `shadow_rolloff`, and the three
+//! (H, W, 3) → (H, W, 1) B&W conversions `luminance_bw`,
+//! `channel_mixer_bw` and `color_filter_bw`.
 //!
 //! With FMA contraction disabled at PTX compile time (`-fmad=false` in
 //! build.rs) and every operation involved correctly rounded (mul, add,

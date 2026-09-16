@@ -3,8 +3,13 @@
 //! 24 MP (4323 × 5765) f32 image as `benches/kernels.rs`.
 //!
 //! Ids are the CPU ids under a `gpu/` prefix, so `cargo bench` reports
-//! `exposure/24MP/+1EV` and `gpu/exposure/24MP/+1EV` side by side and a
-//! reader can divide one by the other.
+//! `exposure/24MP/+1EV` and `gpu/exposure/24MP/+1EV` side by side.
+//!
+//! The pairing is by id, not by identical arguments. `channel_mixer_bw`,
+//! `hsl_bw`, `tone_curve`, `vignette`, `split_toning`, `film_grain`,
+//! `glow` and `quantize` run different parameters on the two sides. None
+//! of those change the work done, but the two rows are not literally the
+//! same call, so a ratio between them is an estimate.
 //!
 //! **Measuring an asynchronous backend.** Kernel launches return before
 //! the work is done, so a naive timer measures the launch queue. Each

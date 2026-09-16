@@ -8,6 +8,51 @@
 //!
 //! The Python extension module is named `phaios_core`; import it with
 //! `import phaios_core`.
+//!
+//! # Pipeline order
+//!
+//! ```text
+//! orient -> hot_pixels -> denoise -> straighten -> crop -> resize
+//! -> exposure -> B&W conversion -> zone_system -> blur -> glow
+//! -> local_contrast -> sharpen -> shadow_rolloff -> tone_curve
+//! -> film_grain -> split_toning -> vignette -> highlight_rolloff
+//! -> encode_srgb -> quantize_u8 | quantize_u16
+//! ```
+//!
+//! The channel count is 3 from the input to the B&W stage, 1 from there
+//! through [`split_toning`], and 3 again after it. Every stage from
+//! [`vignette`] onward accepts any channel count, so a pipeline that
+//! skips split-toning stays at 1 and still runs. `hot_pixels`,
+//! `denoise`, `blur`, `glow` and `sharpen` are optional.
+//! [`lut::apply_lut`] may run at any point after the B&W stage, and
+//! [`histogram`] is a reduction rather than a stage.
+//!
+//! # Kernel index
+//!
+//! | Module | Kernels |
+//! |---|---|
+//! | [`geometry`] | `orient`, `straighten`, `crop`, `resize` |
+//! | [`hot_pixels`] | `hot_pixels` |
+//! | [`denoise`] | `denoise` |
+//! | [`exposure`] | `exposure` |
+//! | [`bw`] | `luminance_bw`, `channel_mixer_bw`, `color_filter_bw`, `hsl_bw` |
+//! | [`tone`] | `zone_system`, `tone_curve` |
+//! | [`blur`] | `blur` |
+//! | [`glow`] | `glow` |
+//! | [`local_contrast`] | `local_contrast` |
+//! | [`sharpen`] | `sharpen` |
+//! | [`shadow_rolloff`] | `shadow_rolloff` |
+//! | [`film_grain`] | `film_grain` |
+//! | [`split_toning`] | `split_toning` |
+//! | [`vignette`] | `vignette` |
+//! | [`highlight_rolloff`] | `highlight_rolloff` |
+//! | [`encode`] | `encode_srgb` |
+//! | [`lut`] | `apply_lut` |
+//! | [`histogram`] | `histogram` |
+//! | [`quantize`] | `quantize_u8`, `quantize_u16` |
+//!
+//! Each has a CUDA twin in `cuda::kernels`, behind the `cuda` feature.
+//! The CPU implementation is the specification.
 
 use numpy::{IntoPyArray, PyArray3, PyReadonlyArray3};
 use pyo3::prelude::*;
@@ -44,9 +89,9 @@ mod gpu_py;
 
 /// Apply exposure compensation in EV stops.
 ///
-/// Computes ``out = img * 2**stops``. This is the first pipeline stage:
-/// it operates on linear scene-referred data, where a stop is by
-/// definition a factor of two.
+/// Computes ``out = img * 2**stops``. This is the first tonal stage,
+/// after geometry, ``hot_pixels`` and ``denoise``. It operates on linear
+/// scene-referred data, where a stop is by definition a factor of two.
 ///
 /// Values are not clamped — highlights pushed above 1.0 stay there so
 /// later tone stages can recover them.
@@ -69,6 +114,8 @@ mod gpu_py;
 /// ------
 /// ValueError
 ///     If ``stops`` is not finite.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 #[pyo3(name = "exposure")]
 pub fn exposure_py(
@@ -109,6 +156,8 @@ pub fn exposure_py(
 /// ------
 /// ValueError
 ///     If the rectangle exceeds the frame.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 pub fn crop(
     py: Python<'_>,
@@ -142,6 +191,11 @@ pub fn crop(
 /// numpy.ndarray
 ///     Shape ``(H, W, C)`` or ``(W, H, C)``, dtype ``float32``,
 ///     C-contiguous.
+///
+/// Raises
+/// ------
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 pub fn orient(
     py: Python<'_>,
@@ -262,10 +316,11 @@ pub fn denoise_fn(
 
 /// Resample to a new size with a separable polynomial filter.
 ///
-/// ``ResizeFilter.Area`` computes exact fractional pixel coverage — the
-/// correct choice for downscaling; ``ResizeFilter.CatmullRom`` (Keys
-/// 1981) is the photographic default for upscaling. Bit-exact across
-/// backends. A same-size resize is the exact identity.
+/// ``ResizeFilter.Area`` computes exact fractional pixel coverage, the
+/// correct choice for downscaling. ``ResizeFilter.CatmullRom`` (Keys
+/// 1981) is the photographic default for upscaling.
+/// ``ResizeFilter.Bilinear`` is the cheap linear alternative. Bit-exact
+/// across backends. A same-size resize is the exact identity.
 ///
 /// Parameters
 /// ----------
@@ -283,6 +338,8 @@ pub fn denoise_fn(
 /// ------
 /// ValueError
 ///     If a target dimension is zero or the input is empty.
+/// MemoryError
+///     If the intermediates exceed the single-allocation limit.
 #[pyfunction]
 pub fn resize(
     py: Python<'_>,
@@ -320,6 +377,8 @@ pub fn resize(
 /// ValueError
 ///     If the angle is not finite, exceeds ±45°, or leaves no whole
 ///     pixel inscribed.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 pub fn straighten(
     py: Python<'_>,
@@ -353,6 +412,8 @@ pub fn straighten(
 /// ------
 /// ValueError
 ///     If ``img`` is not shape ``(H, W, 3)``.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 #[pyo3(signature = (img, standard = bw::LuminanceStandard::Bt709))]
 pub fn luminance_bw(
@@ -384,6 +445,8 @@ pub fn luminance_bw(
 /// ------
 /// ValueError
 ///     If ``img`` is not shape ``(H, W, 3)``.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 pub fn channel_mixer_bw(
     py: Python<'_>,
@@ -420,6 +483,8 @@ pub fn channel_mixer_bw(
 /// ------
 /// ValueError
 ///     If ``img`` is not shape ``(H, W, 3)``.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 #[pyo3(signature = (img, filter = bw::ColorFilter::NoFilter, standard = bw::LuminanceStandard::Bt709))]
 pub fn color_filter_bw(
@@ -461,6 +526,8 @@ pub fn color_filter_bw(
 /// ValueError
 ///     If ``img`` is not shape ``(H, W, 3)``, if ``sigma_deg`` is not
 ///     finite and positive, or if any weight is not finite.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 pub fn hsl_bw(
     py: Python<'_>,
@@ -494,7 +561,10 @@ pub fn hsl_bw(
 /// Raises
 /// ------
 /// ValueError
-///     If ``img`` is not shape ``(H, W, 1)``.
+///     If ``img`` is not shape ``(H, W, 1)``, if a zone index is outside
+///     0..=10, or if an offset is not finite.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 pub fn zone_system(
     py: Python<'_>,
@@ -534,6 +604,8 @@ pub fn zone_system(
 /// ------
 /// ValueError
 ///     If any parameter is not finite, or ``power`` is not positive.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 pub fn tone_curve(
     py: Python<'_>,
@@ -585,8 +657,10 @@ pub fn tone_curve(
 /// ValueError
 ///     If ``knee`` is outside 0..=1, or ``white_point`` is not finite or
 ///     is below 1.0.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 // Renamed to avoid clashing with the `highlight_rolloff` module; the
-// Python name is restored by the attribute (CLAUDE.md §4).
+// Python name is restored by the attribute.
 #[pyfunction]
 #[pyo3(name = "highlight_rolloff")]
 pub fn highlight_rolloff_fn(
@@ -630,6 +704,11 @@ pub fn highlight_rolloff_fn(
 /// -------
 /// numpy.ndarray
 ///     Shape ``(H, W, C)``, dtype ``uint8``, C-contiguous.
+///
+/// Raises
+/// ------
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 #[pyo3(signature = (img, params = None))]
 pub fn quantize_u8(
@@ -664,6 +743,11 @@ pub fn quantize_u8(
 /// -------
 /// numpy.ndarray
 ///     Shape ``(H, W, C)``, dtype ``uint16``, C-contiguous.
+///
+/// Raises
+/// ------
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 #[pyo3(signature = (img, params = None))]
 pub fn quantize_u16(
@@ -770,6 +854,8 @@ pub fn histogram_fn(
 ///     If the table has fewer than 2 entries or a non-finite value, or
 ///     the domain is not finite with ``max > min`` or spans more than
 ///     float32 can represent.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 #[pyo3(signature = (img, lut, params = None))]
 pub fn apply_lut(
@@ -807,7 +893,9 @@ pub fn apply_lut(
 /// exact identity.
 ///
 /// Order-sensitive: apply at the start of the tone stages, on linear
-/// scene-referred data, before the contrast is set.
+/// scene-referred data, before the contrast is set. In the canonical
+/// order it runs before ``tone_curve``, ``film_grain`` and
+/// ``split_toning``.
 ///
 /// Parameters
 /// ----------
@@ -826,6 +914,8 @@ pub fn apply_lut(
 /// ------
 /// ValueError
 ///     If ``knee`` or ``strength`` is outside 0..=1, or is not finite.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 #[pyo3(name = "shadow_rolloff", signature = (img, params = None))]
 pub fn shadow_rolloff_fn(
@@ -848,9 +938,9 @@ pub fn shadow_rolloff_fn(
 /// image is preserved everywhere including its edges — and an impulse
 /// near an edge loses the tail that falls outside.
 ///
-/// Below sigma 4 this is a direct separable convolution; at or above it,
-/// three box passes whose variances sum to sigma-squared, which costs
-/// the same at any radius.
+/// Below sigma 6 this is a direct separable convolution; at or
+/// above it, three box passes whose variances sum to sigma-squared,
+/// which costs the same at any radius.
 ///
 /// The result is in **pixels of the image as given**, so a blur on a
 /// half-size preview is not the same picture as the same sigma on the
@@ -1033,7 +1123,10 @@ pub fn glow_fn(
 /// Raises
 /// ------
 /// ValueError
-///     If ``img`` is not shape ``(H, W, 1)``.
+///     If ``img`` is not shape ``(H, W, 1)``, if ``eps`` is negative or
+///     not finite, or if ``strength`` is not finite.
+/// MemoryError
+///     If the intermediates exceed the single-allocation limit.
 #[pyfunction]
 #[pyo3(name = "local_contrast")]
 pub fn local_contrast_py(
@@ -1078,6 +1171,8 @@ pub fn local_contrast_py(
 /// ValueError
 ///     If ``img`` is not shape ``(H, W, 1)``, if ``intensity`` is
 ///     negative or non-finite, or if ``size_pixels`` is not positive.
+/// MemoryError
+///     If the intermediates exceed the single-allocation limit.
 #[pyfunction]
 #[pyo3(name = "film_grain")]
 pub fn film_grain_py(
@@ -1097,8 +1192,9 @@ pub fn film_grain_py(
 ///
 /// **Changes the shape of the data**: takes ``(H, W, 1)`` monochrome
 /// luminance and returns ``(H, W, 3)`` linear sRGB. It is the only
-/// kernel that adds channels, which is why ``vignette``, ``tone_curve``
-/// and ``encode_srgb`` all accept any channel count.
+/// kernel that adds channels, which is why ``shadow_rolloff``,
+/// ``tone_curve``, ``vignette``, ``highlight_rolloff``, ``encode_srgb``
+/// and the two ``quantize`` kernels all accept any channel count.
 ///
 /// Works in OKLab (Ottosson 2020), so the tint adds chroma without
 /// moving the lightness that the tone stages established. Only the
@@ -1124,6 +1220,8 @@ pub fn film_grain_py(
 ///     If ``img`` is not shape ``(H, W, 1)``, if ``pivot`` is outside
 ///     0..=1, if ``balance`` is outside -1..=1, or if a tint component
 ///     is not finite.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 #[pyo3(name = "split_toning")]
 pub fn split_toning_py(
@@ -1143,8 +1241,10 @@ pub fn split_toning_py(
 ///
 /// Scales each pixel by ``1 - amount * falloff(distance)``, where the
 /// distance is measured in normalised frame coordinates: the centre is
-/// 0 and the corners are 1. Positive ``amount`` darkens the corners,
-/// negative lightens them; the result is clamped at zero.
+/// 0 and the frame edges are 1. Coordinates are pixel centres, so the
+/// largest distance any pixel reaches is just under 1. Positive
+/// ``amount`` darkens the corners, negative lightens them; the result
+/// is clamped at zero.
 ///
 /// Because the coordinates are normalised, the result is
 /// resolution-independent — a preview and the full-size frame get the
@@ -1169,6 +1269,8 @@ pub fn split_toning_py(
 /// ValueError
 ///     If any parameter is not finite, or if ``feather`` or
 ///     ``roundness`` is outside 0..=1.
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 #[pyo3(name = "vignette")]
 pub fn vignette_py(
@@ -1186,9 +1288,10 @@ pub fn vignette_py(
 
 /// Apply the IEC 61966-2-1 sRGB transfer encoding.
 ///
-/// This is always the last kernel in the pipeline. Converts scene-referred
-/// linear f32 values to display-referred sRGB. Values are not clamped —
-/// caller should clamp to [0, 1] beforehand if required.
+/// This is the last kernel operating on linear data, and the only one
+/// producing display-referred output. Only ``quantize_u8`` or
+/// ``quantize_u16`` may follow it. Values are not clamped; the caller
+/// should clamp to [0, 1] beforehand if required.
 ///
 /// Parameters
 /// ----------
@@ -1201,6 +1304,11 @@ pub fn vignette_py(
 /// -------
 /// numpy.ndarray
 ///     Shape ``(H, W, C)``, dtype ``float32``, display-referred sRGB.
+///
+/// Raises
+/// ------
+/// MemoryError
+///     If the output exceeds the single-allocation limit.
 #[pyfunction]
 pub fn encode_srgb(py: Python<'_>, img: PyReadonlyArray3<f32>) -> PyResult<Py<PyArray3<f32>>> {
     let view = img.as_array();
@@ -1212,8 +1320,10 @@ pub fn encode_srgb(py: Python<'_>, img: PyReadonlyArray3<f32>) -> PyResult<Py<Py
 
 /// The `phaios_core` Python extension module.
 ///
-/// Exposes the numerical kernels as Python-callable functions. All
-/// arrays are `numpy.float32`, C-contiguous, shape `(H, W, C)`.
+/// Exposes the numerical kernels as Python-callable functions. Image
+/// arrays are `numpy.float32`, C-contiguous, shape `(H, W, C)`;
+/// `quantize_u8` and `quantize_u16` return `uint8` and `uint16`, and
+/// `apply_lut` takes a 1-D `float32` table.
 #[pymodule]
 fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // The version this extension was compiled from, so a consumer can

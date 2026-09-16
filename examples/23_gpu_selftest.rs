@@ -14,7 +14,7 @@
 //!
 //! Every `*_device` entry point in [`phaios_core::cuda::kernels`] gets
 //! exactly one row, checked against the CPU function that is its
-//! specification (CLAUDE.md §2: the CPU implementation is the
+//! specification (`docs/ffi.md` §6: the CPU implementation is the
 //! specification, never the other way round). The device-resident form
 //! is the one exercised — upload once, run `*_device`, download —
 //! because that is the path a real pipeline takes and the path where a
@@ -60,8 +60,10 @@ struct Bound {
     label: &'static str,
 }
 
-/// §6: the bound for kernels whose transcendental content is a single
-/// `powf`, `expf` or `cbrtf`.
+/// §6: the bound for kernels whose transcendental content is a small
+/// fixed number of `powf`, `expf`, `log2f` or `cbrtf` calls per pixel.
+/// `hsl_bw` makes eight and `zone_system` thirteen; both sit in this
+/// class.
 const ONE_TRANSCENDENTAL: Bound = Bound {
     rtol: 1e-5,
     atol: 1e-7,
@@ -152,7 +154,7 @@ const EXTRA_NOTES: &[(&str, &str)] = &[
 ///
 /// The one deliberate difference from the test helper: a shape mismatch
 /// returns infinity instead of panicking. A self-test whose job is to
-/// print 24 rows must not lose 23 of them to the first broken kernel.
+/// print 27 rows must not lose 26 of them to the first broken kernel.
 /// Infinity preserves the property that matters — a shape mismatch can
 /// never read as agreement.
 fn worst_violation(a: &Array3<f32>, b: &Array3<f32>, rtol: f32, atol: f32) -> f32 {
@@ -369,7 +371,10 @@ fn run(
     check.finish(kernel, promise)
 }
 
-// ── the checks, in pipeline order (CLAUDE.md §3) ─────────────────────────────
+// ── the checks, roughly in pipeline order ───────────────────────────────────
+// Geometry and restoration first, then the tonal stages; the optional
+// and analysis kernels (blur, glow, sharpen, quantize, histogram,
+// apply_lut) come last so the table ends with the terminal ones.
 
 #[allow(clippy::too_many_lines)]
 fn check_all(ctx: &cuda::Context) -> Vec<Row> {

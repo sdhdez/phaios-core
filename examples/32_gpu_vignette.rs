@@ -79,7 +79,7 @@ fn main() {
     let dev_bw = k::luminance_bw_device(&dev_rgb, LuminanceStandard::Bt709).unwrap();
 
     // The CPU side of the comparison, from the same chart. This is the
-    // specification (CLAUDE.md §2), not a second opinion.
+    // specification (`docs/ffi.md` §6), not a second opinion.
     let bw = phaios_core::bw::luminance_bw(rgb.view(), LuminanceStandard::Bt709).unwrap();
 
     let configs: [(&str, VignetteParams); 5] = [
