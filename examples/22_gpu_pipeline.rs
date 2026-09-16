@@ -9,19 +9,21 @@
 //! This example runs the whole v0.2 chain the other way — one
 //! [`Context::upload`], eleven `*_device` kernels whose inputs and
 //! outputs never leave the card, one [`Context::download`] — in the
-//! this order:
+//! canonical order:
 //!
 //! ```text
-//! exposure → luminance_bw → zone_system → local_contrast → film_grain
-//!   → split_toning → vignette → shadow_rolloff → tone_curve
-//!   → highlight_rolloff → encode_srgb
+//! exposure → luminance_bw → zone_system → local_contrast
+//!   → shadow_rolloff → tone_curve → film_grain → split_toning
+//!   → vignette → highlight_rolloff → encode_srgb
 //! ```
 //!
-//! That is not the canonical pipeline order, which puts
-//! `shadow_rolloff` and `tone_curve` before `film_grain` and
-//! `split_toning`. What this example demonstrates is residency, and the
-//! drift table below is read the same way whichever order the eleven
-//! stages run in.
+//! That is the canonical pipeline order of `docs/kernels.md`, with the
+//! stages this example does not exercise left out: the geometry group
+//! (`orient`, `straighten`, `crop`, `resize`), the optional stages
+//! (`hot_pixels`, `denoise`, `blur`, `glow`, `sharpen`) and the terminal
+//! `quantize_u8` / `quantize_u16`. What this example demonstrates is
+//! residency; the drift table below is read the same way whichever
+//! subset of the chain runs.
 //!
 //! The same eleven stages are then written out twice more — once on the
 //! CPU, once as per-call offload — because the whole point is the
@@ -58,8 +60,8 @@
 //!   where they match to the bit. It is where the drift lives, and it
 //!   follows the grain and the patch edges rather than being uniform.
 //! - **The transfer economics.** At 24 MP the resident chain moves six
-//!   floats per pixel across the bus and the offload chain fifty — the
-//!   same arithmetic, eight times the traffic and eleven times the
+//!   floats per pixel across the bus and the offload chain forty-two —
+//!   the same arithmetic, seven times the traffic and eleven times the
 //!   synchronisation. The timings below are measured, not modelled.
 //!
 //! `22_pipeline_gpu.ppm` and `22_pipeline_cpu.ppm` are the two results.
@@ -94,11 +96,11 @@ const STAGES: [&str; 11] = [
     "luminance_bw",
     "zone_system",
     "local_contrast",
+    "shadow_rolloff",
+    "tone_curve",
     "film_grain",
     "split_toning",
     "vignette",
-    "shadow_rolloff",
-    "tone_curve",
     "highlight_rolloff",
     "encode_srgb",
 ];
@@ -171,15 +173,15 @@ fn cpu_chain(
     tap(2, &a);
     a = phaios_core::local_contrast::local_contrast(a.view(), &g.guided, g.strength).unwrap();
     tap(3, &a);
-    a = phaios_core::film_grain::film_grain(a.view(), &g.grain).unwrap();
-    tap(4, &a);
-    a = phaios_core::split_toning::split_toning(a.view(), &g.toning).unwrap();
-    tap(5, &a);
-    a = phaios_core::vignette::vignette(a.view(), &g.vignette).unwrap();
-    tap(6, &a);
     a = phaios_core::shadow_rolloff::shadow_rolloff(a.view(), &g.toe).unwrap();
-    tap(7, &a);
+    tap(4, &a);
     a = phaios_core::tone::tone_curve(a.view(), &g.curve).unwrap();
+    tap(5, &a);
+    a = phaios_core::film_grain::film_grain(a.view(), &g.grain).unwrap();
+    tap(6, &a);
+    a = phaios_core::split_toning::split_toning(a.view(), &g.toning).unwrap();
+    tap(7, &a);
+    a = phaios_core::vignette::vignette(a.view(), &g.vignette).unwrap();
     tap(8, &a);
     a = phaios_core::highlight_rolloff::highlight_rolloff(a.view(), &g.shoulder).unwrap();
     tap(9, &a);
@@ -211,15 +213,15 @@ fn gpu_chain(
     tap(2, &a);
     a = k::local_contrast_device(&a, &g.guided, g.strength).unwrap();
     tap(3, &a);
-    a = k::film_grain_device(&a, &g.grain).unwrap();
-    tap(4, &a);
-    a = k::split_toning_device(&a, &g.toning).unwrap();
-    tap(5, &a);
-    a = k::vignette_device(&a, &g.vignette).unwrap();
-    tap(6, &a);
     a = k::shadow_rolloff_device(&a, &g.toe).unwrap();
-    tap(7, &a);
+    tap(4, &a);
     a = k::tone_curve_device(&a, &g.curve).unwrap();
+    tap(5, &a);
+    a = k::film_grain_device(&a, &g.grain).unwrap();
+    tap(6, &a);
+    a = k::split_toning_device(&a, &g.toning).unwrap();
+    tap(7, &a);
+    a = k::vignette_device(&a, &g.vignette).unwrap();
     tap(8, &a);
     a = k::highlight_rolloff_device(&a, &g.shoulder).unwrap();
     tap(9, &a);
@@ -236,11 +238,11 @@ fn gpu_offload_chain(ctx: &Context, img: ArrayView3<f32>, g: &Grade) -> Array3<f
     a = k::luminance_bw(ctx, a.view(), g.standard).unwrap();
     a = k::zone_system(ctx, a.view(), &g.zones).unwrap();
     a = k::local_contrast(ctx, a.view(), &g.guided, g.strength).unwrap();
+    a = k::shadow_rolloff(ctx, a.view(), &g.toe).unwrap();
+    a = k::tone_curve(ctx, a.view(), &g.curve).unwrap();
     a = k::film_grain(ctx, a.view(), &g.grain).unwrap();
     a = k::split_toning(ctx, a.view(), &g.toning).unwrap();
     a = k::vignette(ctx, a.view(), &g.vignette).unwrap();
-    a = k::shadow_rolloff(ctx, a.view(), &g.toe).unwrap();
-    a = k::tone_curve(ctx, a.view(), &g.curve).unwrap();
     a = k::highlight_rolloff(ctx, a.view(), &g.shoulder).unwrap();
     k::encode_srgb(ctx, a.view()).unwrap()
 }
