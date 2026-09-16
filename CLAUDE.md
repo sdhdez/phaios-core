@@ -98,14 +98,18 @@ implementing.
 ## 3. Pipeline order
 
 Geometry (`orient` → `straighten` → `crop` → `resize`) → `exposure` →
-B&W conversion → `zone_system` → `local_contrast` → `film_grain` →
-`split_toning` → `vignette` → `shadow_rolloff` → `tone_curve` →
+B&W conversion → `zone_system` → `local_contrast` → `shadow_rolloff` →
+`tone_curve` → `film_grain` → `split_toning` → `vignette` →
 `highlight_rolloff` → `encode_srgb` → `quantize`.
 
-The channel count collapses to 1 at the B&W stage and returns to 3 at
-split-toning; kernels after that accept any channel count, so a pipeline
-need not branch on whether toning is enabled. Order matters — document
-any kernel with order sensitivity in its doc comment.
+Grain and vignette come after the tone stages: a curve applied
+afterwards would reshape the grain off the midtones and act on already
+darkened corners. The optional stages (`hot_pixels`, `denoise`, `blur`,
+`glow`, `sharpen`) sit where their doc comments say. The channel count
+collapses to 1 at the B&W stage and returns to 3 at split-toning;
+kernels after that accept any channel count, so a pipeline need not
+branch on whether toning is enabled. Order matters — document any
+kernel with order sensitivity in its doc comment.
 
 ## 4. PyO3 0.29 traps
 
