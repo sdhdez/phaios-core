@@ -15,6 +15,11 @@
 //!   the profile departs by a few parts in ten thousand of the impulse's
 //!   total energy, less as σ grows — invisible in a picture, and the
 //!   price of a cost that no longer grows with radius.
+//! - The realised σ column: the standard deviation read off the response
+//!   itself, with its error against the request. The direct path lands a
+//!   hair under (−0.03 %) because it truncates the kernel at 4σ. The box
+//!   path is promised within 1 % of the request above the crossover; it
+//!   lands at +0.92 % at σ = 6 and on the request at 12 and 24.
 //! - The peak column. It is the impulse's centre sample, which falls as
 //!   σ rises because the same unit of light is spread over more pixels.
 //!   Read it beside the deviation column: a peak that matched a true
@@ -53,8 +58,8 @@ fn main() {
     // ── What the kernel is actually doing ────────────────────────────
     println!("\nimpulse response, measured against a true Gaussian:");
     println!(
-        "{:>7} {:>8} {:>12} {:>14} {:>10}",
-        "sigma", "path", "peak", "max deviation", "energy"
+        "{:>7} {:>8} {:>9} {:>8} {:>12} {:>14} {:>10}",
+        "sigma", "path", "realised", "rel err", "peak", "max deviation", "energy"
     );
     for sigma in [1.0_f32, 3.0, 5.9, 6.0, 12.0, 24.0] {
         // A frame comfortably wider than the kernel, so nothing leaks.
@@ -81,9 +86,24 @@ fn main() {
             .map(|(y, x)| (f64::from(out[[y, x, 0]]) - ref_img[y * n + x] / total).abs())
             .fold(0.0_f64, f64::max);
         let energy: f32 = out.iter().sum();
+        // The realised sigma, read off the response itself: the square
+        // root of its distance-weighted second moment along one axis.
+        // This is how the crate's own tests define it, and it needs
+        // nothing but the output.
+        let (mut mass, mut second_moment) = (0.0_f64, 0.0_f64);
+        for y in 0..n {
+            for x in 0..n {
+                let h = f64::from(out[[y, x, 0]]);
+                let dx = x as f64 - (n / 2) as f64;
+                mass += h;
+                second_moment += h * dx * dx;
+            }
+        }
+        let realised = (second_moment / mass).sqrt();
+        let rel_err = 100.0 * (realised - f64::from(sigma)) / f64::from(sigma);
         let path = if sigma < 6.0 { "direct" } else { "box" };
         println!(
-            "{sigma:>7.1} {path:>8} {:>12.6} {deviation:>14.2e} {energy:>10.5}",
+            "{sigma:>7.1} {path:>8} {realised:>9.4} {rel_err:>+7.2}% {:>12.6} {deviation:>14.2e} {energy:>10.5}",
             out[[n / 2, n / 2, 0]]
         );
     }

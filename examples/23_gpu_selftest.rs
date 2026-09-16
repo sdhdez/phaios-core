@@ -977,10 +977,10 @@ fn driver_version() -> String {
 
 fn print_table(rows: &[Row]) {
     println!(
-        "{:<20} {:>5}  {:<9}  {:>9}  {:>9}  result",
-        "kernel", "cases", "promise", "bit-exact", "worst*bnd"
+        "{:<20} {:>5}  {:<9}  {:>9}  {:>9}  {:>9}  result",
+        "kernel", "cases", "promise", "bit-exact", "worst*bnd", "elements"
     );
-    println!("{}", "-".repeat(68));
+    println!("{}", "-".repeat(79));
     for row in rows {
         let worst = match row.worst {
             None => "-".to_string(),
@@ -988,16 +988,17 @@ fn print_table(rows: &[Row]) {
             Some(v) => format!("{v:.3}"),
         };
         println!(
-            "{:<20} {:>5}  {:<9}  {:>9}  {:>9}  {}",
+            "{:<20} {:>5}  {:<9}  {:>9}  {:>9}  {:>9}  {}",
             row.kernel,
             row.cases,
             row.promise,
             if row.bit_exact { "yes" } else { "no" },
             worst,
+            row.compared,
             if row.pass { "PASS" } else { "FAIL" }
         );
     }
-    println!("{}", "-".repeat(68));
+    println!("{}", "-".repeat(79));
 }
 
 fn main() -> ExitCode {
