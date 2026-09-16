@@ -155,11 +155,13 @@ Build with `--features cuda` and the module gains a `phaios_core.gpu`
 submodule. Upload once, chain on the device, download once:
 
 ```python
-import phaios_core as ph
+import numpy as np
 from phaios_core import gpu
 
+frame = np.random.rand(1080, 1920, 3).astype(np.float32)
+
 ctx = gpu.GpuContext(0)        # explicit: no global device state
-img = ctx.upload(array)        # one PCIe transfer
+img = ctx.upload(frame)        # one PCIe transfer
 img = gpu.exposure(img, 0.5)   # chained on-device, no round trips
 img = gpu.luminance_bw(img)
 out = img.download()           # one PCIe transfer back
