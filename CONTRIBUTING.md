@@ -1,14 +1,17 @@
 # Contributing to phaios-core
 
-Setting up a development environment is covered by **Quick start** in
-`README.md`. This file is the process around a change: conventions, what
-a complete kernel looks like, and the rules for dependencies.
+Setting up a development environment is covered by **Build from
+source** in `README.md`. This file is the process around a change:
+conventions, what a complete kernel looks like, the rules for
+dependencies, and how a release is cut.
 
-The design rationale — why a kernel works the way it does, with citations
-— lives in `docs/architecture.md`. The FFI contract, including the
-per-kernel agreement classes between the CPU and CUDA backends, is
-`docs/ffi.md`. What a finished image must look like in a file is
-`docs/export.md`.
+The other documents: [docs/kernels.md](docs/kernels.md) says what each
+kernel does to the image, [docs/architecture.md](docs/architecture.md)
+why it works that way, with citations,
+[docs/ffi.md](docs/ffi.md) the Python/Rust boundary contract,
+[docs/gpu.md](docs/gpu.md) the CUDA backend, and
+[docs/export.md](docs/export.md) what a finished image must be in a
+file.
 
 ## Code conventions
 
@@ -26,7 +29,7 @@ per-kernel agreement classes between the CPU and CUDA backends, is
   only the library, so warnings in examples, benches and tests go unseen
   until CI.
 
-## What a complete kernel looks like (the seven-item checklist)
+## What a complete kernel looks like (the eight-item checklist)
 
 One commit containing all of:
 
@@ -42,6 +45,8 @@ One commit containing all of:
    and, if the kernel has a GPU path, one in `benches/gpu.rs` too, using
    the same channel count so the two ids can be divided.
 7. A section in `docs/architecture.md` with the citation.
+8. A section in `docs/kernels.md`: shape contract, visible effect, every
+   parameter with its identity value, order constraints, backend class.
 
 ### Writing the property test
 
@@ -49,7 +54,7 @@ Prefer properties that fail loudly when the maths is wrong: band
 ordering, exposure invariance, round-trip identity, a signed rather than
 an absolute comparison.
 
-Two failure modes worth naming, because both have shipped here:
+Two failure modes to avoid:
 
 - A test that only checks the output shape passes just as happily on a
   kernel that returns its input.
@@ -60,7 +65,7 @@ Two failure modes worth naming, because both have shipped here:
 
 When strengthening a weak test, break the code deliberately and confirm
 the new test fails. Check the mutation is *live* first: one that leaves
-output unchanged proves nothing, and has fooled us more than once.
+the output unchanged proves nothing.
 
 `tests/properties.rs` is the other half of this: property tests over a
 kernel's *validation* contract — the shared `validate*` function every
@@ -153,6 +158,23 @@ Core dependencies, not to be exceeded without justification: `pyo3`,
 `numpy`, `ndarray`, `rayon`, `thiserror`, plus `cudarc` behind
 `--features cuda`.
 
+Every dependency that links into the library is permissively licensed
+and GPLv3-compatible. Of the 36 such crates (build and runtime,
+excluding dev-only tooling), 32 are `MIT OR Apache-2.0` in some
+spelling and four are not:
+
+| Crate | Licence | Reached via |
+|---|---|---|
+| `numpy` | BSD-2-Clause | direct dependency |
+| `libloading` | ISC | `cudarc`, only with `--features cuda` |
+| `target-lexicon` | Apache-2.0 WITH LLVM-exception | build graph |
+| `unicode-ident` | (MIT OR Apache-2.0) AND Unicode-3.0 | build graph |
+
+BSD-2-Clause, ISC and the Unicode licence are permissive and impose no
+condition GPLv3 cannot satisfy; the LLVM exception only widens
+Apache-2.0. Regenerate the table with `cargo metadata` after any
+dependency change.
+
 **Dev-only:** `criterion` (statistics-driven micro-benchmarking,
 `benches/`) and `proptest` (strategies and shrinking over the
 `validate*` functions' whole input domain, `tests/properties.rs`) — both
@@ -179,10 +201,50 @@ Two version traps:
 - The crate and the Python wheel always carry the same version, and CI
   enforces the match.
 
-Releasing is documented under **Releasing** in `README.md`, including the
-pre-tag `scripts/gpu-verify.sh` run — nothing in CI builds
-`--features cuda`, so nothing there would notice a CUDA backend that
-fails to compile.
+## Releasing
+
+The crate version in `Cargo.toml` and the wheel version in
+`pyproject.toml` are always identical, and CI enforces the match. Bump
+both, and `Cargo.lock`, in one commit.
+
+Before tagging, verify the CUDA backend on a machine that has a device:
+
+```sh
+./scripts/gpu-verify.sh
+```
+
+Neither `ci.yml` nor `release.yml` builds `--features cuda`, because the
+hosted runner has no `nvcc` and no GPU. Nothing else in the pipeline
+would notice a backend that fails to compile, while `cargo publish`
+ships the source to crates.io regardless. The wheels are built without
+the feature and are unaffected either way.
+
+Then tag:
+
+```sh
+git tag v0.2.0
+git push origin v0.2.0   # triggers release.yml
+```
+
+`.github/workflows/release.yml` fires on any `v*` tag and starts with a
+`verify` job: the tag must match both versions in the tree, and
+`cargo fmt`, `cargo clippy --all-targets`, `cargo test` and the
+no-image-assets guard must pass on the tagged commit. Only then does it
+build wheels for manylinux_2_17, Windows x86_64 and macOS arm64, build
+the sdist, and publish to PyPI and crates.io. Nothing is built until
+`verify` is green, because neither registry lets a version be
+re-uploaded.
+
+One-time setup, already in place for this repository:
+
+- **crates.io**: `CARGO_REGISTRY_TOKEN` in *Settings, Secrets,
+  Actions*. The token needs both `publish-new` and `publish-update`
+  scopes; one missing `publish-update` returns 403 on every version
+  after the first.
+- **PyPI**: OIDC trusted publishing, no stored token. In the PyPI
+  project, *Manage, Publishing, Add a new publisher*, with owner
+  `sdhdez`, repository `phaios-core`, workflow `release.yml`,
+  environment `pypi`.
 
 ## Testing against a GPU
 
@@ -194,11 +256,12 @@ something a contributor with a device does locally:
 ./scripts/gpu-verify.sh
 ```
 
-It runs exactly the targets CI skips, under `PHAIOS_REQUIRE_GPU=1` so a
-green result cannot mean the suite quietly skipped for want of a device,
-and prints a device/driver/version block at the end. Reporting that block
-on an issue is genuinely useful — the project has one card to test on,
-and a second is evidence it cannot generate itself.
+It runs the targets CI skips, under `PHAIOS_REQUIRE_GPU=1` so a green
+result cannot mean the suite quietly skipped for want of a device, and
+prints a device/driver/version block at the end. What it runs, step by
+step, is in [docs/gpu.md](docs/gpu.md#verifying-on-your-gpu). Reporting
+that block on an issue adds a row to the confirmed-device table in
+[docs/gpu.md](docs/gpu.md#confirmed-on-other-gpus).
 
 `examples/23_gpu_selftest.rs` is the same idea at kernel granularity:
 every device entry point against the CPU function that is its

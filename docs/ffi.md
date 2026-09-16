@@ -8,7 +8,9 @@ modifying any `#[pyfunction]` or `#[pyclass]` item.
 
 ## 1. Array layout
 
-All arrays at the FFI boundary obey a single convention:
+All arrays at the FFI boundary obey a single convention. This section is
+the normative contract; [kernels.md](kernels.md) explains, per kernel,
+what the shapes below mean for an image.
 
 | Property | Input | Output |
 |----------|-------|--------|
@@ -19,9 +21,9 @@ All arrays at the FFI boundary obey a single convention:
 | linearity | **scene-referred linear** except after `encode_srgb` | |
 
 **Layout.** Kernels accept whatever numpy hands them and always allocate
-a fresh C-contiguous result. This is not a convenience: `img[::2, ::2]`
-— a downsampled preview — is one of the most ordinary arrays a consumer
-can produce, and two kernels used to panic on it (see §4).
+a fresh C-contiguous result. This is not a convenience: `img[::2, ::2]`,
+a downsampled preview, is one of the most ordinary arrays a consumer can
+produce.
 
 **Channel count.** C = 1 for single-channel (luminance) arrays, C = 3
 for RGB. What each kernel accepts follows from where it sits in the
@@ -29,11 +31,11 @@ pipeline:
 
 | Kernel | In | Out | Notes |
 |---|---|---|---|
-| `crop` | any | same C, smaller H/W | pure index copy; **geometry runs first** |
-| `orient` | any | same C, H/W may swap | pure index permutation; before `crop` |
+| `orient` | any | same C, H/W may swap | pure index permutation; **geometry runs first** |
 | `hot_pixels` | any | same | index-clamped 3×3 conditional median; channels filtered independently; right after `orient` |
 | `denoise` | any | same | guided-filter noise reduction; `C = 3` cross-guided from a shared luminance guide, every other count self-guided per channel; right after `hot_pixels` |
 | `straighten` | any | same C, inscribed H/W | Catmull-Rom resampling; after `orient`, before `crop` |
+| `crop` | any | same C, smaller H/W | pure index copy; after `orient`, so the rectangle is expressed in the upright frame |
 | `resize` | any | same C, target H/W | separable polynomial resampling; last geometry stage or export prep |
 | `exposure` | any | same | a scalar multiply; valid before or after the B&W stage |
 | `luminance_bw` | 3 | 1 | |
@@ -41,21 +43,21 @@ pipeline:
 | `color_filter_bw` | 3 | 1 | |
 | `hsl_bw` | 3 | 1 | needs hue, so it must run before the collapse |
 | `zone_system` | 1 | 1 | |
+| `blur` | any | same | separable Gaussian; channels filtered independently |
+| `glow` | any | same | scattering: halation, diffusion, veiling glare |
 | `local_contrast` | 1 | 1 | |
 | `sharpen` | any | same | threshold-gated Gaussian unsharp mask; channels filtered independently |
+| `shadow_rolloff` | any | same | element-wise; the toe, at the start of the tone stages |
+| `tone_curve` | any | same | element-wise |
 | `film_grain` | 1 | 1 | |
 | `split_toning` | 1 | **3** | the only kernel that adds channels |
 | `vignette` | any | same | one factor per pixel, applied to every channel |
-| `tone_curve` | any | same | element-wise |
-| `blur` | any | same | separable Gaussian; channels filtered independently |
-| `glow` | any | same | scattering: halation, diffusion, veiling glare |
-| `shadow_rolloff` | any | same | element-wise; the toe, at the start of the tone stages |
 | `highlight_rolloff` | any | same | element-wise; the shoulder, last linear stage before `encode_srgb` |
 | `encode_srgb` | any | same | element-wise |
-| `quantize_u8` | any | same, **`uint8`** | terminal; display-referred input |
-| `quantize_u16` | any | same, **`uint16`** | terminal; display-referred input |
 | `apply_lut` | any | same | element-wise through a caller-supplied table |
 | `histogram` | any | **not an image** | a reduction — returns a `Histogram`, see below |
+| `quantize_u8` | any | same, **`uint8`** | terminal; display-referred input |
+| `quantize_u16` | any | same, **`uint16`** | terminal; display-referred input |
 
 A kernel given the wrong channel count raises `ValueError`. The
 nineteen that accept "any" do so for four distinct reasons.
@@ -128,14 +130,15 @@ BaseException`, or anything else. That is strictly worse than the panic
 `broadcast_to` view has an unbounded logical shape backed by as little as
 four bytes, and every kernel sizes its output from that logical shape.
 
-The limit cannot be delegated to the allocator. Measured on Linux with
-the default heuristic overcommit on a 60 GiB machine,
-`Vec::try_reserve_exact` **succeeded** for a 111 GiB request; the process
-died later under the OOM killer when the kernel wrote to the pages. Nor
-can it be derived from free memory: that would make the same call succeed
-or fail depending on ambient machine state, which is exactly what §2's
-purity rule forbids. So it is a constant, and it is documented here
-rather than left to be discovered.
+The limit cannot be delegated to the allocator. Under Linux's default
+heuristic overcommit, `Vec::try_reserve_exact` succeeds for a request far
+larger than the machine's memory, and the process dies under the OOM
+killer later, when the pages are written. Nor can the limit be derived
+from free memory: that would make the same call succeed or fail
+depending on ambient machine state, which is exactly what §2's purity
+rule forbids. So it is a constant, documented here rather than left to
+be discovered. A user-facing summary of what each failure looks like in
+Python is in [kernels.md](kernels.md#errors).
 
 For scale: a 24 MP three-channel `f32` frame is 285 MiB, so the limit is
 about twenty-eight times the crate's benchmark size and allows roughly a
@@ -185,12 +188,12 @@ they are structural rather than incidental:
 
   At or above σ = 6 both backends accumulate the box passes in f64 and
   agree, including on ±∞ — a sliding window subtracts, so an infinity
-  becomes NaN on *both* sides. That path used to accumulate in
-  Kahan-compensated f32 and was not merely divergent on non-finite input:
-  it missed the committed bound by up to 2.8e7× on ordinary linear
-  scene-referred data with a highlight in it, because Kahan's error
-  bound scales with `Σ|xᵢ|`, which a bright sample dominates.
-  `blur_agrees_within_bound_across_the_dynamic_range` pins it.
+  becomes NaN on *both* sides. f64 is required there rather than
+  Kahan-compensated f32: Kahan's error bound scales with `Σ|xᵢ|`, which a
+  bright sample dominates, so a compensated sliding window misses the
+  committed bound on ordinary scene-referred data with a highlight in it
+  (architecture.md §16). `blur_agrees_within_bound_across_the_dynamic_range`
+  pins it.
 - *Element-wise and geometry kernels* stay in agreement anyway. Their
   arithmetic is per-pixel, so a poisoned sample poisons exactly its own
   output on both backends. `non_finite_pixels_agree_across_backends` in
@@ -320,10 +323,11 @@ Every param struct must:
 - Implement `__repr__`.
 - Be registered on the module: `m.add_class::<GuidedFilterParams>()?;`
 
-**Validation belongs in the kernel, not the constructor.** Constructors
-stay infallible so their signatures remain stable (CLAUDE.md §2); the
-kernels already return `Result`, so that is where a zone index outside
-0..=10 or a negative `eps` is rejected.
+**Validation belongs in the kernel, not the constructor.** A `#[new]`
+returning `PyResult` changes the constructor's signature, and a shipped
+signature is frozen until the next major version, so constructors stay
+infallible. The kernels already return `Result`, so that is where a zone
+index outside 0..=10 or a negative `eps` is rejected.
 
 ---
 
@@ -363,12 +367,11 @@ passes straight through a consumer's `except Exception:` handler, so in
 a GUI it does not surface as a failed operation; it kills the worker
 thread.
 
-Two v0.1 kernels called `as_slice().expect("... must be C-contiguous")`
-and so panicked on any strided input. Both now accept any layout. The
-rule this leaves:
+The rules:
 
-- No kernel may panic on anything the caller can pass. Invalid input is
-  a `PhaiosError`, never an `expect`.
+- No kernel may panic on anything the caller can pass, including an
+  unusual array layout. Invalid input is a `PhaiosError`, never an
+  `expect`.
 - `expect` is acceptable only for invariants the kernel itself
   establishes (a freshly allocated array having the shape it was just
   allocated with), and must be documented on the function.
@@ -427,13 +430,11 @@ and target:
   present, and the bounded kernels below inline libdevice code for
   `powf`, `expf`, `log2f` and `cbrtf` whose bodies change between
   toolkits. Two builds of the same commit under different toolkits are
-  therefore two different backends, and until this segment existed they
-  reported the same key — this project moved 13.3 -> 13.4 and driver 610
-  -> 615 with the fingerprint unchanged, and nothing would have noticed
-  a drift, because the conformance suite compares against the CPU with
-  tolerances rather than against a stored golden GPU output. The
-  bit-exact kernels listed below use IEEE operations only and agree
-  across toolkits regardless.
+  two different backends, and without this segment they would report the
+  same key. Nothing else would catch the drift: the conformance suite
+  compares against the CPU with tolerances, not against a stored golden
+  GPU output. The bit-exact kernels listed below use IEEE operations
+  only and agree across toolkits regardless.
 
 **Within one backend**, two calls with the same input, parameters and
 seed produce **bit-identical** output — in the same process, in another
@@ -451,78 +452,53 @@ Windows UCRT, Apple's). Two CPU machines with different libms already
 disagree in the low bits. The CUDA backend adds one more math library
 to that list, not a new category of problem.
 
-What is promised across backends:
+What is promised across backends. The four classes below are summarised
+once, as a table of kernels per class, in
+[gpu.md](gpu.md#agreement-classes); this section is the normative source
+and says why each kernel sits where it does.
 
-- Kernels free of transcendentals are **bit-exact** between CPU and
-  CUDA: `exposure`, `luminance_bw`, `channel_mixer_bw`,
-  `color_filter_bw`, `vignette`, `tone_curve` at `power == 1`, every
-  identity fast path, `film_grain`'s integer hash (asserted over
-  2²⁰ coordinates), the geometry kernels `crop` and `orient` (pure
-  index permutations), `hot_pixels` (a fixed 19-comparator median-of-9
-  sorting network — comparisons and selection only, no arithmetic beyond
-  one subtraction and its comparison against the threshold, both
-  correctly rounded; `f32::min`/`f32::max` and CUDA's `fminf`/`fmaxf`
-  both implement IEEE-754-2008 `minNum`/`maxNum`, so a NaN in the window
-  cannot change *which* operations run on either backend, only the
-  values inside them — confirmed on hardware by
-  `hot_pixels_agrees_bit_for_bit_on_nan_and_inf_input`), the resampling
-  kernels `resize` and
-  `straighten` (polynomial filters; straighten's sin/cos is computed
-  once on the host and shared), and `highlight_rolloff` (a quadratic
-  solve — IEEE-754-2008 §5.4.1 requires `sqrt` to be correctly rounded
-  just as it does the four arithmetic operations, so a curve built from
-  those five alone carries across), `shadow_rolloff` (a cubic in Horner
-  form — multiply, add, subtract and one divide), `apply_lut` (subtract, divide,
-  multiply, truncate and one linear interpolation), `histogram` (whose
-  only float arithmetic is the bin assignment — everything after it is
-  integer counting, and integer addition commutes, so the order in which
-  the device's atomics complete cannot change a total), and
-  `quantize_u8` / `quantize_u16`
-  (exact integer hashing for the dither, and `floor(v + 0.5)` for the
-  rounding — an exact operation composed with a correctly-rounded one,
-  rather than a library rounding routine that host and device could
-  implement differently). This is achievable because the PTX is compiled with
-  `-fmad=false` — Rust does not contract `a*b+c` into FMA, and with the
-  device told the same, every remaining operation is correctly rounded
-  on both sides.
-- Kernels containing transcendentals hold a committed per-kernel bound,
-  asserted against the CPU oracle by `tests/cuda_conformance.rs`:
-  (rtol 1e-5, atol 1e-7) for one-`powf`/`expf`/`cbrtf` kernels,
-  (rtol 1e-4, atol 1e-6) for `local_contrast` (which reformulates the
-  global f64 summed-area tables as separable box filters — dropping the
-  *global prefix sum*, but not the f64: the L and L² partial sums stay
-  f64 because their difference is the variance, and that subtraction
-  cancels. The coefficient sums downstream are Kahan-compensated f32,
-  which is enough because nothing there is squared or subtracted),
-  (rtol 1e-5, atol 1e-7) for `blur`, whose direct path makes the
-  f64-to-Kahan-f32 substitution — sound there because every weight is
-  positive and nothing is subtracted — while its box path keeps f64,
-  a sliding window being a subtraction, (rtol 1e-5, atol 1e-7) for
-  `glow`, which inherits the blur's bound because the blur is the only
-  inexact part of it — the threshold subtraction and the weighted add
-  either side are correctly rounded, and (rtol 1e-5, atol 1e-7) for
-  `sharpen`, for the same reason: its blur is the same shared
-  implementation, and the subtract/gate/combine pointwise kernel that
-  follows it is free of transcendentals, so the blur is the only
-  inexact part of `sharpen` too. (rtol 1e-4, atol 1e-6) for `denoise` —
-  `local_contrast`'s own GUIDED_FILTER class, inherited automatically at
-  `C = 1` since it is bit-for-bit the same device kernel
-  (`local_contrast_device` at `strength = -amount`), and confirmed
-  empirically at `C = 3` for the one new cancelling subtraction
-  cross-guided adds, `cov(I, p_c)`: worst measured ratios 0.0022×
-  (`C = 1`, unit range), 0.0012× (`C = 1`, HDR), 0.0106× (`C = 3`, unit
-  range), 0.0012× (`C = 3`, both the uniform- and partial-channel-bar
-  HDR sweeps, up to the required 1e8 highlight). `radius` is capped at
-  `MAX_RADIUS = 32` on both backends — `denoise` sums each window
-  directly from its own pixels rather than through a summed-area table
-  (docs/architecture.md §22), so cost is linear in `radius` and no
-  larger case is ever asserted. (rtol 1e-3, atol 1e-5) for
-  `film_grain`'s Box–Muller half, whose splitmix64 hash underneath is
-  exact and is asserted over a coordinate grid by `hash_grid`, not by
-  the identity case in `examples/23_gpu_selftest.rs` — that one is a
-  device-to-device copy and never launches the grain kernel.
-  A driver update that regresses accuracy fails the suite rather than
-  being absorbed.
+**Bit-exact between CPU and CUDA.** These kernels contain no
+transcendental. The PTX is compiled with `-fmad=false` and Rust does not
+contract `a*b+c` into an FMA, so every remaining operation is correctly
+rounded on both sides.
+
+| Kernel | Why it is exact |
+|---|---|
+| `exposure`, `luminance_bw`, `channel_mixer_bw`, `color_filter_bw`, `vignette` | multiplies and adds only |
+| `tone_curve` at `power == 1` | the power branch is skipped |
+| every identity fast path | the input is returned or copied |
+| `film_grain`'s integer hash | integer arithmetic, asserted over 2²⁰ coordinates |
+| `crop`, `orient` | pure index permutations, no arithmetic on pixel values |
+| `resize`, `straighten` | polynomial filters; `straighten`'s sin/cos is computed once on the host and shared |
+| `hot_pixels` | a fixed 19-comparator median-of-9 sorting network: comparisons and selection only, plus one subtraction and its comparison against the threshold. `f32::min`/`max` and CUDA's `fminf`/`fmaxf` both implement IEEE-754-2008 `minNum`/`maxNum`, so a NaN in the window cannot change *which* operations run, only the values inside them. Confirmed on hardware by `hot_pixels_agrees_bit_for_bit_on_nan_and_inf_input` |
+| `highlight_rolloff` | a quadratic solve; IEEE-754-2008 §5.4.1 requires `sqrt` to be correctly rounded, as it does the four arithmetic operations |
+| `shadow_rolloff` | a cubic in Horner form: multiply, add, subtract, one divide |
+| `apply_lut` | subtract, divide, multiply, truncate, one linear interpolation |
+| `histogram` | the only float arithmetic is the bin assignment; everything after is integer counting, and integer addition commutes, so the order in which the device's atomics complete cannot change a total |
+| `quantize_u8`, `quantize_u16` | exact integer hashing for the dither, and `floor(v + 0.5)` for the rounding: an exact operation composed with a correctly-rounded one, rather than a library rounding routine host and device could implement differently |
+
+**Bounded, not identical.** Each bound is committed per kernel and
+asserted against the CPU oracle by `tests/cuda_conformance.rs`. A driver
+or toolkit update that regresses accuracy fails the suite rather than
+being absorbed.
+
+| Kernel | rtol | atol | Why |
+|---|---|---|---|
+| `encode_srgb`, `tone_curve` at `power != 1`, `split_toning`, `hsl_bw`, `zone_system` | 1e-5 | 1e-7 | a small fixed number of `powf`/`expf`/`log2f`/`cbrtf` calls per pixel, from two different math libraries |
+| `blur` | 1e-5 | 1e-7 | the direct path substitutes Kahan-compensated f32 for the CPU's f64, sound there because every weight is positive and nothing is subtracted; the box path keeps f64 on both sides, a sliding window being a subtraction |
+| `glow` | 1e-5 | 1e-7 | inherits `blur`'s bound: the threshold subtraction and the weighted add either side are correctly rounded, so the blur is the only inexact part |
+| `sharpen` | 1e-5 | 1e-7 | the same shared blur, and the subtract/gate/combine pass after it is free of transcendentals |
+| `local_contrast` | 1e-4 | 1e-6 | the device reformulates the global f64 summed-area tables as separable box filters. It drops the *global prefix sum*, not the f64: the L and L² partial sums stay f64 because their difference is the variance and that subtraction cancels. The coefficient sums downstream are Kahan-compensated f32, which is enough because nothing there is squared or subtracted |
+| `denoise` | 1e-4 | 1e-6 | `local_contrast`'s class, inherited at `C = 1` because it is bit-for-bit the same device kernel (`local_contrast_device` at `strength = -amount`), and confirmed empirically at `C = 3` for the one new cancelling subtraction cross-guided adds, `cov(I, p_c)` |
+| `film_grain`'s Box–Muller half | 1e-3 | 1e-5 | one `logf`, one `sqrtf` and one `cosf` per sample, the loosest transcendental chain in the crate; the splitmix64 hash underneath is exact and is asserted over a coordinate grid by `hash_grid` |
+
+`denoise`'s worst measured ratios are 0.0022x (`C = 1`, unit range),
+0.0012x (`C = 1`, HDR), 0.0106x (`C = 3`, unit range) and 0.0012x
+(`C = 3`, both HDR sweeps, up to the required 1e8 highlight). Its
+`radius` is capped at `MAX_RADIUS = 32` on both backends, because it
+sums each window directly from its own pixels rather than through a
+summed-area table (architecture.md §22), so cost is linear in `radius`
+and no larger case is ever asserted.
 
 **The backend fingerprint is part of the reproducibility key.** A
 consumer that promises exact reproduction from a settings file must
@@ -565,10 +541,8 @@ reduction over an unordered collection has to be given an order.
 
 `zone_system` shipped in v0.1 summing its Gaussian terms in `HashMap`
 iteration order, which depends on the per-instance `RandomState` seed.
-The result: eight processes given identical input produced eight
-different images — 12.8% of pixels off by 1 ULP, and 23 in 65536
-differing by one code after 16-bit quantisation. Small enough to be
-invisible, large enough to break checksums and reproducible renders.
+Eight processes given identical input produced eight different images:
+invisible, and enough to break every checksum and reproducible render.
 
 So:
 

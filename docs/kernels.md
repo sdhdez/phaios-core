@@ -337,8 +337,8 @@ is the infrared look: foliage goes white, sky goes black.
 
 The weights need not sum to one. Summing above one brightens the result.
 
-See [architecture.md](architecture.md) and
-[examples/02_channel_mixer.rs](../examples/02_channel_mixer.rs).
+See [architecture.md §3a](architecture.md#3a-channel-mixer-bw-method-2)
+and [examples/02_channel_mixer.rs](../examples/02_channel_mixer.rs).
 
 ## color_filter_bw
 

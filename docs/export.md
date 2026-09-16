@@ -148,8 +148,7 @@ Everything above is expressed as constraints on the array a consumer
 receives and on the metadata it must carry, precisely so that the file
 layer is a mechanical translation with no image decisions in it.
 
-Where that file layer should live — in each consumer, in a sibling
-`phaios-io` crate, or behind a feature flag here — is an open question
-recorded in the project notes. This document is deliberately written to
-outlast that decision: it constrains the output regardless of who
-writes the bytes.
+Where that file layer should live, in each consumer, in a sibling
+`phaios-io` crate, or behind a feature flag here, is an open question.
+This document is written to outlast that decision: it constrains the
+output regardless of who writes the bytes.

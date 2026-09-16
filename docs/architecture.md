@@ -2,77 +2,93 @@
 
 Mathematical derivations, algorithm citations, and design rationale for
 every kernel in the phaios-core pipeline. This document is the reference
-a new contributor reads to understand the math without reading the code.
+a new contributor reads to understand the maths without reading the
+code. For what each kernel does *to the image*, with its parameters and
+identity values, read [kernels.md](kernels.md) instead. The binding
+contract is [ffi.md](ffi.md); the CUDA backend, its agreement classes
+and its measured performance are in [gpu.md](gpu.md).
+
+---
+
+## 0. Provenance and licensing
+
+Every kernel cites the paper, textbook or standard it implements. Two
+carry a fuller provenance note in their module documentation, because
+the licence of a *reference implementation* is a separate question from
+the licence of a *paper*:
+
+- **`local_contrast`** (`src/local_contrast.rs`), the guided filter.
+  The authors' own MATLAB is restricted to non-commercial academic use
+  and **must not be ported**. This crate is an independent
+  reimplementation from the published equations. The note records which
+  patents were searched and read against the kernel.
+- **`split_toning`** (`src/split_toning.rs`), OKLab. The coefficients
+  come verbatim from Ottosson's reference implementation, offered as MIT
+  or public domain. This crate elects the public-domain branch, and says
+  so rather than relying on a citation to discharge a notice obligation.
+
+Nothing in either constrains use or distribution of this crate.
+Dependency licences are listed in
+[CONTRIBUTING.md](../CONTRIBUTING.md#dependencies).
 
 ---
 
 ## 1. Pipeline overview
 
-```
-Consumer delivers:
-  linear scene-referred f32 RGB  (H, W, 3)
-        │
-        ▼
-  ┌─────────────┐
-  │  geometry   │  orient → straighten → crop → resize   src/geometry.rs
-  └─────────────┘  (all bit-exact across backends)
-        │
-        ▼
-  ┌─────────────┐
-  │  exposure   │  × 2^stops                             src/exposure.rs
-  └─────────────┘
-        │  (H, W, 3)
-        ▼
-  ┌─────────────┐
-  │  B&W conv.  │  luminance / channel mixer /           src/bw.rs
-  └─────────────┘  colour filter / HSL-weighted
-        │  (H, W, 1)   ← the image becomes monochrome here
-        ▼
-  ┌─────────────┐
-  │  zone tone  │  Adams/Archer + Davis Gaussian         src/tone.rs
-  └─────────────┘
-        │
-        ▼
-  ┌─────────────┐
-  │  local      │  He–Sun–Tang guided filter             src/local_contrast.rs
-  │  contrast   │
-  └─────────────┘
-        │
-        ▼
-  ┌─────────────┐
-  │  grain      │  band-passed hashed noise              src/film_grain.rs
-  └─────────────┘
-        │
-        ▼
-  ┌─────────────┐
-  │ split-tone  │  OKLab chroma blend                    src/split_toning.rs
-  └─────────────┘
-        │  (H, W, 3)   ← and colour again here
-        ▼
-  ┌─────────────┐
-  │  vignette   │  radial falloff                        src/vignette.rs
-  └─────────────┘
-        │
-        ▼
-  ┌─────────────┐
-  │ tone curve  │  ASC CDL slope/offset/power            src/tone.rs
-  └─────────────┘
-        │
-        ▼
-  ┌─────────────┐
-  │ sRGB encode │  IEC 61966-2-1 terminal stage          src/encode.rs
-  └─────────────┘
-        │
-        ▼
-Consumer receives:
-  display-referred f32 RGB  (H, W, 3)  → write to file
+```mermaid
+flowchart TD
+    IN["consumer input<br/>(H, W, 3) linear f32"] --> ORIENT
+
+    subgraph GEO ["geometry and restoration — any C"]
+        direction TB
+        ORIENT["orient"] --> HOT["hot_pixels<br/><i>optional</i>"]
+        HOT --> DEN["denoise<br/><i>optional</i>"]
+        DEN --> STR["straighten"]
+        STR --> CROP["crop"]
+        CROP --> RSZ["resize"]
+    end
+
+    RSZ --> EXP["exposure"]
+    EXP --> BW["B&amp;W conversion<br/>luminance_bw / channel_mixer_bw /<br/>color_filter_bw / hsl_bw"]
+    BW -- "3 &rarr; 1" --> ZONE["zone_system"]
+
+    subgraph MONO ["single channel — (H, W, 1)"]
+        direction TB
+        ZONE --> BLUR["blur<br/><i>optional</i>"]
+        BLUR --> GLOW["glow<br/><i>optional</i>"]
+        GLOW --> LC["local_contrast"]
+        LC --> SHRP["sharpen<br/><i>optional</i>"]
+        SHRP --> SROLL["shadow_rolloff"]
+        SROLL --> TC["tone_curve"]
+        TC --> GRAIN["film_grain"]
+    end
+
+    GRAIN --> TONING["split_toning"]
+    TONING -- "1 &rarr; 3" --> VIG["vignette"]
+
+    subgraph FIN ["any C — toned or not"]
+        direction TB
+        VIG --> HROLL["highlight_rolloff"]
+        HROLL --> ENC["encode_srgb"]
+        ENC --> QNT["quantize_u8 / quantize_u16"]
+    end
+
+    QNT --> OUT["consumer output<br/>(H, W, 1) or (H, W, 3)<br/>uint8 / uint16"]
+
+    LUT["apply_lut<br/><i>any point after B&amp;W</i>"] -.-> TC
+    HIST["histogram<br/><i>a reduction, not a stage</i>"] -.-> OUT
 ```
 
+Stages in italics are optional. `apply_lut` is a transfer a caller may
+insert at any point after the B&W stage, and `histogram` is a reduction
+rather than a stage. The same diagram, with each stage's parameters, is
+in [kernels.md](kernels.md#the-pipeline).
+
 **Channel count along the pipeline.** The B&W stage collapses three
-channels to one; split-toning takes it back to three. Everything between
-those two points is single-channel, and everything after split-toning
-(`vignette`, `tone_curve`, `encode_srgb`) accepts any channel count so
-that the same pipeline runs whether or not toning is enabled.
+channels to one; `split_toning` takes it back to three. Everything
+between those two points is single-channel, and everything from
+`vignette` onward accepts any channel count, so the same pipeline runs
+whether or not toning is enabled.
 
 **Order sensitivity.** Some of the ordering is forced, and some of it is
 a judgement that the kernels document but do not enforce:
@@ -80,18 +96,26 @@ a judgement that the kernels document but do not enforce:
 | Constraint | Why |
 |---|---|
 | **geometry first** (`orient`, then `crop`) | `vignette` centres on the frame it is given, which must be the *cropped* frame; `film_grain` keys noise to pixel coordinates, which must be the final grid; crop rectangles are expressed in the upright (oriented) frame |
-| `encode_srgb` last | every other kernel assumes linear input |
-| `exposure` opens the look pipeline (right after geometry) | a stop is a factor of two only in linear light |
-| B&W before zone/local-contrast/grain | those kernels take `(H, W, 1)` |
+| `hot_pixels` before anything that resamples or averages | a defect smeared into its neighbours can no longer be told from real detail (§21) |
+| `denoise` after `hot_pixels` | an edge-preserving smoother reads a hot pixel's extreme local variance as structure to protect (§22) |
+| `exposure` opens the look pipeline, right after geometry | a stop is a factor of two only in linear light |
+| B&W before zone, local contrast, grain and toning | those kernels take `(H, W, 1)` |
 | `split_toning` after B&W | it takes `(H, W, 1)` and returns `(H, W, 3)` |
 | grain after the tone stages | a tone curve applied afterwards reshapes the grain, and the `4·L·(1−L)` envelope would no longer sit on the midtones the viewer sees |
 | vignette after the tone stages | otherwise the tone curve acts on already-darkened corners |
+| `highlight_rolloff` last before `encode_srgb` | it decides what becomes of the headroom every earlier kernel preserved |
+| `encode_srgb` after everything linear | every other kernel assumes linear input |
+| `quantize_u8` / `quantize_u16` terminal | integer codes have nowhere further to go |
 
 Within those constraints the remaining orderings are equivalent.
 
-**Layout.** Every kernel accepts any array layout — C-contiguous,
-Fortran-order, strided views, negative strides — and always returns a
-freshly allocated C-contiguous array. See `docs/ffi.md` §1.
+**Layout.** Every kernel accepts any array layout: C-contiguous,
+Fortran-order, strided views, negative strides. Each returns a freshly
+allocated C-contiguous array. See [ffi.md §1](ffi.md#1-array-layout).
+
+**Backends.** Each kernel's section below explains why its CUDA twin
+agrees with the CPU to the bound it does. The bounds themselves are
+tabulated once, in [gpu.md](gpu.md#agreement-classes).
 
 ---
 
@@ -198,6 +222,37 @@ the `(H, W, 3)` array, producing `(H, W, 1)`:
 ```
 Y[h, w, 0] = w[0]·R[h,w] + w[1]·G[h,w] + w[2]·B[h,w]
 ```
+
+---
+
+## 3a. Channel mixer (B&W method 2)
+
+Same dot product as §3, with the weights supplied by the caller instead
+of chosen from a standard:
+
+```
+Y[h, w, 0] = wR·R[h,w] + wG·G[h,w] + wB·B[h,w]
+```
+
+What this adds over `luminance_bw` is that the weights are not required
+to be a luminance basis. They need not sum to one, and they may be
+negative. −2..+2 is the conventional range, matching the darkroom
+channel-mixer controls the kernel is named after; a negative weight
+inverts that channel's contribution, which is what produces the
+infrared-like rendering where foliage goes white and sky goes black.
+Weights summing above one brighten the result, which is a legitimate
+exposure decision made inside the conversion rather than a defect.
+
+The validation domain is therefore only the shape. `validate_rgb`
+(`src/bw.rs`) rejects anything that is not `(H, W, 3)`; the weights
+themselves are unconstrained, and the −2..+2 range is documentation, not
+a check. The kernel cannot fail on any finite weight triple, and a
+non-finite one propagates rather than raising, exactly as a non-finite
+pixel does (`ffi.md` §1).
+
+Bit-exact across CPU and CUDA: three multiplies and two adds, all
+correctly rounded, with the device compiled `-fmad=false` so neither
+side contracts them.
 
 ---
 
@@ -597,6 +652,24 @@ Subtracting it from L gives the high-frequency (detail) component.
 | `radius` | u32 | any; 1..512 useful | Window half-size in pixels. 0 makes the filter the identity; a radius larger than the image is legal, since windows clamp to the image extent, and makes every window the whole image |
 | `eps` | f32 | ≥ 0, finite | Regularisation; try 0.01. Negative values are rejected: they make `a = var/(var+ε)` singular wherever the local variance approaches −ε |
 | `strength` | f32 | finite; 0..2 useful | Detail amplification. Negative values smooth instead of sharpening |
+
+### On the device
+
+The device replaces the global f64 summed-area tables with separable
+window sums, which is the whole reason for this kernel's 1e-4 / 1e-6
+agreement class rather than a tighter one. It drops the *global prefix
+sum*, not the f64: the L and L² sums stay f64 because their difference
+is the variance, a cancelling subtraction, so they must carry the
+magnitude. The coefficient sums downstream stay Kahan-compensated f32,
+which is enough because `a` is confined to [0, 1], `b` is never squared,
+and neither feeds a difference. That split matters to cost, not just
+accuracy: unlike the box blur, the guided filter accumulates (2r+1)
+values per output per pass across four passes, so it is compute-bound
+and a consumer card's 1/64 f64 rate lands squarely on it. Making every
+sum f64 measured 60% slower and bought nothing. The compensation on the
+f32 path is not optional either: a caller may pass a radius covering the
+whole image, and then those sums run over every pixel rather than a
+handful.
 
 ---
 
@@ -1215,6 +1288,34 @@ outside: a σ = 5 kernel in a 16×16 frame retains 0.79 of its energy. That
 is what clamping means rather than a defect, and the test suite asserts
 both halves so it cannot later be mistaken for one.
 
+### On the device
+
+The box path is **segmented**. Written the obvious way, one thread per
+row or column sliding a window along it, a 24 MP frame offers only about
+five thousand lanes, which leaves a modern device almost entirely idle
+with each thread grinding through thousands of serial steps; measured,
+that form was four times slower than the direct path just under the
+crossover. Cutting each lane into segments and giving one thread to each
+costs every segment its own leading window and buys a 5.4x improvement.
+The host sizes the segments so the O(radius) setup stays small against
+the sliding work it parallelises. An O(1)-per-output algorithm with five
+thousand threads loses to an O(radius) one with twenty-four million.
+
+The box passes accumulate in **f64 on both backends**. A sliding window
+subtracts, so once the accumulator holds a bright sample the dark ones
+entering behind it are annihilated on contact, and what they contributed
+is gone when the bright one leaves. Kahan compensation does not rescue
+this: its error bound scales with `Σ|xᵢ|`, which the bright sample
+dominates. Measured against an exact oracle on a dark field with a
+specular bar, compensated f32 gave 164% relative error at a 1e4
+highlight and missed the committed cross-backend bound by up to 2.8e7x
+at 1e8, on data this crate exists to process. The f64 costs nothing
+measurable, because the kernel is bandwidth-bound: two loads and a store
+per output against three f64 operations, so even a consumer card's 1/64
+f64 rate hides under the memory traffic. The direct path below σ = 6
+keeps Kahan-compensated f32 and is right to: every weight is positive,
+nothing is subtracted, and the loop is well conditioned.
+
 ---
 
 ## 17. Light scattering
@@ -1263,242 +1364,14 @@ threshold; subtracting instead lets the contribution fade in.
 
 ---
 
-## 18. Performance (v0.2-dev)
+## 18. Performance
 
-Measured with `cargo bench` (criterion, bench profile) on a synthetic
-4323 × 5765 (≈ 24 MP) `f32` image filled with deterministic
-pseudo-random values. Not CI gates — informational only.
-
-### CPU
-
-| Kernel | Measured mean | Benchmark id | Notes |
-|--------|--------------|--------------|-------|
-| `crop` | **7.7 ms** | `crop/24MP/centre-half` | pure copy of the half-area rectangle |
-| `orient` | **112.7 ms** | `orient/24MP/rotate90` | known-slow: the transposing copy is cache-hostile and currently single-threaded; quarter-turn-heavy pipelines should batch it with straighten |
-| `hot_pixels` | **19.0 ms** | `hot_pixels/24MP/1ch` | 1 ch; fixed 9-tap comparator network, no transcendentals |
-| `denoise` | **131.8 / 686.8 ms** | `denoise/24MP/1ch-r4`, `3ch-r4` | 1ch self-guided / 3ch cross-guided, radius 4; direct O(radius) window sums |
-| `resize` | **32.6 ms** | `resize/24MP/to-2048-area` | separable area filter to a 2048-wide export |
-| `straighten` | **47.1 ms** | `straighten/24MP/2deg` | 16-tap Catmull-Rom per pixel |
-| `blur` | **50 / 71 ms** | `blur/24MP/sigma2-direct`, `sigma5.9-direct` | direct path; grows with σ at about 1.3 ms per tap |
-| `blur` | **90 ms** | `blur/24MP/sigma{6,16,64}-box` | box path; **flat** — identical at σ 6, 16 and 64 |
-| `glow` | **106 / 117 ms** | `glow/24MP/{halation,diffusion,glare}` | the blur plus two element-wise passes |
-| `exposure` | **29.3 ms** | `exposure/24MP/+1EV` | 3 channels in *and* out — 300 MB of traffic, twice the B&W kernels' |
-| `luminance_bw` | **14.8 ms** | `luminance_bw/24MP/BT709` | Memory-bandwidth bound |
-| `channel_mixer_bw` | **15.0 ms** | `channel_mixer_bw/24MP` | Same bandwidth pattern |
-| `color_filter_bw` | **14.9 ms** | `color_filter_bw/24MP/Red25A` | Combined dot product |
-| `hsl_bw` | **52.0 ms** | `hsl_bw/24MP/8-bands` | Hue geometry plus 8 `exp` per pixel |
-| `zone_system` | **13.0 ms** | `zone_system/24MP/1-zone-offset` | `exp` + `log2` per pixel |
-| `tone_curve` | **10.4 ms** | `tone_curve/24MP/slope-offset-power` | One `powf` per pixel |
-| `local_contrast` | **177.5 ms** | `local_contrast/24MP/r=8` | 4 parallel SAT builds |
-| `sharpen` | **42.0 ms** | `sharpen/24MP/capture` | one direct-path blur (σ=1.2) plus one pointwise pass |
-| `film_grain` | **58.1 ms** | `film_grain/24MP/size=2` | Hash + Box–Muller per pixel, then one SAT |
-| `split_toning` | **23.4 ms** | `split_toning/24MP` | 1 cube root in, 3 cubes out, per pixel |
-| `vignette` | **10.6 ms** | `vignette/24MP` | `sqrt` per pixel |
-| `encode_srgb` | **10.7 ms** | `encode_srgb/24MP` | `powf` per pixel |
-
-A full v0.2 pipeline — exposure, HSL conversion, zone system, local
-contrast, grain, toning, vignette, curve, encode — is therefore around
-400 ms for a 24 MP frame on this machine, dominated by `local_contrast`.
-
-Machine: AMD Ryzen 9 9950X 16-Core (32 threads), Linux, `cargo bench`
-(optimised profile, rayon parallelism enabled).
-
-The CPU column of the GPU table below comes from a **later** run on the
-same machine, and a few kernels disagree with this table by as much as
-30% — `split_toning` 29.8 ms against 23.4, `crop` 9.7 against 7.7,
-`orient` 136 against 113, the box blur 74 against 90. That is
-run-to-run spread, not a change in the code. Compare within a table, not
-across the two.
-
-`local_contrast` remains SAT-dominated: four prefix-sum passes each
-touch every pixel once, setting a memory-bandwidth floor of roughly
-200 MB per f64 table. Making those passes parallel (§8) took the kernel
-from 452 ms to 178 ms, and peak scratch from 1.3 GB to ~600 MB. Runtime
-is independent of radius, as the O(1) formulation requires: r = 32
-measures the same 178 ms as r = 8.
-
-Comparisons with numbers published before v0.2 need care: benchmarks up
-to v0.1.1 ran on a *constant* image, which is the cheapest possible
-input for `encode_srgb` (one branch), `zone_system` (one zone position)
-and `local_contrast` (zero variance everywhere). Against the same flat
-input, the three B&W kernels measured 10.1 ms rather than 15 ms.
-
----
-
-### GPU
-
-Measured with `cargo bench --bench gpu --features cuda` on the same
-4323 × 5765 frame, from the same generator and seed, and with the same
-channel count per kernel as the CPU benchmark above — three channels
-where the CPU runs three, one where it runs one. Benchmark ids are the
-CPU ids under a `gpu/` prefix, so a reader can divide one row by the
-other. Not CI gates — informational only, exactly as for the CPU table.
-
-Machine: NVIDIA GeForce RTX 5070 Ti, driver 610.57.04, in the 32-thread
-machine described above; idle, measured 2026-08-28. Both columns of the
-table come from that one session.
-
-**What the timer contains.** Launches are asynchronous, so a naive timer
-measures the launch queue rather than the work — which is how an earlier
-set of figures was nearly published as impossible numbers. Each
-benchmark therefore issues its launches and drains the stream once,
-which is also how a real pipeline behaves: many kernels, one
-synchronisation at the end.
-
-The drain is a download of a **1 × 1 × 1** image. Any download
-synchronises the stream, and this one moves four bytes. Draining by
-downloading the actual result instead puts 299 MB of PCIe traffic inside
-the timer: measured that way the cheap kernels read roughly four times
-their true cost, being about 75% bus traffic rather than kernel time.
-
-So every row below is per call on an image that is **already
-device-resident**, and excludes PCIe — with two exceptions. `quantize`
-and `histogram` return host data by contract: quantisation is terminal
-and a histogram is a reduction, so neither has a device-resident result
-to chain, and the copy back cannot be factored out of what a caller
-pays. Their rows include it. `quantize` moves 24.9 MB of `u8` codes for
-this single-channel frame (75 MB for a three-channel one), and it is the
-one kernel in the table where the GPU is not far ahead.
-
-| Kernel | GPU | CPU | Notes |
-|---|---|---|---|
-| `crop` centre-half | **0.269 ms** | 9.71 ms | 3 ch; a copy of the half-area rectangle, device to device |
-| `orient` rotate90 | **1.838 ms** | 136.19 ms | 3 ch; the transposing access the CPU cache is worst at |
-| `hot_pixels` 1ch | **0.452 ms** | 19.02 ms | 1 ch; fixed 9-tap comparator network, 42.1x |
-| `denoise` r=4, 1ch/3ch | **8.038 / 40.84 ms** | 131.76 / 686.80 ms | self-/cross-guided; 14 launches at C=3; 16.4x / 16.8x |
-| `resize` to 2048 (area) | **1.460 ms** | 30.58 ms | 3 ch; separable, two passes |
-| `straighten` 2° | **2.269 ms** | 56.18 ms | 3 ch; 16-tap Catmull-Rom per pixel |
-| `exposure` +1 EV | **0.878 ms** | 29.12 ms | 3 ch in *and* out; the element-wise reference point |
-| `luminance_bw` BT.709 | **0.493 ms** | 13.42 ms | 3 ch in, 1 out |
-| `channel_mixer_bw` | **0.493 ms** | 13.45 ms | same traffic, same time |
-| `color_filter_bw` Red25A | **0.493 ms** | 13.36 ms | same again — all three are one dot product |
-| `hsl_bw` 8 bands | **0.712 ms** | 54.73 ms | 8 `expf` per pixel; the largest ratio in the table |
-| `zone_system` | **0.652 ms** | 15.17 ms | `exp2f` + `log2f` per pixel |
-| `tone_curve` | **0.345 ms** | 9.80 ms | one `powf` per pixel |
-| `highlight_rolloff` | **0.325 ms** | 9.57 ms | shoulder branch exercised, not the default clip |
-| `shadow_rolloff` | **0.305 ms** | 9.53 ms | toe branch exercised |
-| `vignette` | **0.423 ms** | 10.35 ms | `sqrtf` per pixel |
-| `encode_srgb` | **0.346 ms** | 9.92 ms | `powf` per pixel |
-| `apply_lut` 256-entry | **0.319 ms** | 9.71 ms | one interpolated lookup per pixel |
-| `film_grain` size = 2 | **1.167 ms** | 60.57 ms | splitmix64 + Box–Muller per pixel, then a SAT |
-| `split_toning` | **0.559 ms** | 29.82 ms | 1 ch in, 3 out; one cube root in, three cubes out |
-| `blur` σ = 2 (direct) | **4.248 ms** | 38.69 ms | one thread per output element |
-| `blur` σ = 16 (box) | **7.925 ms** | 74.07 ms | segmented; see below |
-| `blur` σ = 64 (box) | **8.510 ms** | 73.77 ms | near-flat in σ, as on the CPU |
-| `glow` halation | **8.538 ms** | 96.63 ms | the blur plus two element-wise passes |
-| `sharpen` capture | **4.097 ms** | 42.01 ms | one direct-path blur (σ=1.2) plus one pointwise pass, 10.3x |
-| `local_contrast` r = 8 | **11.999 ms** | 170.14 ms | f64 L/L² sums; see below |
-| `quantize` u8, plain | **3.373 ms** | 5.77 ms | **includes** the 24.9 MB readback |
-| `histogram` 256 bins, 3 ch | **0.471 ms** | 9.80 ms | **includes** the counts readback (3 KB) |
-
-The pairing is by benchmark id, not by identical arguments: `glow` runs
-σ = 8 on the CPU and σ = 12 on the GPU, `hsl_bw` uses different band
-weights and a different band width, and `film_grain` a different seed
-and intensity. None of those change the work done — the box blur is flat
-in σ (§16), the HSL bands cost the same whatever their weights, and the
-grain hash costs the same whatever it is seeded with — but the two rows
-are not literally the same call.
-
-Three shapes are visible in the ratios. The plain per-pixel kernels sit
-at 21–36×, and that number is bandwidth rather than arithmetic:
-`exposure` moves 598 MB — three channels in and three out — in 0.878 ms,
-which is 681 GB/s, against 20.5 GB/s for the same traffic on the CPU;
-`luminance_bw` reaches 809 GB/s against 29.7. Both backends are running
-at their memory system's speed, and the ratio between those two speeds
-is the whole of the speed-up.
-
-Four kernels run further ahead — `film_grain` 52×, `split_toning` 53×,
-`orient` 74×, `hsl_bw` 77× — and they are exactly the four where the CPU
-is paying for something other than traffic: Box–Muller per pixel, a cube
-root and three cubes, a cache-hostile transpose, eight `exp` per pixel.
-
-Spatial kernels settle at 9–14×, because a blur reads each pixel many
-times and both backends are then bound by the same re-reads. `quantize`
-is 1.7×, the honest number for a kernel contractually obliged to hand
-24.9 MB back to the host; `histogram`, which returns 3 KB, keeps 21×
-despite its own readback.
-
-The v0.2 pipeline the CPU section totals — exposure, HSL conversion,
-zone system, local contrast, grain, toning, vignette, curve, encode — is
-**17.1 ms** device-side against 390 ms on the CPU in the same session,
-about 23×. `local_contrast` is 70% of the device-side total, a sharper
-domination than the 44% it holds on the CPU: everything around it got
-faster and it did not, for the reason set out below.
-
-Neither figure includes getting the frame onto the device and the result
-off it, and that is not a rounding error. `quantize` is the only row here
-that measures a transfer: its 3.373 ms against roughly 0.32 ms for the
-comparable single-channel element-wise kernels leaves about 3 ms for
-24.9 MB, of the order of 8 GB/s. At that rate a 299 MB upload alone is
-tens of milliseconds — more than the whole device-side pipeline above,
-and the conclusion survives being wrong by a factor of two in the
-crate's favour. Offload pays when the frame stays resident for the
-entire run; it does not pay per call, which is the point
-`examples/15_gpu_exposure.rs` exists to print.
-
-The three paired comparisons that follow — segmented against naive, f32
-against f64 — come from the ad-hoc measurements that preceded
-`benches/gpu.rs`. They were taken back to back on this machine, so the
-ratios stand; the absolute figures sit a few percent from the table
-above, which is the gap between any two runs. The σ values differ too:
-the box figures below are σ = 6 and σ = 64, and the direct path they are
-measured against is σ = 5.9, immediately under the crossover — a point
-`benches/gpu.rs` does not cover. That same run put `glow` glare
-(σ = 400) at 17.9 ms, roughly twice halation; the bench target covers
-halation only.
-
-**The box kernel had to be segmented to get there.** Written the obvious
-way — one thread per row or column, sliding a window along it — it
-measured **40 ms**: four times what the direct path cost just under the
-crossover, and worse than `local_contrast`, which does far more work.
-The cause is that a 24 MP frame has only about five thousand rows or
-columns, so a thread per lane leaves a modern device around 95% idle
-with each thread grinding through thousands of serial steps.
-
-Cutting each lane into segments and giving one thread to each takes it to
-**7.5 ms**, a 5.4× improvement, at the cost of every segment recomputing
-its own leading window. The host sizes the segments so that O(radius)
-setup stays small against the sliding work it buys parallelism for.
-
-The lesson generalises: on a GPU an O(1)-per-output algorithm with five
-thousand threads loses to an O(r) one with twenty-four million.
-
-**`local_contrast` pays for its precision, and the box blur does not.**
-Both kernels moved partial sums from Kahan-compensated f32 to f64 for the
-same reason (below), but the bills differ by an order of magnitude: the
-box blur went 7.5 → 7.5 ms, `local_contrast` 4.4 → 12.5 ms at r = 8, and
-6.1 → 35.4 ms at r = 32. The box blur is bandwidth-bound, so f64
-arithmetic hides under the memory traffic; the guided filter accumulates
-(2r+1) values per output per pass across four passes, so it is
-compute-bound and a consumer card's 1/64 f64 rate lands squarely on it.
-
-That is why only the L and L² sums are f64 there. Their difference is the
-variance — `mean(L²) − mean(L)²`, a cancelling subtraction — so they must
-carry the magnitude. The coefficient sums downstream stay
-Kahan-compensated f32, because `a` is confined to [0, 1], `b` is never
-squared, and neither feeds a difference; measured, that split costs 12.5
-ms where all-f64 cost 20.2 ms and bought nothing. The compensation on
-that path is not optional either: a caller may pass a radius covering the
-whole image, and then those sums run over every pixel rather than a
-handful.
-
-**The box blur accumulates in f64, not compensated f32.** The direct path uses
-Kahan-compensated f32 and is right to: every weight is positive, nothing
-is ever subtracted, and the loop is well conditioned. A sliding window is
-not. It subtracts, so once the accumulator holds a bright sample the dark
-ones entering behind it are annihilated on contact, and what they
-contributed is gone when the bright one leaves. Kahan does not rescue
-this — its error bound scales with `Σ|xᵢ|`, which the bright sample
-dominates. Measured against an exact oracle on a dark field with a
-specular bar: 164% relative error at a 1e4 highlight, and up to 2.8e7×
-the committed cross-backend bound at 1e8, on data this crate exists to
-process. Only carrying the magnitude fixes it.
-
-The f64 costs nothing measurable — 7.5 → 7.5 ms at σ = 6 and 8.8 → 8.3 ms
-at σ = 64 — because the kernel is bandwidth-bound: two loads and a store
-per output against three f64 operations, so even a consumer card's 1/64
-f64 rate hides under the memory traffic. Where arithmetic is not the
-bottleneck, precision is very cheap.
+Measured medians for both backends, with the full test conditions and
+the speed-up per kernel, are in [gpu.md](gpu.md#performance). They live
+there because a GPU figure is only meaningful beside the device, driver
+and toolkit that produced it, which is the same information the backend
+fingerprint carries. The design decisions those measurements drove stay
+here: the segmented box blur in §16 and the precision split in §8.
 
 ---
 
@@ -1751,11 +1624,7 @@ of the photon count, so it still grows relative to a fixed baseline —
 so a single absolute threshold that correctly targets a midtone hot
 pixel is either too loose in the shadows or too tight in the
 highlights. `relative` lets the criterion widen with local brightness;
-`relative = 0.0` (the default) reproduces the absolute-only form. This
-was flagged as an open design question rather than decided silently
-(`.cache/scratch/denoise/PLAN.md`): an absolute-only criterion was the
-initial recommendation, and the two-term form was the maintainer's own
-resolution.
+`relative = 0.0` (the default) reproduces the absolute-only form.
 
 ### The comparator network, and why it is bit-exact
 
@@ -1809,10 +1678,9 @@ edge-preserving smoother reads a hot pixel's own extreme local variance
 as structure to protect, which would leave the defect largely intact —
 outliers before edge-aware smoothing is the standard restoration order
 (Gonzalez & Woods' own chapter order places order-statistic outlier
-filters before their smoothing filters, not after). Per-kernel doc
-comment only, not CLAUDE.md §3 itself, matching `blur`/`glow`/`sharpen`'s
-own precedent of documenting an order without it appearing on that
-canonical line.
+filters before their smoothing filters, not after). Like `blur`, `glow`
+and `sharpen`, this is an order the kernel documents and does not
+enforce.
 
 ### Range
 
@@ -1879,9 +1747,9 @@ call on `(H, W, 1)` would have been a pure alias, and the crate should
 not ship one as a new kernel. What is genuinely new: cross-guided
 filtering for `C == 3` (below), `noise_sigma` in physical units rather
 than a bare regularisation constant, `amount ∈ [0, 1]` as a bounded
-blend rather than `strength`'s unbounded extrapolation, and — after the
-maintainer's step-4b fix — the module's own direct-summation strategy,
-which no longer literally calls `local_contrast::guided_filter` at all.
+blend rather than `strength`'s unbounded extrapolation, and the module's
+own direct-summation strategy, which does not call
+`local_contrast::guided_filter` at all.
 Consequently the single-channel path's agreement with
 `local_contrast(strength = -amount)` is **bounded** (the same
 GUIDED_FILTER class the CUDA kernels are held to, rtol 1e-4/atol 1e-6),
@@ -1907,13 +1775,11 @@ this is not a code path `local_contrast` could have grown into.
 He–Sun–Tang's paper also describes a *colour-guide* variant, where the
 guide itself carries three channels and each window's linear model
 needs a 3×3 covariance-matrix solve per pixel instead of a scalar
-division. Considered and rejected for this crate
-(`.cache/scratch/denoise/PLAN.md`, "Decision 2"): it does not fix the
-cancellation the step-4b fix below addresses, and it roughly triples
-the per-pixel cost for a benefit this crate has no use for — a shared
-*luminance* guide is exactly what a B&W-first pipeline (CLAUDE.md §1)
-already has lying around at this stage, one call from a kernel every
-other stage already uses.
+division. Rejected for this crate: it does not fix the cancellation
+addressed below, and it roughly triples the per-pixel cost for a benefit
+this crate has no use for. A shared *luminance* guide is exactly what a
+B&W-first pipeline already has lying around at this stage, one call from
+a kernel every other stage already uses.
 
 ### `noise_sigma`
 
@@ -1942,26 +1808,23 @@ global tables whose entries reach ~1e16 at a 1e8 highlight, and two
 entries differing only by a dark window's own tiny contribution round
 to the *same* f64 value there — every window from the bright region
 onward, including windows that are themselves entirely dark, got the
-wrong residual (measured 5.1e5 off an independent oracle at one such
-pixel, `.cache/scratch/denoise/PROGRESS.md` step 4). The device never
+wrong residual, measured 5.1e5 off an independent oracle at one such
+pixel. The device never
 had this problem: its kernels sum each window directly from its own
 `(2r+1)²` pixels, so a running total's magnitude is bounded by the
 *window*, never by the image.
 
-The fix (maintainer decision, after step 4): **both denoise paths now
-sum each window directly from its own pixels, exactly as the device
-does** — two passes, horizontal then vertical, each output resummed
-from scratch rather than carried forward. A sliding running sum was
-considered as a cheaper alternative and is *not* what this module does;
-empirically (the step-4b mutation gate,
-`.cache/scratch/denoise/PROGRESS.md`), a correctly-bounded sliding
-window turns out to be measurably better-behaved than a genuine
-summed-area table — its accumulator stays tied to the window's own
-content rather than growing with the image — but it still drifts from a
-fresh from-scratch sum once a window first loses an element on the
-left, and direct summation is the form this crate can state a clean
-invariant about (a window's own magnitude bounds its own error) without
-relying on how forgiving any particular input happens to be. The
+**Both denoise paths sum each window directly from its own pixels,
+exactly as the device does**: two passes, horizontal then vertical, each
+output resummed from scratch rather than carried forward. A sliding
+running sum is the cheaper alternative and is deliberately *not* what
+this module does. A correctly-bounded sliding window is measurably
+better behaved than a genuine summed-area table, its accumulator staying
+tied to the window's own content rather than growing with the image, but
+it still drifts from a fresh from-scratch sum once a window first loses
+an element on the left. Direct summation is the form this crate can
+state a clean invariant about: a window's own magnitude bounds its own
+error, whatever the input. The
 shrinking-window border convention is unchanged and matches
 `local_contrast`'s own (§8): rows/columns independently clamped, area
 the product of what is actually covered.
@@ -2038,9 +1901,7 @@ alongside three reused unchanged (`luminance_bw_kernel`, `box_h_l_l2`,
 
 Agreement class for both dispatched paths: `local_contrast`'s own
 **GUIDED_FILTER** (rtol 1e-4, atol 1e-6), added to `docs/ffi.md` §6.
-Measured worst-case ratios, all comfortably inside the bound
-(`.cache/scratch/denoise/PROGRESS.md`, the step-4b mutation-gate's final
-re-verification on the clean, committed tree):
+Measured worst-case ratios, all comfortably inside the bound:
 
 | Sweep | Worst ratio | Where |
 |---|---|---|
