@@ -1,6 +1,6 @@
 [package]
 name = "phaios-core"
-version = "0.1.1"
+version = "0.2.0-dev"
 edition = "2024"
 description = "Numerical kernels for black-and-white RAW image processing"
 license = "GPL-3.0-or-later"
@@ -8,6 +8,58 @@ readme = "README.md"
 repository = "https://github.com/sdhdez/phaios-core"
 keywords = ["image-processing", "black-and-white", "photography", "pyo3"]
 categories = ["multimedia::images", "science"]
+# Floor set by the let-chain in build.rs's find_nvcc (stable since
+# 1.88), not by edition 2024 (1.85) or any dependency (criterion's
+# 1.86 is the highest). build.rs compiles with or without the cuda
+# feature, so this binds the library, not just the GPU path.
+rust-version = "1.88"
+# What must never ship in the published crate or the sdist (which mirrors
+# `cargo package`). Git-tracked files bypass .gitignore, so this list is
+# the last line of defence against a `git add -f`.
+exclude = [
+    # The dev tool under tools/ (own lockfile, GUI deps).
+    "tools/",
+    # Claude Code's project directory, local scratch, and repo-local
+    # tooling that lives in the working tree only.
+    ".claude/",
+    ".cache/",
+    "claude-md-templates/",
+    "design-briefs/",
+    "phaios-core.code-workspace",
+    # Contributor and agent instructions, not consumer documentation:
+    # the working agreement, local scratch conventions, and pointers to
+    # the release runbook. Public on GitHub, where contributors find it.
+    "CLAUDE.md",
+    # Image assets are never committed (CONTRIBUTING.md, "Examples"):
+    # the same bracket-class patterns as .gitignore, case-insensitive by
+    # construction, matching at any depth.
+    "*.[Dd][Nn][Gg]",
+    "*.[Nn][Ee][Ff]",
+    "*.[Cc][Rr]2",
+    "*.[Cc][Rr]3",
+    "*.[Aa][Rr][Ww]",
+    "*.[Rr][Aa][Ff]",
+    "*.[Oo][Rr][Ff]",
+    "*.[Rr][Ww]2",
+    "*.[Pp][Ee][Ff]",
+    "*.[Ss][Rr][Ww]",
+    "*.[Jj][Pp][Gg]",
+    "*.[Jj][Pp][Ee][Gg]",
+    "*.[Pp][Nn][Gg]",
+    "*.[Tt][Ii][Ff]",
+    "*.[Tt][Ii][Ff][Ff]",
+    "*.[Ww][Ee][Bb][Pp]",
+    "*.[Hh][Ee][Ii][Cc]",
+    "*.[Hh][Ee][Ii][Ff]",
+    "*.[Bb][Mm][Pp]",
+    "*.[Gg][Ii][Ff]",
+    "*.[Ee][Xx][Rr]",
+    "*.[Hh][Dd][Rr]",
+    "*.[Pp][Gg][Mm]",
+    "*.[Pp][Bb][Mm]",
+    "*.[Pp][Pp][Mm]",
+    "*.[Pp][Ss][Dd]",
+]
 
 [lib]
 name = "phaios_core"
@@ -17,37 +69,100 @@ crate-type = ["cdylib", "rlib"]
 # licence: MIT OR Apache-2.0  source: https://github.com/PyO3/pyo3
 # PyO3 bindings to the Python interpreter. abi3-py312 builds a stable-ABI
 # wheel compatible with CPython 3.12+.
-pyo3 = { version = "0.28", features = ["extension-module", "abi3-py312"] }
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py312"] }
 
-# licence: MIT OR Apache-2.0  source: https://github.com/PyO3/rust-numpy
+# licence: BSD-2-Clause  source: https://github.com/PyO3/rust-numpy
+# (NOT MIT OR Apache-2.0, as this line said until it was checked against
+# `cargo metadata`. BSD-2-Clause is permissive and GPLv3-compatible.)
 # PyO3-based bindings for the NumPy C-API; provides PyReadonlyArray3 / PyArray3.
-numpy = "0.28"
+numpy = "0.29"
 
 # licence: MIT OR Apache-2.0  source: https://github.com/rust-ndarray/ndarray
 # N-dimensional array library. Must match the version that the `numpy` crate
-# uses (currently 0.17 as of numpy 0.28) to avoid type incompatibilities at
+# uses (currently 0.17 as of numpy 0.29) to avoid type incompatibilities at
 # the FFI boundary. The `rayon` feature enables Zip::par_for_each.
 ndarray = { version = "0.17", features = ["rayon"] }
 
 # licence: MIT OR Apache-2.0  source: https://github.com/rayon-rs/rayon
-# Data parallelism via work-stealing thread pool; used for tile-based kernels.
+# Data parallelism via work-stealing thread pool. Kernels reach it through
+# `ndarray::Zip::par_for_each` and `ndarray::parallel::prelude`, which the
+# `rayon` feature of ndarray enables; the direct dependency is kept because
+# v0.2's grain kernel generates noise tiles with rayon's own iterators.
 rayon = "1"
 
 # licence: MIT OR Apache-2.0  source: https://github.com/dtolnay/thiserror
 # Derive macro for std::error::Error; used to define PhaiosError.
 thiserror = "2"
 
-# licence: MIT OR Apache-2.0  source: https://github.com/rust-lang/log
-# Logging facade; no concrete logger is chosen here (consumer's concern).
-log = "0.4"
+# licence: MIT OR Apache-2.0  source: https://github.com/chelsea0x3b/cudarc
+# transitive: pulls `libloading` (ISC) for the `dynamic-loading` feature.
+# ISC is permissive and GPLv3-compatible; noted here because §6 asks for
+# the licence of what a dependency actually brings in, not just its own.
+# maintainer: single primary author (75% of commits); #3 contributor is a
+# HuggingFace engineer, and Candle + cubecl-cuda build on this crate.
+# justification: safe host-side CUDA driver-API bindings for the optional
+# `cuda` feature. Chosen over hand-rolled FFI for its versioned symbol
+# resolution (cuMemcpyHtoDAsync_v2 etc.), where a mistake is silent
+# memory corruption. `dynamic-loading` dlopens libcuda at runtime, so a
+# CUDA-enabled build carries no DT_NEEDED on libcuda and imports cleanly
+# on machines with no NVIDIA driver. Feature floor cuda-12000: the newest
+# entry point we reach is cuMemAllocAsync (CUDA 11.2); everything else is
+# CUDA 7.0 or older, so a 12.0 API surface keeps older user drivers
+# viable while staying above the floor. The feature selects which
+# generated declarations compile, nothing about the nvcc that build.rs
+# runs — this crate compiles PTX and links no toolkit library. cudarc's
+# newest bindings are CUDA 13.3 while the toolkit here is 13.4: harmless,
+# since a 13.x driver exports every CUDA-12.0 symbol and nothing here
+# passes a versioned struct. Exit strategy documented in
+# src/cuda/context.rs: 22 entry points, dlopen + dlsym (not
+# cuGetProcAddress — cudarc does not use it), with two allocation paths
+# to reproduce rather than one, which makes it more than the "days" an
+# earlier version of this comment claimed.
+cudarc = { version = "0.19.9", optional = true, default-features = false, features = [
+    "std",
+    "driver",
+    # nvrtc: needed only because cudarc's `load_module` takes the `Ptx`
+    # wrapper type gated behind this feature. `Ptx::from_src` is a plain
+    # data wrapper; libnvrtc itself is dlopened lazily on first *use*,
+    # and this crate never calls the compile API — PTX is prebuilt by
+    # build.rs. No runtime dependency is added.
+    "nvrtc",
+    "dynamic-loading",
+    "cuda-12000",
+] }
+
+[features]
+default = []
+# Optional NVIDIA CUDA backend. Off by default: published wheels stay
+# CPU-only and the ordinary dependency graph is unchanged. Building with
+# this feature requires nvcc (CUDA toolkit) at build time; running
+# requires only the NVIDIA driver, and machines without one degrade
+# gracefully (gpu.available() == False).
+cuda = ["dep:cudarc"]
 
 [dev-dependencies]
-# licence: MIT OR Apache-2.0  source: https://github.com/bheisler/criterion.rs
+# licence: Apache-2.0 OR MIT  source: https://github.com/bheisler/criterion.rs
 # Statistics-driven micro-benchmarking library.
 criterion = { version = "0.8", features = ["html_reports"] }
 
+# licence: MIT OR Apache-2.0  source: https://github.com/proptest-rs/proptest
+# maintainer: the proptest-rs organisation.
+# justification: strategies and shrinking over the shared `validate*`
+# functions' whole input domain, which the hand-picked cases in
+# tests/kernels.rs and the #[cfg(test)] modules cannot cover by construction.
+# Dev-only: exercised by `tests/properties.rs`, never a runtime dependency of
+# the published crate or wheel.
+proptest = "1"
+
 [[bench]]
 name = "kernels"
+harness = false
+
+# The CUDA backend, benchmarked on the same 24 MP image. Skips with a
+# message when built without `cuda` or run without a device, so a plain
+# `cargo bench` on any machine still succeeds.
+[[bench]]
+name = "gpu"
 harness = false
 
 # Explicit example declarations prevent examples/shared/mod.rs from being
@@ -75,3 +190,196 @@ path = "examples/05_local_contrast.rs"
 [[example]]
 name = "06_srgb_encode"
 path = "examples/06_srgb_encode.rs"
+
+[[example]]
+name = "07_exposure"
+path = "examples/07_exposure.rs"
+
+[[example]]
+name = "08_hsl_weighted"
+path = "examples/08_hsl_weighted.rs"
+
+[[example]]
+name = "09_tone_curve"
+path = "examples/09_tone_curve.rs"
+
+[[example]]
+name = "10_vignette"
+path = "examples/10_vignette.rs"
+
+[[example]]
+name = "11_split_toning"
+path = "examples/11_split_toning.rs"
+
+[[example]]
+name = "12_film_grain"
+path = "examples/12_film_grain.rs"
+
+[[example]]
+name = "13_geometry"
+path = "examples/13_geometry.rs"
+
+[[example]]
+name = "14_resample"
+path = "examples/14_resample.rs"
+
+[[example]]
+name = "16_highlight_rolloff"
+path = "examples/16_highlight_rolloff.rs"
+
+[[example]]
+name = "17_quantize"
+path = "examples/17_quantize.rs"
+
+[[example]]
+name = "18_histogram_lut"
+path = "examples/18_histogram_lut.rs"
+
+[[example]]
+name = "19_characteristic_curve"
+path = "examples/19_characteristic_curve.rs"
+
+[[example]]
+name = "20_blur"
+path = "examples/20_blur.rs"
+
+[[example]]
+name = "21_glow"
+path = "examples/21_glow.rs"
+
+[[example]]
+name = "15_gpu_exposure"
+path = "examples/15_gpu_exposure.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "22_gpu_pipeline"
+path = "examples/22_gpu_pipeline.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "23_gpu_selftest"
+path = "examples/23_gpu_selftest.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "24_gpu_luminance"
+path = "examples/24_gpu_luminance.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "25_gpu_channel_mixer"
+path = "examples/25_gpu_channel_mixer.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "26_gpu_color_filter"
+path = "examples/26_gpu_color_filter.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "27_gpu_zone_system"
+path = "examples/27_gpu_zone_system.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "28_gpu_local_contrast"
+path = "examples/28_gpu_local_contrast.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "29_gpu_srgb_encode"
+path = "examples/29_gpu_srgb_encode.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "30_gpu_hsl_weighted"
+path = "examples/30_gpu_hsl_weighted.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "31_gpu_tone_curve"
+path = "examples/31_gpu_tone_curve.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "32_gpu_vignette"
+path = "examples/32_gpu_vignette.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "33_gpu_split_toning"
+path = "examples/33_gpu_split_toning.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "34_gpu_film_grain"
+path = "examples/34_gpu_film_grain.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "35_gpu_geometry"
+path = "examples/35_gpu_geometry.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "36_gpu_resample"
+path = "examples/36_gpu_resample.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "37_gpu_highlight_rolloff"
+path = "examples/37_gpu_highlight_rolloff.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "38_gpu_quantize"
+path = "examples/38_gpu_quantize.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "39_gpu_histogram_lut"
+path = "examples/39_gpu_histogram_lut.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "40_gpu_characteristic_curve"
+path = "examples/40_gpu_characteristic_curve.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "41_gpu_blur"
+path = "examples/41_gpu_blur.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "42_gpu_glow"
+path = "examples/42_gpu_glow.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "43_sharpen"
+path = "examples/43_sharpen.rs"
+
+[[example]]
+name = "44_gpu_sharpen"
+path = "examples/44_gpu_sharpen.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "45_hot_pixels"
+path = "examples/45_hot_pixels.rs"
+
+[[example]]
+name = "46_gpu_hot_pixels"
+path = "examples/46_gpu_hot_pixels.rs"
+required-features = ["cuda"]
+
+[[example]]
+name = "47_denoise"
+path = "examples/47_denoise.rs"
+
+[[example]]
+name = "48_gpu_denoise"
+path = "examples/48_gpu_denoise.rs"
+required-features = ["cuda"]

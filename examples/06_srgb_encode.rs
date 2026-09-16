@@ -13,9 +13,9 @@
 //!   image 1 and approximately mid-grey in image 2.
 //! - Image 2's neutral ramp (row 4) should visually span from near-
 //!   black to near-white in a perceptually even progression.
-//! - This example also verifies that `encode_srgb` is idempotent on
-//!   an already-encoded image only approximately (encoding twice is
-//!   not the identity).
+//! - Both files are written with the raw `write_ppm_grey`, not the
+//!   `*_display` helper: the helper applies the transfer itself, and
+//!   image 1 is the picture of what happens when it is skipped.
 
 #[path = "shared/mod.rs"]
 mod shared;

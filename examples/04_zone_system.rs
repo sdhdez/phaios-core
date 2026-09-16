@@ -8,11 +8,16 @@
 //!    — a classic landscape / darkroom interpretation curve.
 //!
 //! What to look for:
-//! - Configuration 1 and 3 are written side by side; compare the grey
-//!   ramp in row 4 of the chart.
+//! - Each configuration is written as its own file —
+//!   `04_zone_{reference,pull_v,push_vii}.ppm`. Put the reference and
+//!   the push beside each other and compare the grey ramp in row 4.
 //! - The Gaussian blending means a Zone V offset also affects Zones IV
 //!   and VI (σ = 0.8 zones) — the influence is gradual, not a sharp step.
 //! - Patches near the target zone show the most change.
+//!
+//! The output is passed through `encode_srgb` before it is written
+//! (the terminal pipeline stage), so the PPM is display-referred.
+//! Example 06 shows what skipping that stage looks like.
 
 #[path = "shared/mod.rs"]
 mod shared;
@@ -34,9 +39,9 @@ fn main() {
     // 1 — No-op reference
     let params_noop = ZoneParams::default();
     let out_ref = zone_system(bw.view(), &params_noop).unwrap();
-    shared::write_ppm_grey(
+    shared::write_ppm_grey_display(
         Path::new("examples/output/04_zone_reference.ppm"),
-        out_ref.as_slice().unwrap(),
+        out_ref.view(),
         shared::WIDTH,
         shared::HEIGHT,
     );
@@ -45,9 +50,9 @@ fn main() {
     let mut offsets_pull = HashMap::new();
     offsets_pull.insert(5_i32, -1.0_f32);
     let out_pull = zone_system(bw.view(), &ZoneParams::new(offsets_pull)).unwrap();
-    shared::write_ppm_grey(
+    shared::write_ppm_grey_display(
         Path::new("examples/output/04_zone_pull_v.ppm"),
-        out_pull.as_slice().unwrap(),
+        out_pull.view(),
         shared::WIDTH,
         shared::HEIGHT,
     );
@@ -57,9 +62,9 @@ fn main() {
     offsets_push.insert(7_i32, 1.0_f32);
     offsets_push.insert(3_i32, -0.5_f32);
     let out_push = zone_system(bw.view(), &ZoneParams::new(offsets_push)).unwrap();
-    shared::write_ppm_grey(
+    shared::write_ppm_grey_display(
         Path::new("examples/output/04_zone_push_vii.ppm"),
-        out_push.as_slice().unwrap(),
+        out_push.view(),
         shared::WIDTH,
         shared::HEIGHT,
     );

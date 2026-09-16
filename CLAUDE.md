@@ -1,280 +1,186 @@
-# phaios-core
+# phaios-core — working notes for Claude Code
 
-Numerical kernels for black-and-white RAW image processing. Rust crate
-with PyO3 bindings. The reusable, GUI-free, I/O-free core that any
-front-end (desktop, web service, GIMP plugin, CLI script) can build on.
+Numerical kernels for black-and-white RAW image processing: a Rust crate
+with PyO3 bindings, GUI-free and I/O-free.
 
-The name is from φαιός (Greek, "dusky grey"), the term Aristotle uses
-in *De Sensu* for the intermediate colours between white and black.
+This file is loaded into context on every task, so it holds only what
+changes what you write. Everything else has a home:
 
-Licence: GPLv3. Maintainer: Simon ([github.com/sdhdez](https://github.com/sdhdez)).
+| | |
+|---|---|
+| What the crate contains, dev setup, releasing | `README.md` |
+| Conventions, the kernel checklist, dependency rules | `CONTRIBUTING.md` |
+| Why a kernel works as it does, with citations | `docs/architecture.md` |
+| The FFI contract and CPU/GPU agreement classes | `docs/ffi.md` |
+| What a finished image must look like in a file | `docs/export.md` |
+| Version history | `CHANGELOG.md` |
 
-## 1. What this crate does — and what it doesn't
+## 1. Scope
 
-**v0.1 (implemented):** three B&W conversion kernels (standard
-luminance, channel mixer, coloured-filter simulation), Adams/Archer
-Zone System tone curve, He–Sun–Tang guided filter for local contrast,
-sRGB transfer encoding. All as pure functions on `f32` C-contiguous
-`(H, W, C)` arrays.
-
-**v0.2 (planned):** exposure compensation, HSL-weighted B&W
-(8 hue bands), procedural film grain (explicit seed), split-toning,
-radial vignette, parametric tone curve.
-
-**Never does:** open RAW files, write TIFFs, manage settings, draw
-pixels on a screen, talk to the network. Those belong to consumers
-(`phaios` desktop, `phaios-web`, your scripts).
-
-This separation is load-bearing. If you find yourself reaching for
-`std::fs` or pulling in an image-format crate, stop — that work
+**Never does:** open RAW files, write TIFFs, manage settings, draw pixels
+on a screen, talk to the network. Those belong to consumers (`phaios`
+desktop, your scripts). The separation is load-bearing — if you find
+yourself reaching for `std::fs` or an image-format crate, stop: that work
 belongs in a consumer.
+
+**Not started, deliberately:** pixel-level local adjustment (masks,
+U-Point-style edit propagation) and the Newson et al. (2017) stochastic
+grain model. Both are research territory; do not start either without an
+explicit decision.
+
+If a request conflicts with either, surface the conflict before
+implementing.
 
 ## 2. Hard constraints (never violate)
 
-- **Pure functions only.** Public kernels take immutable inputs and
-  return new arrays (or write into caller-provided scratch buffers
-  explicitly typed as such). No globals, no thread-locals, no hidden
-  state.
+- **Pure functions only — no *implicit* state.** Public kernels take
+  immutable inputs and return new arrays. No globals, no thread-locals,
+  no lazily-initialised singletons, no ambient context. State a backend
+  genuinely requires — a CUDA device, its stream, its module cache —
+  lives in a `Context` the caller constructs, owns and passes explicitly
+  (on the GPU path, inside the `DeviceImage`); it is reachable only
+  through that argument and cannot affect results. CI greps `src/cuda/`
+  for `static mut|OnceLock|OnceCell|lazy_static!|thread_local!`.
 - **`f32`, linear, scene-referred** for all pipeline math. The sRGB
-  transfer is applied only by `encode_srgb`, which is the very last
-  stage and is the only kernel that produces display-referred output.
-- **Determinism.** Any kernel using randomness takes an explicit
-  `seed: u64`. No global RNG.
-- **No I/O.** No `std::fs`, no `std::net`, no `println!` outside of
-  examples and tests. Logging via the `log` crate facade, never
+  transfer is applied only by `encode_srgb`, the last stage and the only
+  kernel producing display-referred output.
+- **Determinism is per backend.** Bit-identical within a backend (any
+  thread count, any launch geometry), bounded across — `docs/ffi.md` §6.
+  Kernels free of transcendentals are bit-exact even across. Any kernel
+  using randomness takes an explicit `seed: u64`. No global RNG. A GPU
+  port must reproduce the *integer* part of a noise scheme bit-for-bit.
+- **The CPU implementation is the specification.** Every GPU kernel is
+  validated against it, never the other way round; disagreement beyond
+  the committed bound means the GPU kernel is wrong. Validation is
+  extracted (`pub(crate) validate*`) and shared, so both backends reject
+  identical inputs with identical messages.
+- **No I/O.** No `std::fs`, no `std::net`, no `println!` outside examples
+  and tests. The crate emits no diagnostics at all; if a kernel ever
+  needs them, add the `log` facade back with a justification — never
   direct prints.
-- **No panics across the FFI boundary.** Convert errors via
-  `thiserror` + `From` impls into `PyErr`. Internal panics on
-  invariant violations (e.g. shape mismatch) are acceptable but
-  must be documented.
-- **Zero-copy at FFI.** Inputs as `PyReadonlyArray3<f32>`. Outputs
-  as `Py<PyArray3<f32>>` allocated once and returned. No
-  `.to_owned()` on input arrays.
+- **No panics across the FFI boundary.** Convert errors via `thiserror`
+  + `From` impls into `PyErr`. Internal panics on invariant violations
+  are acceptable but must be documented. `PanicException` is *not* a
+  safety net: it inherits from `BaseException`, so it slips through a
+  consumer's `except Exception:` and kills the calling thread. Never
+  `expect` on anything the caller controls — including array layout.
+- **Bounded allocation.** No single array may exceed 8 GiB
+  (`src/alloc.rs`); beyond that kernels return `PhaiosError::Allocation`
+  → Python `MemoryError`. A failed `Vec` allocation *aborts* rather than
+  unwinding, which no `except` can catch, and a zero-stride numpy
+  broadcast reaches that from four bytes of storage. Never call
+  `Array3::zeros` on a caller-derived shape — use `alloc::zeros3`. The
+  limit bounds single allocations only, not a pipeline's peak footprint;
+  the rest is deferred.
+- **Layout-agnostic inputs.** `PyReadonlyArray3` accepts strided,
+  Fortran-order and negative-stride arrays, and a consumer passing
+  `img[::2, ::2]` is normal. Use `ndarray::Zip`, which walks any layout;
+  never `as_slice().expect(...)`.
+- **Deterministic reductions.** f32 addition is not associative, so a
+  seed alone does not give reproducibility. Sort before reducing over a
+  `HashMap`/`HashSet`, and fix the order of any parallel sum (or
+  accumulate in f64). `zone_system` shipped in v0.1 summing in hash order
+  and produced different bytes on every process.
+- **Zero-copy at FFI.** Inputs as `PyReadonlyArray3<f32>`. Outputs as
+  `Py<PyArray3<f32>>` allocated once and returned. No `.to_owned()` on
+  input arrays.
+- **Watch the scratch footprint.** A 24 MP frame is 100 MB as f32 and
+  200 MB as f64; a kernel holding a handful of full-resolution
+  intermediates reaches gigabytes. Drop each as soon as it is consumed,
+  and prefer mapping during accumulation to materialising a copy.
 - **GIL release.** Long-running kernels release the GIL via
-  `py.detach(...)` (PyO3 ≥ 0.22; `allow_threads` was removed).
-  Document any kernel that doesn't and why.
-- **Public API stability.** Once a function ships in a tagged
-  release, its signature is stable until the next major version.
-  Breaking changes go through a deprecation cycle.
+  `py.detach(...)` (PyO3 ≥ 0.22; `allow_threads` was removed). Document
+  any kernel that doesn't, and why.
+- **Public API stability.** Once a function ships in a tagged release its
+  signature is stable until the next major version. Breaking changes go
+  through a deprecation cycle.
 
-## 3. Pipeline math — the rules contributors must know
+## 3. Pipeline order
 
-```
-RAW (consumer's problem)
-  → linear scene-referred f32 RGB                  ← input to kernels
-  → exposure                                        ← kernel (v0.2 planned)
-  → B&W conversion (three kernels; +HSL in v0.2)   ← kernel
-  → tone (zone system v0.1; parametric curve v0.2)  ← kernel
-  → local contrast (guided filter)                  ← kernel (v0.1)
-  → finishing (grain, toning, vignette)             ← kernels (v0.2 planned)
-  → sRGB encode                                     ← kernel (terminal, v0.1)
-  → display-referred f32 RGB                        ← output, consumer writes file
-```
+Geometry (`orient` → `straighten` → `crop` → `resize`) → `exposure` →
+B&W conversion → `zone_system` → `local_contrast` → `shadow_rolloff` →
+`tone_curve` → `film_grain` → `split_toning` → `vignette` →
+`highlight_rolloff` → `encode_srgb` → `quantize`.
 
-The pipeline order matters. Document any kernel that has order
-sensitivity in its doc comment.
+Grain and vignette come after the tone stages: a curve applied
+afterwards would reshape the grain off the midtones and act on already
+darkened corners. The optional stages (`hot_pixels`, `denoise`, `blur`,
+`glow`, `sharpen`) sit where their doc comments say. The channel count
+collapses to 1 at the B&W stage and returns to 3 at split-toning;
+kernels after that accept any channel count, so a pipeline need not
+branch on whether toning is enabled. Order matters — document any
+kernel with order sensitivity in its doc comment.
 
-Reference values worth committing to memory:
-- BT.709 luminance weights: `(0.2126, 0.7152, 0.0722)`. Default for
-  sRGB-primary data.
-- Middle grey: 18% reflectance = `0.18` linear.
-- sRGB threshold: `0.0031308`.
+## 4. PyO3 0.29 traps
 
-Full derivations and citations live in `docs/architecture.md`.
+Current as of PyO3 0.29 / numpy 0.29, and several contradict older
+tutorials you may have seen:
 
-## 4. The Python ↔ Rust boundary
+- **GIL release:** `py.detach(move || { ... })`; `allow_threads` was
+  removed in 0.22. The closure must be `Send` — `ArrayView3<f32>` is
+  `Copy + Send`, so `move` works.
+- **Array output:** `use numpy::IntoPyArray;` must be imported
+  explicitly. `array.into_pyarray(py)` returns `Bound<'py, PyArray3>`;
+  call `.unbind()` for the `Py<PyArray3<f32>>` a `#[pyfunction]` returns.
+- **`#[pyclass]` with `Clone`:** add `from_py_object` to opt into the
+  `FromPyObject` derive. Without it 0.28+ warns and will break later.
+- **Enums:** `#[pyclass(eq, eq_int)]` enables integer comparison. Use
+  `#[derive(Default)]` with `#[default]` — clippy `-D warnings` rejects a
+  manual `impl Default` where derive would do.
+- **Module/function name clash:** when a `#[pyfunction]` shares its
+  module's name, rename the Rust fn and add `#[pyo3(name = "...")]`.
+- **Validate in the kernel, not the constructor:** a `#[new]` returning
+  `PyResult` changes the Rust signature, and shipped signatures are
+  frozen. Kernels already return `Result`.
+- **`__eq__` removes `__hash__`**, matching Python's own rule for
+  value-compared objects — so param objects cannot be dict keys.
+- **Interpreter-dependent tests don't link:** with `extension-module` the
+  test binary has no libpython, so `Python::attach` in `#[cfg(test)]`
+  fails. Test error *values* in Rust and exception *types* from
+  `tests/ffi.py` — and there use `pytest.raises(Exception)`, since a
+  dtype mismatch raises `TypeError` or `ValueError` depending on version.
+- **Fixed-size arrays cross the boundary:** `[f32; 8]` works as a
+  `#[pyo3(get, set)]` field and a `#[new]` argument.
+- **`#[pyo3(signature = ...)]` gives keyword defaults** on `#[new]`;
+  array defaults are written inline.
 
-See `docs/ffi.md` for the full contract. Summary:
+## 5. Toolchain traps
 
-- Inputs: `PyReadonlyArray3<f32>`, C-contiguous, shape `(H, W, C)`
-  with C ∈ {1, 3}.
-- Outputs: `Py<PyArray3<f32>>`, same layout.
-- Param types are `#[pyclass]` Rust structs constructible by name in
-  Python. The orchestrator (in `phaios` desktop) builds them once
-  per pipeline run.
-- Errors: `PyResult<T>`, never panic across FFI.
-- The Python module is named `phaios_core`. The crate is `phaios-core`.
-  The version of both must match exactly — CI enforces this.
+- `maturin develop --release` **silently drops the GPU** unless you add
+  `--features cuda`; `from phaios_core import gpu` then fails.
+- `cargo test` and `cargo clippy` skip the CUDA backend entirely without
+  `--features cuda` — it is behind `#[cfg]`, so even a type error there
+  passes. `./scripts/gpu-verify.sh` runs what CI cannot.
+- Run clippy with `--all-targets`: the bare form lints only the library,
+  so examples, benches and tests go unchecked until CI.
+- `cargo bench` needs no `--release`; the bench profile is already
+  optimised.
 
-### PyO3 0.28 implementation notes (verified in v0.1)
+## 6. Working practice
 
-The following patterns are current as of PyO3 0.28 / numpy 0.28.
-Some differ from older tutorials:
-
-- **GIL release**: `py.detach(move || { ... })` — `allow_threads` was
-  removed in 0.22. The closure must be `Send`; `ArrayView3<f32>` is
-  `Copy + Send` so it can be captured by `move`.
-- **Array output**: `use numpy::IntoPyArray;` must be imported explicitly.
-  `array.into_pyarray(py)` returns `Bound<'py, PyArray3<f32>>`; call
-  `.unbind()` to get the `Py<PyArray3<f32>>` that `#[pyfunction]` returns.
-- **`#[pyclass]` with `Clone`**: add `from_py_object` to opt in to the
-  `FromPyObject` derive: `#[pyclass(from_py_object)]`. Without it, PyO3
-  0.28 emits a deprecation warning and will break in a future release.
-- **Enums**: `#[pyclass(eq, eq_int)]` enables Python integer comparison.
-  Use `#[derive(Default)]` with `#[default]` on the default variant —
-  clippy `-D warnings` rejects a manual `impl Default` when derive works.
-- **Module/function name clash**: when a `#[pyfunction]` has the same
-  name as its containing Rust module (e.g. `fn local_contrast` inside
-  `mod local_contrast`), rename the Rust function (e.g. `local_contrast_fn`)
-  and add `#[pyo3(name = "local_contrast")]` to expose it with the right
-  Python name.
-- **Dtype-mismatch exception type**: when a Python caller passes the
-  wrong numpy dtype, PyO3 raises `TypeError` or `ValueError` depending
-  on the PyO3/numpy version. In `tests/ffi.py`, use
-  `pytest.raises(Exception)` rather than a specific subclass.
-
-## 5. Code conventions
-
-- **Rust 2024 edition**, stable toolchain.
-- **`cargo fmt`** + **`cargo clippy -- -D warnings`** are blocking in
-  CI.
-- **`#![deny(missing_docs)]`** on the public API.
-- **Doc comments on every public item.** For algorithms, cite the
-  paper, textbook, or spec by full title and year. Examples:
-
-  ```rust
-  /// Apply the Adams/Archer Zone System tone curve.
-  ///
-  /// Eleven zones (0..=10), each one stop apart; Zone V = middle
-  /// grey at 18% reflectance. Offsets are blended via a Gaussian
-  /// in zone-position space (σ = 0.8 zones).
-  ///
-  /// Reference: Ansel Adams, *The Negative*, Little, Brown (1948),
-  /// chapter 5; modernised in Davis, *Beyond the Zone System*,
-  /// Focal Press (1999).
-  ```
-
-- **SPDX header on every source file:** `// SPDX-License-Identifier: GPL-3.0-or-later`.
-- **`#[must_use]`** on functions returning `Result` or owned data.
-- **Tests next to code.** Unit tests in `#[cfg(test)] mod tests`;
-  integration tests in `tests/`.
-
-## 6. Dependency policy
-
-- **crates.io only.** Pin via `Cargo.lock` committed to the repo.
-- **Adding a dep requires** licence, primary source URL,
-  maintainer, and a justification. Record this as a comment in
-  `Cargo.toml` next to the dep.
-- **Prefer std > established crate > new dep.** "Established" means:
-  >1M downloads, active maintenance, used by at least one major
-  Rust project.
-- **`cargo audit`** runs in CI and is blocking.
-- The author is security-conscious — every new dep is a supply-chain
-  decision.
-
-Current core deps (do not exceed without justification): `pyo3`,
-`numpy`, `ndarray`, `rayon`, `thiserror`, `log`. v0.2 will add
-`rand`, `rand_distr` for the film grain kernel.
-
-`ndarray` version must match the version pulled in by `numpy` (check
-with `cargo tree | grep ndarray` after adding or updating `numpy`).
-Enable the `rayon` feature: `ndarray = { version = "...", features = ["rayon"] }`.
-
-`criterion` ≥ 0.5: `criterion::black_box` is deprecated — use
-`std::hint::black_box` instead in all benchmark files.
-
-## 7. Build & dev workflow
-
-```
-# First time (requires Python 3.12+; 3.13 recommended for performance)
-rustup default stable
-uv venv .phaios-venv && source .phaios-venv/bin/activate
-uv pip install -r requirements-dev.txt   # installs maturin, pytest
-
-# After Rust changes
-maturin develop --release             # rebuilds and installs into venv
-
-# Test everything
-cargo test
-cargo clippy -- -D warnings
-cargo fmt --check
-pytest                                # Python-side smoke tests on the bindings
-
-# Benchmarks (criterion)
-cargo bench
-
-# Build wheels for distribution
-maturin build --release               # local
-# Release workflow uses maturin-action for manylinux_2_17 + Windows + macOS
-```
-
-CI (`.github/workflows/ci.yml`) runs the same checks — `cargo fmt --check`,
-`cargo clippy -- -D warnings`, `cargo test`, `cargo audit`, all 6 examples,
-and `pytest`. Green locally ≈ green in CI.
-
-## 8. Examples (`examples/`)
-
-The `examples/` directory is the public face of this crate for
-non-Python users. Treat it like the OpenGL `examples/` directory:
-small, self-contained, one concept per example.
-
-Conventions:
-- Each example is a single Rust binary in `examples/<name>.rs` (cargo
-  picks them up automatically).
-- Each example produces an 8-bit PPM file in `examples/output/`
-  (PPM has no dependencies, anyone can view it).
-- The synthetic test image is built in code (a Macbeth-style colour
-  checker) — no real image inputs in this crate, ever.
-- Each example begins with a doc comment explaining what kernel it
-  demonstrates and what to look for in the output.
-
-When adding a new kernel, add a new example for it. CI runs every
-example as part of the test suite.
-
-## 9. Commit & branch hygiene
-
-- Conventional commits with optional scope: `feat(bw):`,
-  `fix(zone):`, `test:`, `docs:`, `bench:`, `chore:`.
-- One logical change per commit.
-- `main` is always green; feature work in `feat/<slug>`.
-- Tag releases as `v0.1.0`, `v0.2.0`. Both crate and Python wheel
-  carry the same version. CI enforces this with a version-consistency
-  check (`Cargo.toml` version == `pyproject.toml` version).
-
-**Cutting a release:**
-1. Bump the version in `Cargo.toml`, `pyproject.toml`, **and**
-   `Cargo.lock` in a single commit (`chore: bump version to vX.Y.Z`).
-   (`Cargo.lock` updates automatically after any `cargo` command;
-   stage it explicitly or `cargo publish` will see a dirty tree.)
-2. Ensure prerequisites are in place (one-time setup — see README):
-   - `CARGO_REGISTRY_TOKEN` GitHub Actions secret (crates.io). The
-     token must have both `publish-new` (first upload) **and**
-     `publish-update` (subsequent versions) scopes, scoped to the
-     crate. Set no expiry or a long one — short-lived tokens cause
-     403s on re-runs.
-   - PyPI OIDC trusted publisher configured (`release.yml` / env `pypi`)
-3. `git tag vX.Y.Z && git push origin vX.Y.Z` — triggers
-   `.github/workflows/release.yml`, which builds wheels for
-   manylinux_2_17, Windows x86_64, macOS arm64 via
-   `PyO3/maturin-action@v1`, then publishes to PyPI (OIDC, no stored
-   token) and crates.io (`CARGO_REGISTRY_TOKEN` secret).
-
-## 10. Working agreement with Claude Code
-
-- **Plan before code.** Produce a written plan, wait for approval,
-  then implement.
-- **Cite sources** in doc comments for every algorithm.
-- **Ask before adding dependencies.** Justify each.
-- **Flag assumptions.** Don't paper over ambiguity by picking a
-  default silently.
+- **Plan before code.** Produce a written plan, wait for approval, then
+  implement.
+- **Adding or changing a kernel:** follow the eight-item checklist in
+  `CONTRIBUTING.md`. The work is not complete until all eight exist —
+  the benchmark, the `docs/architecture.md` section and the
+  `docs/kernels.md` section are the ones most often forgotten.
+- **Python-visible changes need the stub.** A new or changed
+  `#[pyfunction]`, `#[pyclass]` field, default or docstring is not
+  complete until `python/phaios_core/__init__.pyi` (or `gpu.pyi`)
+  mirrors it verbatim; `tests/ffi.py` fails on any drift.
+- **Ask before adding a dependency**, and justify it. Rules in
+  `CONTRIBUTING.md`.
+- **Scratch files go in `.cache/`** at the repo root — never `/tmp`,
+  never `~/.cache`, never a home directory. `.cache/scratch/` for one-off
+  files, `.cache/worktrees/` for throwaway checkouts. It is gitignored
+  and excluded from the package. Two reasons beyond tidiness: a system
+  temp directory here is a quota-limited tmpfs that kills `cargo` builds
+  partway and is cleared without warning mid-session, and a path under
+  `$HOME` is invisible to `git status`, so residuals accumulate unseen.
+  Claude Code's own memory and journals live under `~/.claude/` because
+  the harness owns those paths — don't relocate them.
+- **Flag assumptions.** Don't paper over ambiguity by picking a default
+  silently.
 - **Every question is standalone.** Don't assume context from other
   repos, past sessions, or unrelated files.
 - **No telemetry, no network at runtime, ever.**
-- If the user requests a feature that violates section 1 ("v0.1
-  implemented / v0.2 planned / never does"), surface the conflict
-  before implementing. The split with `phaios` desktop is
-  intentional.
-
-## 11. Quick command reference
-
-```
-maturin develop --release             # rebuild + install Python bindings
-cargo test                            # Rust unit + integration tests
-cargo clippy -- -D warnings           # lint
-cargo fmt --check                     # format check
-cargo audit                           # supply-chain audit
-cargo bench                           # criterion benchmarks (bench profile = optimised; no --release flag)
-cargo run --example zone_system       # run a single example
-pytest                                # Python-side smoke tests
-maturin build --release               # local wheel build
-```

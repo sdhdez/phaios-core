@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The half of CI that a hosted runner cannot do.
+#
+# `ci.yml` runs on ubuntu-latest, which has neither nvcc nor an NVIDIA
+# device, so it deliberately skips every target gated behind
+# `required-features = ["cuda"]` and never builds the CUDA backend at all.
+# This workflow is its mirror image and runs only on a self-hosted runner
+# that has both.
+#
+# It is not required for a release — `release.yml` does not depend on it,
+# and the published wheels are built without the feature. It exists so the
+# backend is verified by something other than the maintainer remembering
+# to, and so a contributor with a device can prove a change before it is
+# merged.
+#
+# Setting up a runner: https://docs.github.com/actions/hosting-your-own-runners
+# Label it `cuda` and it will pick these jobs up. Fork pull requests do not
+# run here — see the `if` guard below; a self-hosted runner executes
+# arbitrary code from whoever opened the PR, so this is deliberate.
+
+name: GPU
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cuda:
+    name: CUDA backend (self-hosted)
+    runs-on: [self-hosted, cuda]
+    # Never run untrusted fork code on a self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Toolchain and device
+        run: |
+          rustc --version
+          nvcc --version | tail -2
+          nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
+
+      # One script, so the local command and the CI job cannot drift apart:
+      # whatever a contributor runs by hand is exactly what runs here.
+      - name: Verify
+        run: ./scripts/gpu-verify.sh

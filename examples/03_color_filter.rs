@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Example 03 — Colour filter B&W simulation.
 //!
-//! Applies all six Wratten-style presets (None, Yellow #8 K2, Orange #21,
-//! Red #25 A, Green #11 X1, Blue #47 C5) and writes one PPM per preset.
+//! Applies all six presets and writes one PPM per preset: the
+//! unfiltered reference (None) and five Wratten filters (Yellow #8 K2,
+//! Orange #21, Red #25 A, Green #11 X1, Blue #47 C5).
 //!
 //! What to look for:
 //! - Red #25 A makes the blue patch (#03, blue sky) very dark and
@@ -11,6 +12,10 @@
 //!   darkens reds and blues — natural landscape look.
 //! - Blue #47 C5 effectively inverts what Red does: sky is bright, reds
 //!   are dark. Used for atmospheric haze enhancement.
+//!
+//! The output is passed through `encode_srgb` before it is written
+//! (the terminal pipeline stage), so the PPM is display-referred.
+//! Example 06 shows what skipping that stage looks like.
 
 #[path = "shared/mod.rs"]
 mod shared;
@@ -37,12 +42,7 @@ fn main() {
     for (name, filter) in presets {
         let bw = color_filter_bw(rgb.view(), *filter, LuminanceStandard::Bt709).unwrap();
         let out = format!("examples/output/03_filter_{name}.ppm");
-        shared::write_ppm_grey(
-            Path::new(&out),
-            bw.as_slice().unwrap(),
-            shared::WIDTH,
-            shared::HEIGHT,
-        );
+        shared::write_ppm_grey_display(Path::new(&out), bw.view(), shared::WIDTH, shared::HEIGHT);
         println!("wrote {out}");
     }
 }

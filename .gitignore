@@ -1,6 +1,13 @@
 # Rust build artefacts
 /target/
 
+# Local cache: scratch build trees, audit worktrees and other working
+# residuals. Unanchored on purpose: a scratch directory created at the
+# wrong depth is still a residual, and Cargo.toml's `exclude` already
+# drops `.cache/` at any depth. Never contains anything the crate needs;
+# safe to delete at any time.
+.cache/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -32,3 +39,49 @@ phaios-core.code-workspace
 
 # Criterion benchmark artefacts
 criterion/
+
+# kernel-viewer tool: build artefacts and local test images (never commit
+# image assets — CONTRIBUTING.md, "Examples")
+tools/kernel-viewer/target/
+tools/kernel-viewer/testdata/
+
+# Image assets are never committed (CONTRIBUTING.md, "Examples"): the
+# test image is built in code, and a real photograph anywhere in the tree
+# would ship to both registries. One bracket-class pattern per format,
+# because git ignore patterns are case-sensitive and cameras write
+# upper-case extensions. Three layers enforce the rule: these lines, the
+# "No image assets" step in CI (which sees tracked files, so it catches a
+# `git add -f`), and Cargo.toml's `exclude`. This repo has no deliberate
+# exception and wants none.
+*.[Dd][Nn][Gg]
+*.[Nn][Ee][Ff]
+*.[Cc][Rr]2
+*.[Cc][Rr]3
+*.[Aa][Rr][Ww]
+*.[Rr][Aa][Ff]
+*.[Oo][Rr][Ff]
+*.[Rr][Ww]2
+*.[Pp][Ee][Ff]
+*.[Ss][Rr][Ww]
+*.[Jj][Pp][Gg]
+*.[Jj][Pp][Ee][Gg]
+*.[Pp][Nn][Gg]
+*.[Tt][Ii][Ff]
+*.[Tt][Ii][Ff][Ff]
+*.[Ww][Ee][Bb][Pp]
+*.[Hh][Ee][Ii][Cc]
+*.[Hh][Ee][Ii][Ff]
+*.[Bb][Mm][Pp]
+*.[Gg][Ii][Ff]
+*.[Ee][Xx][Rr]
+*.[Hh][Dd][Rr]
+*.[Pp][Gg][Mm]
+*.[Pp][Bb][Mm]
+*.[Pp][Pp][Mm]
+*.[Pp][Ss][Dd]
+
+# Claude Code's per-project directory (settings, worktrees, session
+# state). It lives in the working tree but is never part of the crate and
+# must not be picked up by a `git add -A`; Cargo.toml's `exclude` keeps
+# it out of the package as well, in case it is ever tracked deliberately.
+.claude/

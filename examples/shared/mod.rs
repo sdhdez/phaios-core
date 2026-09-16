@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#![allow(dead_code)]
 //! Shared utilities for phaios-core examples.
+//!
+//! Every example pulls this file in with `#[path]`, so each one compiles
+//! its own copy and uses only the helpers it needs — hence the
+//! module-wide `dead_code` allow. Example 06 in particular writes
+//! deliberately unencoded output and never calls
+//! [`write_ppm_grey_display`].
 //!
 //! Provides a synthetic Macbeth-style colour checker and a minimal
 //! binary PPM writer. Neither function performs I/O except via the
@@ -8,6 +15,9 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
+
+use ndarray::ArrayView3;
+use phaios_core::encode::encode_srgb;
 
 /// Patch count and grid layout for the synthetic Macbeth chart.
 pub const PATCH_SIZE: usize = 64;
@@ -100,7 +110,42 @@ pub fn write_ppm(path: &Path, pixels: &[f32], width: usize, height: usize) {
 ///
 /// Each f32 is written as R=G=B (greyscale triplet) so the PPM viewer
 /// renders a proper greyscale image.
+///
+/// Writes the values **as given**. Kernel output is linear
+/// scene-referred, and a PPM is display-referred, so callers normally
+/// want [`write_ppm_grey_display`] instead. Example 06 uses this
+/// directly, on purpose, to show what skipping the encode looks like.
 pub fn write_ppm_grey(path: &Path, pixels: &[f32], width: usize, height: usize) {
     let rgb: Vec<f32> = pixels.iter().flat_map(|&v| [v, v, v]).collect();
     write_ppm(path, &rgb, width, height);
+}
+
+/// Apply the terminal sRGB encode, then write an 8-bit RGB PPM.
+///
+/// The three-channel counterpart of [`write_ppm_grey_display`], for
+/// examples whose output is still RGB (exposure, split-toning).
+///
+/// Panics if the input is not `(H, W, 3)`.
+pub fn write_ppm_display(path: &Path, img: ArrayView3<f32>, width: usize, height: usize) {
+    let encoded = encode_srgb(img).expect("encode_srgb: expected (H, W, 3) RGB");
+    let slice = encoded
+        .as_slice()
+        .expect("encode_srgb output is always contiguous");
+    write_ppm(path, slice, width, height);
+}
+
+/// Apply the terminal sRGB encode, then write an 8-bit greyscale PPM.
+///
+/// The kernels work in linear scene-referred f32; an 8-bit PPM is
+/// display-referred. `encode_srgb` is the last stage of the pipeline
+/// (see `docs/architecture.md` §1) and skipping it makes the midtones
+/// far too dark: 18% grey lands on code 48 instead of 120.
+///
+/// Panics if the input is not `(H, W, 1)`.
+pub fn write_ppm_grey_display(path: &Path, img: ArrayView3<f32>, width: usize, height: usize) {
+    let encoded = encode_srgb(img).expect("encode_srgb: expected (H, W, 1) luminance");
+    let slice = encoded
+        .as_slice()
+        .expect("encode_srgb output is always contiguous");
+    write_ppm_grey(path, slice, width, height);
 }

@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -20,7 +20,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -32,14 +32,44 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --check
 
+      # --all-targets so examples, benches and tests are linted too. Without
+      # it, dead code in examples/shared/mod.rs slipped through CI.
       - name: cargo clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: cargo test
         run: cargo test
 
+      # Kernels are pure functions and the CUDA backend holds
+      # no implicit state — the device, stream and module cache live in a
+      # Context the caller constructs and passes. Comment lines are stripped
+      # before matching: context.rs documents the rule by naming the very
+      # constructs it forbids ("There is no singleton, no `OnceLock`...").
+      - name: No implicit state in the CUDA backend
+        run: |
+          HITS=$(grep -rnE 'static mut|OnceLock|OnceCell|lazy_static!|thread_local!' src/cuda/ \
+                 | grep -vE '^[^:]*:[0-9]+: *(//|/\*|\*)' || true)
+          if [ -n "$HITS" ]; then
+            echo "Forbidden implicit state in src/cuda/:"
+            echo "$HITS"
+            exit 1
+          fi
+          echo "src/cuda/ is free of implicit state ✓"
+
+      - name: No image assets in the repository
+        run: |
+          # Sees tracked files, so it catches what .gitignore cannot: a
+          # `git add -f` of a photograph (CONTRIBUTING.md, "Examples").
+          HITS=$(git ls-files | grep -Ei '\.(dng|nef|cr2|cr3|arw|raf|orf|rw2|pef|srw|jpe?g|png|tiff?|webp|heic|heif|bmp|gif|exr|hdr|p[bgp]m|psd)$' || true)
+          if [ -n "$HITS" ]; then
+            echo "Image assets are never committed (CONTRIBUTING.md):"
+            echo "$HITS"
+            exit 1
+          fi
+          echo "no image assets tracked ✓"
+
       - name: cargo audit
-        uses: rustsec/audit-check@v1
+        uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -54,18 +84,59 @@ jobs:
           fi
           echo "Version: $CRATE ✓"
 
+      # Discovered from cargo metadata rather than hardcoded: a new example
+      # added in v0.2 would otherwise silently never run here.
       - name: Run all examples
         run: |
-          for ex in 01_luminance 02_channel_mixer 03_color_filter \
-                    04_zone_system 05_local_contrast 06_srgb_encode; do
+          # Skip examples gated behind features (e.g. required-features =
+          # ["cuda"]) — the hosted runner has neither nvcc nor a GPU.
+          EXAMPLES=$(cargo metadata --no-deps --format-version=1 \
+            | python3 -c "import sys, json; print('\n'.join(sorted(t['name'] for p in json.load(sys.stdin)['packages'] for t in p['targets'] if 'example' in t['kind'] and not t.get('required-features'))))")
+          if [ -z "$EXAMPLES" ]; then echo "no examples discovered"; exit 1; fi
+          echo "$EXAMPLES" | while read -r ex; do
             echo "--- $ex ---"
-            cargo run --example $ex
+            cargo run --example "$ex"
           done
 
-      - name: Set up uv + Python 3.12
-        uses: astral-sh/setup-uv@v5
+  # The wheel is `cp312-abi3` (`abi3-py312` in Cargo.toml): one build is
+  # supposed to serve every 3.12+ interpreter that has the GIL. Until now CI
+  # only ever ran 3.12, so that promise was never exercised. Its own job
+  # rather than a matrix on `test`: the Rust half above has nothing to do
+  # with the interpreter and must not run three times.
+  #
+  # Free-threaded builds (3.13t, 3.14t) are deliberately absent — PyO3 0.29
+  # ignores `abi3` there, so they are not what this wheel targets; see
+  # README "Type hints".
+  python:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v6
         with:
-          python-version: "3.12"
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # Keyed per interpreter so the three jobs do not race for one
+          # cache entry; `restore-keys` still warms them from `test`.
+          key: ${{ runner.os }}-cargo-py${{ matrix.python }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Set up uv + Python ${{ matrix.python }}
+        uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ matrix.python }}
           enable-cache: true
 
       - name: Install dev dependencies
@@ -83,3 +154,13 @@ jobs:
         run: |
           source .phaios-venv/bin/activate
           pytest tests/ffi.py -v
+
+      - name: Type-check the stubs
+        run: |
+          source .phaios-venv/bin/activate
+          mypy --strict python/phaios_core
+
+      - name: stubtest
+        run: |
+          source .phaios-venv/bin/activate
+          python -m mypy.stubtest phaios_core --allowlist tests/stubtest-allowlist.txt

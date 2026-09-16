@@ -4,19 +4,31 @@ build-backend = "maturin"
 
 [project]
 name = "phaios-core"
-version = "0.1.1"
+version = "0.2.0-dev"
 description = "Numerical kernels for black-and-white RAW image processing"
+readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "GPL-3.0-or-later" }
 classifiers = [
     "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Topic :: Multimedia :: Graphics",
     "Intended Audience :: Developers",
     "Development Status :: 3 - Alpha",
+    "Typing :: Typed",
 ]
-dependencies = []
+# rust-numpy 0.29 resolves the NumPy array-API capsule lazily, so a missing
+# numpy surfaces as a PanicException on the first kernel call, not an
+# ImportError. 1.26 is the oldest release that supports Python 3.12, this
+# package's own floor; rust-numpy 0.29 supports the 1.x C-API (its README
+# recommends >= 1.16). Development and CI exercise 2.x — see
+# requirements-dev.txt.
+dependencies = ["numpy>=1.26"]
 
 [project.urls]
 Source = "https://github.com/sdhdez/phaios-core"
@@ -25,8 +37,9 @@ Changelog = "https://github.com/sdhdez/phaios-core/releases"
 
 [tool.maturin]
 module-name = "phaios_core"
+python-source = "python"
 
 # pytest configuration
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = ["ffi.py"]
+python_files = ["ffi.py", "ffi_gpu.py"]

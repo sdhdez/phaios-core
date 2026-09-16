@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Allowlist for `python -m mypy.stubtest phaios_core`.
+#
+# Entries are for PyO3 artefacts only: things stubtest reports that are
+# true facts about how PyO3 compiles this extension, not typos or drift
+# in the stub. Real drift — a wrong parameter name, a missing method, a
+# stale default — is fixed in the stub itself, never allowlisted. Each
+# entry below carries a one-line comment saying why it cannot be (or
+# deliberately should not be) expressed in the .pyi file. Entries are
+# matched by regex full-match against stubtest's `Error.object_desc`.
+
+# The compiled extension module `__init__.py` re-exports from
+# (`from .phaios_core import *`). Every name it defines is already
+# mirrored in __init__.pyi; the inner module itself carries no separate
+# stub and needs none.
+phaios_core.phaios_core
+
+# PyO3 fills `__all__` in from `m.add_class`/`m.add_function` registration
+# order, and its value differs between a CPU-only and a `--features cuda`
+# build (the latter adds `gpu`). The stub deliberately does not declare
+# `__all__`; tests/stub_contract.py checks the stub's public names against
+# the runtime `__all__` directly instead.
+phaios_core.__all__
+
+# `shadow_oklab`/`highlight_oklab` are Sequence[float]-typed constructor
+# parameters; PyO3 cannot render a non-literal default into
+# `__text_signature__` and emits `...` instead, which stubtest parses as
+# the literal object `Ellipsis`. The stub spells the real default,
+# `[0.0, 0.0, 0.0]`, per the mirror rule — verified by
+# tests/stub_contract.py, which cross-checks it against
+# `SplitToningParams().shadow_oklab` at runtime. stubtest's static
+# Ellipsis-vs-literal comparison cannot see past its own sentinel to
+# confirm that.
+phaios_core.SplitToningParams.__new__
+
+# `phaios_core.gpu` is absent at runtime entirely in a CPU-only build —
+# the case CI runs, where stubtest reports the bare module missing. On a
+# `--features cuda` build the module exists, and PyO3's `__all__` on it
+# is the same deliberately-undeclared-in-the-stub case as the top-level
+# one above; stubtest then reports `phaios_core.gpu.__all__` specifically
+# instead of the whole module. One regex entry covers both shapes of the
+# same fact so it is never "unused" on either build (each build hits
+# exactly one of the two object descriptions this matches, never both,
+# and never anything else under `phaios_core.gpu.*`).
+phaios_core\.gpu(\.__all__)?
