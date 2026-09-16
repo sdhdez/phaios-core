@@ -62,8 +62,9 @@ struct Bound {
 
 /// §6: the bound for kernels whose transcendental content is a small
 /// fixed number of `powf`, `expf`, `log2f` or `cbrtf` calls per pixel.
-/// `hsl_bw` makes eight and `zone_system` thirteen; both sit in this
-/// class.
+/// `hsl_bw` makes eight, one per hue band; `zone_system` makes one
+/// `log2f`, one `powf` and one `expf` per offset present, so at most
+/// thirteen. Both sit in this class.
 const ONE_TRANSCENDENTAL: Bound = Bound {
     rtol: 1e-5,
     atol: 1e-7,
@@ -356,7 +357,7 @@ impl Check {
 /// Run one kernel's cases and turn them into a row.
 ///
 /// An error from a kernel is a failed row, not an abort: a caller
-/// pasting this report needs the other 23 lines just as much.
+/// pasting this report needs the other 26 lines just as much.
 fn run(
     kernel: &'static str,
     promise: &'static str,
@@ -814,9 +815,9 @@ fn check_all(ctx: &cuda::Context) -> Vec<Row> {
 
     rows.push(run("sharpen", ONE_TRANSCENDENTAL.label, |ck| {
         let dev = ctx.upload(mono.view())?;
-        // threshold 0 and non-zero; sigma below and above blur's box
-        // crossover (5.9 direct / 6.0 box), so both device blur paths
-        // are exercised through sharpen's own entry point.
+        // threshold 0 and non-zero; sigma 2.5 below and sigma 12 above
+        // blur's box crossover, so both device blur paths are exercised
+        // through sharpen's own entry point.
         for (amount, sigma, threshold) in [(0.6_f32, 2.5_f32, 0.0_f32), (0.4, 12.0, 0.3)] {
             let params = sharpen::SharpenParams::new(amount, sigma, threshold);
             let cpu = sharpen::sharpen(mono.view(), &params)?;

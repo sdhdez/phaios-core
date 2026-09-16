@@ -10,7 +10,7 @@
 //! it, and by how much it can disagree.
 //!
 //! Answer: not at all. `hot_pixels` is comparisons and selection only —
-//! [`crate::hot_pixels::median9`]'s 19-comparator sorting network uses
+//! `median9`'s 19-comparator sorting network uses
 //! `f32::min`/`f32::max` (IEEE-754-2008 `minNum`/`maxNum`) on both
 //! backends, and the one arithmetic step (`|p - m|` against
 //! `threshold + relative * |m|`) is correctly rounded under

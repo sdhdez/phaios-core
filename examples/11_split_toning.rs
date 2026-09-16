@@ -5,22 +5,26 @@
 //! three channels by tinting shadows and highlights separately. Five
 //! configurations:
 //!
-//! 1. Reference — no chroma in either tint; the output is neutral and
-//!    numerically identical to the input, channel for channel.
+//! 1. Reference — no chroma in either tint; the output is neutral, each
+//!    channel carrying the input luminance back to within a rounding
+//!    step of the OKLab round trip. The printed line measures it.
 //! 2. Sepia — a single warm tint in both slots, the toned-print look.
 //! 3. Selenium — cool shadows, neutral highlights.
 //! 4. Cross-process — cool shadows against warm highlights, the split
 //!    that gives the technique its name.
 //! 5. The same as 4 with `balance = 0.6`, moving the crossover down so
-//!    the highlight tint claims more of the frame.
+//!    the highlight tint claims more of the frame. It moves a long way:
+//!    the crossfade window drops from (0.25, 0.75) to (−0.05, 0.45) in
+//!    OKLab lightness, which is below the whole neutral row.
 //!
 //! What to look for:
 //! - Image 1 proves the round trip: monochrome in, neutral out, no cast.
 //!   Everything you see in images 2–5 is the tint, not conversion error.
 //! - The neutral ramp in row 4 is where the crossover is visible. In
 //!   image 4 the dark patches lean blue and the light ones lean amber,
-//!   crossing near the middle; in image 5 the same crossing point sits
-//!   two patches lower.
+//!   crossing between patches #23 and #22. In image 5 the crossing has
+//!   left the ramp altogether: even the black patch is most of the way
+//!   to the highlight tint, so the whole row leans amber.
 //! - The patches keep their relative brightness across all five images.
 //!   That is the property OKLab buys: tinting in linear sRGB would have
 //!   made the tinted patches lighter as well as coloured.

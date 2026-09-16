@@ -9,9 +9,16 @@
 //!   averaging preserves the mean. `14_resize_catmull_up.ppm` (2×)
 //!   keeps the patch borders crisp without ringing overshoot on the
 //!   flat chart.
+//! - `14_resize_bilinear_down.ppm` is the same reduction as
+//!   `14_resize_area_down.ppm` through a two-tap filter: on a chart of
+//!   flat patches the two are hard to tell apart, which is the point —
+//!   the difference between them lives in fine detail this image has
+//!   none of.
 //! - The straighten outputs are smaller than the input — the largest
 //!   inscribed rectangle — and their patch edges stay smooth
-//!   (Catmull-Rom), not staircased.
+//!   (Catmull-Rom), not staircased. Their dimensions are printed, one
+//!   line per angle, as `14_straighten_3.ppm` and
+//!   `14_straighten_-12.ppm` are written.
 //!
 //! The output is passed through `encode_srgb` before it is written
 //! (the terminal pipeline stage), so the PPM is display-referred.

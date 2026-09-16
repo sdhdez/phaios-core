@@ -10,10 +10,10 @@ that the installed `__init__.pyi` matches the repo copy byte for byte.
 Shared by `tests/ffi.py` (the top-level `phaios_core` module) and
 `tests/ffi_gpu.py` (the optional `phaios_core.gpu` submodule).
 
-**Deliberately not checked** (see the type-stubs plan): setter presence
-on a field that is get-only at runtime — that needs an instance of a
-class this module cannot always construct — and the *types* written in
-the stub, which `mypy --strict` covers in a later step of the same plan.
+**Deliberately not checked:** setter presence on a field that is
+get-only at runtime — that needs an instance of a class this module
+cannot always construct — and the *types* written in the stub, which
+`mypy --strict` and `mypy.stubtest` cover instead.
 """
 
 from __future__ import annotations

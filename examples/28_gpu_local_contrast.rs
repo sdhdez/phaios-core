@@ -5,7 +5,8 @@
 //! same reference image, the same two strength levels. The pair exists
 //! to be run one after the other and diffed.
 //!
-//! Demonstrates `local_contrast_device` at example 05's settings:
+//! Demonstrates `local_contrast_device` at example 05's settings, in
+//! the same three images: a reference and two strength levels.
 //! 1. Unprocessed luminance (reference).
 //! 2. `radius=8, eps=0.01, strength=0.5` — moderate enhancement.
 //! 3. `radius=16, eps=0.01, strength=1.0` — aggressive enhancement.
@@ -19,7 +20,8 @@
 //! - **The agreement table, which is why the twin exists.** This is the
 //!   kernel whose two backends differ most in formulation: the CPU
 //!   builds four global f64 summed-area tables, the device runs
-//!   separable box filters with Kahan-compensated f32 accumulation
+//!   separable window sums — f64 for the L and L² statistics,
+//!   Kahan-compensated f32 for the a/b coefficient sums downstream
 //!   (`docs/ffi.md` §6). §6 therefore commits a bound of
 //!   rtol 1e-4 / atol 1e-6 across backends and **not** bit-exactness,
 //!   so the table prints the worst element as a multiple of that bound

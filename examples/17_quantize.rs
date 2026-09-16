@@ -26,9 +26,10 @@
 //!
 //! The printed numbers are the point as much as the images: how many
 //! distinct codes each configuration produces, how many transitions
-//! appear along the ramp, and — the check that matters — that the mean
-//! is unchanged, because triangular dither is zero-mean and must not
-//! shift exposure.
+//! appear along the ramp, and — the check that matters — how far
+//! dithering moves the mean. Triangular dither is zero-mean, so the
+//! shift must stay down in the noise of a finite sample, a hundredth of
+//! a code rather than a fraction of a stop.
 
 #[path = "shared/mod.rs"]
 mod shared;

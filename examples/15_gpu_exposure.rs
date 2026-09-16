@@ -9,11 +9,14 @@
 //!    correctly-rounded multiply, so its GPU output equals its CPU
 //!    output to the last bit — compared here with `==`, not a tolerance.
 //! 2. **Honest transfer economics.** Per-call offload pays a PCIe round
-//!    trip; this example prints it next to the CPU time so the numbers
-//!    in `docs/architecture.md` can be reproduced on any machine.
+//!    trip; this example prints it next to the CPU time, so the shape
+//!    of the figures in `docs/gpu.md` can be checked on any machine.
 //!
 //! With no CUDA device (or no NVIDIA driver at all) the example prints
-//! why and exits 0 — CI runs every example, GPU or not.
+//! why and exits 0. This example is gated on `--features cuda`, so the
+//! hosted CI runner never builds it; `scripts/gpu-verify.sh` runs it,
+//! and the exit-0 path keeps that script honest on a machine whose
+//! driver has gone missing.
 
 #[path = "shared/mod.rs"]
 mod shared;
@@ -52,8 +55,9 @@ fn main() {
         cpu == gpu
     );
 
-    // Transfer economics at export size (24 MP), the number Gate A1 is
-    // about. Warm one call first so JIT/module load is excluded.
+    // Transfer economics at export size (24 MP), the same frame the
+    // benches measure. Warm one call first so JIT/module load is
+    // excluded.
     let big = Array3::<f32>::from_elem((4323, 5765, 1), 0.5);
     let _ = cuda::kernels::exposure(&ctx, big.view(), 1.0).unwrap();
 

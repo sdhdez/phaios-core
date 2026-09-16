@@ -2,10 +2,14 @@
 //! Example 02 — Channel mixer B&W conversion.
 //!
 //! Demonstrates `channel_mixer_bw` by writing three output images:
-//! 1. Standard BT.709 weights (0.21, 0.72, 0.07) as a reference.
-//! 2. Red-boosted weights (1.0, 0.0, 0.0) — infrared-like: reds bright,
-//!    greens and blues very dark.
-//! 3. Custom weights (0.0, 0.5, 0.5) — equal green+blue, no red.
+//! 1. `02_mixer_bt709.ppm` — the BT.709 reference, taken through
+//!    `luminance_bw` so the weights are the exact BT.709 constants
+//!    (0.2126, 0.7152, 0.0722) rather than a rounded triple typed in by
+//!    hand.
+//! 2. `02_mixer_red_only.ppm` — red-boosted weights (1.0, 0.0, 0.0),
+//!    infrared-like: reds bright, greens and blues very dark.
+//! 3. `02_mixer_green_blue.ppm` — custom weights (0.0, 0.5, 0.5), equal
+//!    green+blue, no red.
 //!
 //! What to look for:
 //! - Image 2 inverts the tonal relationship between red (#15) and green

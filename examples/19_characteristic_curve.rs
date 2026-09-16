@@ -32,6 +32,9 @@
 //!   the midtones; a linear rendering has the same slope everywhere
 //!   until it clips, at which point the slope drops to zero abruptly
 //!   rather than gradually.
+//! - The second table isolates the toe: two samples 0.02 apart just
+//!   above black, and what is left of that separation at each toe
+//!   strength.
 //!
 //! The output is passed through `encode_srgb` before it is written
 //! (the terminal pipeline stage), so the PPMs are display-referred.

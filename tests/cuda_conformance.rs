@@ -2879,8 +2879,7 @@ fn hot_pixels_degenerate_shapes_agree() {
 /// An image containing one NaN pixel and one +Inf pixel, far enough
 /// apart that their 3x3 neighbourhoods do not overlap, run through both
 /// backends. `docs/ffi.md` §1 leaves non-finite input unspecified in
-/// general, but `hot_pixels` is a documented exception the plan predicts
-/// (`.cache/scratch/denoise/PLAN.md`, "Determinism"): the median step is
+/// general, but `hot_pixels` is a documented exception: the median step is
 /// IEEE-754-2008 `minNum`/`maxNum` comparisons only, which both
 /// `f32::min`/`f32::max` and `fminf`/`fmaxf` implement identically, and
 /// the kept-vs-replaced branch is decided by an ordinary `>` comparison
@@ -3034,11 +3033,10 @@ fn denoise_agrees_with_cpu_oracle() {
 /// `local_contrast_device`'s own already-proven behaviour there
 /// directly. `C == 3` held only across `{1e0, 1e2, 1e4}` before the CPU
 /// kernel summed its window statistics directly instead of through a
-/// global summed-area table (`.cache/scratch/denoise/PLAN.md`,
-/// "Decision 2"): the missing residual at `{1e6, 1e8}` -- `cov(I, p_c)`
-/// differencing two separately-accumulated global tables -- no longer
-/// exists once neither side of that subtraction is global, so the full
-/// range now holds here too.
+/// global summed-area table: the missing residual at `{1e6, 1e8}` --
+/// `cov(I, p_c)` differencing two separately-accumulated global tables
+/// -- no longer exists once neither side of that subtraction is
+/// global, so the full range now holds here too.
 ///
 /// See `denoise_cross_guided_agrees_within_bound_when_only_some_channels
 /// _carry_the_bar` below for the harder `C == 3` case this sweep cannot
@@ -3123,8 +3121,7 @@ fn denoise_agrees_within_bound_across_the_dynamic_range() {
 /// `{1e0, 1e2, 1e4, 1e6, 1e8}`: this is the exact construction (bar in
 /// only some channels) that diverged from the CPU oracle at `{1e6, 1e8}`
 /// before the CPU kernel summed its window statistics directly instead
-/// of through a global summed-area table
-/// (`.cache/scratch/denoise/PLAN.md`, "Decision 2") -- with neither side
+/// of through a global summed-area table -- with neither side
 /// of `cov(I, p_c)`'s subtraction global any more, the missing residual
 /// at extreme highlights no longer exists, and the device (unchanged
 /// throughout) agrees with the fixed CPU here just as it always did at
@@ -3182,8 +3179,8 @@ fn denoise_cross_guided_agrees_within_bound_when_only_some_channels_carry_the_ba
 ///
 /// `amount = 0` is the device-copy fast path, bit-exact by construction.
 /// `radius = 0` collapses every window to one pixel: `var`/`cov` become
-/// an exact `x - x = 0.0` on both backends for any input (worked out by
-/// hand in `.cache/scratch/denoise/PROGRESS.md`: the same value cast or
+/// an exact `x - x = 0.0` on both backends for any input (the same
+/// value cast or
 /// multiplied twice via the same deterministic operation always produces
 /// identical bits, so the cancelling subtraction is exactly zero, not
 /// merely close to it), so it is *also* an exact identity -- against the

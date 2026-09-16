@@ -23,7 +23,9 @@
 //!   identical but positioned differently.
 //!
 //! This example also checks determinism directly: it renders
-//! configuration 4 twice and compares the bytes.
+//! configuration 4 twice and compares the bytes. The table under that
+//! line measures the envelope rather than describing it, printing the
+//! grain's standard deviation on flat patches from black to white.
 //!
 //! The output is passed through `encode_srgb` before it is written
 //! (the terminal pipeline stage), so the PPM is display-referred.

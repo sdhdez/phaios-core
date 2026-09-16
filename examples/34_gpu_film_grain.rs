@@ -16,10 +16,10 @@
 //!   generator, no per-tile state, so no pixel depends on another's and
 //!   the field is the same at any thread count or launch geometry. It is
 //!   *integer* arithmetic, so `docs/ffi.md` §6 requires the device to
-//!   reproduce it bit-for-bit, and the check below compares 2²⁰
-//!   coordinates against the CPU's `pixel_hash` with `==`. A single
-//!   differing bit here would not be a slightly different image; it
-//!   would be a different grain field entirely.
+//!   reproduce it bit-for-bit, and the check below compares three seeds
+//!   over 2²⁰ coordinates each against the CPU's `pixel_hash` with
+//!   `==`. A single differing bit here would not be a slightly
+//!   different image; it would be a different grain field entirely.
 //! - **The Box–Muller half, which is bounded.** Turning those bits into
 //!   a normal deviate costs a `logf`, a `sqrtf` and a `cosf`, and
 //!   IEEE-754 standardises none of the three. §6 commits that half to

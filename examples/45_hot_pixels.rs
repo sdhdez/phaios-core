@@ -22,7 +22,11 @@
 //! - a huge bright spike in the *same* White patch, 30 columns away —
 //!   a real defect landing on a highlight rather than a midtone.
 //!
+//! Three files are written.
+//!
 //! What to look for:
+//! - `45_corrupted` is the before picture: the chart with the defect
+//!   layer planted, and the input both cleaning passes are given.
 //! - `45_cleaned` (threshold 0.15, no relative term): both huge defects
 //!   are gone, replaced by their neighbourhood's value; the fine line
 //!   survives untouched, because its own deviation (0.02) never reaches

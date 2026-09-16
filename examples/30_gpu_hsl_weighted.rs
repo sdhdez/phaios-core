@@ -22,10 +22,11 @@
 //!   (row 4) are identical in all four images — zero chroma means zero
 //!   modulation, whatever the weights say. In image 2 the blue-sky patch
 //!   (#03) darkens sharply while the bluish-green patch (#06) barely
-//!   moves, 60° away with a 30° sigma. In image 4 the red patch (#15)
-//!   goes nearly black while the orange patch (#07) only dims: the bands
-//!   overlap, they do not partition. That last property is checked on
-//!   the device output below rather than left to the eye.
+//!   moves, about 70° from the blue band centre with a 30° sigma. In
+//!   image 4 the red patch (#15) goes nearly black while the orange
+//!   patch (#07) only dims: the bands overlap, they do not partition.
+//!   That last property is checked on the device output below rather
+//!   than left to the eye.
 //! - **Why the promise is a bound.** The device kernel mirrors the CPU
 //!   one line for line — hexagonal hue, chroma ratio, circular band
 //!   distance, fixed-order eight-term Gaussian sum — and `expf` is the
@@ -248,7 +249,7 @@ fn main() {
          neutral patches (#19-#24) bit-identical in all four configs: {neutrals_held}"
     );
     println!(
-        "  blue_down:  sky #03 {:.5} -> {:.5}, bluish green #06 {:.5} -> {:.5} (60 deg away)",
+        "  blue_down:  sky #03 {:.5} -> {:.5}, bluish green #06 {:.5} -> {:.5} (70 deg away)",
         patch_centre(reference, 3),
         patch_centre(&gpu_outputs[1], 3),
         patch_centre(reference, 6),

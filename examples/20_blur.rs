@@ -10,13 +10,15 @@
 //!
 //! What to look for:
 //! - The impulse response table. Below σ = 6 the transfer is a direct
-//!   convolution and matches a true Gaussian exactly; at or above it,
-//!   three box passes take over and the profile deviates by a few parts
-//!   in a thousand — invisible in a picture, and the price of a cost
-//!   that no longer grows with radius.
-//! - The realised σ. The direct path delivers exactly what was asked
-//!   for. The box path can only reach the σ values three odd widths can
-//!   produce, so it lands within about 1%.
+//!   convolution and matches a sampled true Gaussian to within about a
+//!   part in a million; at or above it, three box passes take over and
+//!   the profile departs by a few parts in ten thousand of the impulse's
+//!   total energy, less as σ grows — invisible in a picture, and the
+//!   price of a cost that no longer grows with radius.
+//! - The peak column. It is the impulse's centre sample, which falls as
+//!   σ rises because the same unit of light is spread over more pixels.
+//!   Read it beside the deviation column: a peak that matched a true
+//!   Gaussian while the tails did not would still be a wrong filter.
 //! - Energy. A blur redistributes light rather than creating it, so the
 //!   impulse sums to one — until the kernel is wide enough to overrun
 //!   the frame, at which point clamped borders lose the tail. Both cases

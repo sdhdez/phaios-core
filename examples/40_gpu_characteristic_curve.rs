@@ -19,8 +19,8 @@
 //! then runs its three `*_device` kernels without the intermediates
 //! crossing the bus, and only the finished rendering is downloaded.
 //! That is the API the GPU backend exists for; the per-call offload form
-//! (example 15) would pay four PCIe round trips per grading to compute
-//! the same thing.
+//! (example 15) would pay three PCIe round trips per grading, one per
+//! stage, to compute the same thing.
 //!
 //! Five renderings are written, matching example 19 one for one:
 //!
@@ -33,10 +33,11 @@
 //!
 //! What to look for in the output:
 //!
-//! - **The agreement column, which should read `identical` on every
-//!   row.** `docs/ffi.md` §6 promises this composition bit-exact across
-//!   backends, and unusually the promise covers the whole chain rather
-//!   than its ends: `shadow_rolloff` is a cubic in Horner form,
+//! - **The `CPU == GPU` column, which should read `true` on every
+//!   row** (and `identical` in the slope table's `vs CPU` column
+//!   below it). `docs/ffi.md` §6 promises this composition bit-exact
+//!   across backends, and unusually the promise covers the whole chain
+//!   rather than its ends: `shadow_rolloff` is a cubic in Horner form,
 //!   `highlight_rolloff` a quadratic solve whose `sqrt` IEEE-754-2008
 //!   §5.4.1 requires to be correctly rounded, and every `tone_curve`
 //!   used here has `power == 1`, which takes the path that never calls

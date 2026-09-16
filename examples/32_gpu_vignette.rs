@@ -72,9 +72,10 @@ fn main() {
     let raw = shared::synthetic_macbeth();
     let rgb = Array3::from_shape_vec((shared::HEIGHT, shared::WIDTH, 3), raw).unwrap();
 
-    // One upload for the whole example. The B&W conversion runs on the
-    // card, so the vignette's input is produced where it is consumed and
-    // never crosses the bus.
+    // One upload for the five renderings. The B&W conversion runs on
+    // the card, so the vignette's input is produced where it is consumed
+    // and never crosses the bus. (The resolution-independence check
+    // below uploads two flat frames of its own.)
     let dev_rgb = ctx.upload(rgb.view()).unwrap();
     let dev_bw = k::luminance_bw_device(&dev_rgb, LuminanceStandard::Bt709).unwrap();
 

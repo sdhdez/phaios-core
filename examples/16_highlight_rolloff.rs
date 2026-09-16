@@ -25,10 +25,12 @@
 //! - Image 5 shows the cost of over-reaching: mid-grey has been dragged
 //!   down along with the highlights, so the picture loses snap.
 //!
-//! The printed table is as much the point as the images. It samples the
-//! curve at the zone anchors and reports how many distinct output codes
-//! survive from eight distinct highlight inputs — one for the hard clip,
-//! eight for every shoulder.
+//! The printed tables are as much the point as the images. The first
+//! reports how many distinct output values survive from eight distinct
+//! highlight inputs spanning 1.0 to 8.0: one under the hard clip, and
+//! four, six or eight under a shoulder, according to how far its white
+//! point reaches — everything above the white point is white. The
+//! second samples the curve itself at the zone anchors.
 //!
 //! The output is passed through `encode_srgb` before it is written
 //! (the terminal pipeline stage), so the PPM is display-referred.

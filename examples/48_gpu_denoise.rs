@@ -17,7 +17,8 @@
 //! because the three new cross-guided kernels add one new cancelling
 //! subtraction, `cov(I, p_c)`, that the self-guided path never
 //! exercises. Each row below prints the worst element as a multiple of
-//! that bound; 1.000 is the limit.
+//! that bound; 1.000 is the limit. Both inputs here are RGB, so only
+//! the `C == 3` path actually runs; `C == 1` is example 23's row.
 //!
 //! Everything runs device-resident: the chart is uploaded once and
 //! `denoise_device` runs on it directly, no intermediate crossing the

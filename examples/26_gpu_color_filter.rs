@@ -2,8 +2,9 @@
 //! Example 26 — Colour filter B&W simulation, on the CUDA backend.
 //!
 //! The GPU twin of `examples/03_color_filter.rs`. Same chart, same six
-//! Wratten-style presets (None, Yellow #8 K2, Orange #21, Red #25 A,
-//! Green #11 X1, Blue #47 C5), one PPM per preset.
+//! presets — the unfiltered reference (None) and five Wratten filters
+//! (Yellow #8 K2, Orange #21, Red #25 A, Green #11 X1, Blue #47 C5) —
+//! one PPM per preset.
 //!
 //! What to look for in the output:
 //!

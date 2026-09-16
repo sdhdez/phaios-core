@@ -6,11 +6,12 @@
 //! measurements — produced by `quantize_u8_device` and
 //! `quantize_u16_device` instead of the CPU kernels.
 //!
-//! These are the only device kernels whose output is not an image.
-//! Quantisation is terminal: the codes go into a file, not into another
-//! kernel, so there is no resident form to chain — the `*_device`
-//! entry points take a `DeviceImage` and return a host array, and that
-//! return *is* the single download at the end of the pipeline.
+//! The quantisers and `histogram` are the device kernels whose output
+//! is not an image. Quantisation is terminal: the codes go into a file,
+//! not into another kernel, so there is no resident form to chain — the
+//! `*_device` entry points take a `DeviceImage` and return a host
+//! array, and that return *is* the single download at the end of the
+//! pipeline.
 //!
 //! `docs/ffi.md` §6 promises `quantize_u8` and `quantize_u16` are
 //! **bit-exact** across backends. The dither is exact 64-bit integer
@@ -45,9 +46,11 @@
 //!   not per pixel would be worthless for reproducible renders, which
 //!   is why the position-keyed hash is integer arithmetic and not a
 //!   generator.
-//! - The mean shift from dithering, which must stay at zero codes:
-//!   triangular dither is zero-mean and must not shift exposure. The
-//!   device computes the same shift because it computes the same codes.
+//! - The mean shift from dithering, which must stay down in the noise
+//!   of a finite sample — a hundredth of a code, not a fraction of a
+//!   stop: triangular dither is zero-mean and must not shift exposure.
+//!   The device computes the same shift because it computes the same
+//!   codes.
 //!
 //! Nothing here is re-encoded on the way out. The codes *are* the file,
 //! so these PPMs are written byte for byte from the kernel's output —

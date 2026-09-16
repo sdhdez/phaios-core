@@ -16,10 +16,10 @@
 //!   (σ = 0.8 zones) means a Zone V offset also moves Zones IV and VI:
 //!   the influence is gradual, not a sharp step, and the patches
 //!   nearest the targeted zone move most.
-//! - **The agreement lines — and this is the one kernel of the four
-//!   B&W-stage twins that is *not* promised bit-exact.** The zone
-//!   position is `5 + log2(L / 0.18)` and each zone's weight is a
-//!   Gaussian, so the kernel evaluates `log2f` and `expf`. IEEE-754
+//! - **The agreement lines — and unlike examples 24 to 26, this kernel
+//!   is *not* promised bit-exact.** The zone position is
+//!   `5 + log2(L / 0.18)` and each zone's weight is a Gaussian, so the
+//!   kernel evaluates `log2f` and `expf`. IEEE-754
 //!   standardises `+ − × ÷ √` and requires those to be correctly
 //!   rounded; it standardises **no** transcendental. Host libm and
 //!   device libm are therefore allowed to differ in the last bits, and

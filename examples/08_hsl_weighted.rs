@@ -18,8 +18,9 @@
 //!   chroma means zero modulation, whatever the weights say: the method
 //!   only moves colours, never greys.
 //! - In image 2 the blue-sky patch (#03) darkens sharply while the
-//!   bluish-green patch (#06) moves much less — it is 60° away, and the
-//!   default 30° sigma has fallen to about an eighth of peak by then.
+//!   bluish-green patch (#06) moves much less — its hue is about 70°
+//!   from the blue band centre, where the default 30° sigma has fallen
+//!   to roughly a fifteenth of peak.
 //! - In image 4 the red patch (#15) goes nearly black while the orange
 //!   patch (#07) only dims: bands overlap, they do not partition.
 //!

@@ -29,7 +29,8 @@
 //! - The two printed tables below make both effects numeric: a step
 //!   edge gets measurably steeper (and stops getting steeper once a
 //!   threshold covers it), and gating is by *detail* magnitude at each
-//!   position, not by the pixel's own value.
+//!   position, not by the pixel's own value. The line above them checks
+//!   that `amount = 0` is the exact identity, bit for bit.
 //!
 //! The output is passed through `encode_srgb` before it is written (the
 //! terminal pipeline stage), so the PPMs are display-referred.

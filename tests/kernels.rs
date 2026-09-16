@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Integration tests for phaios-core numerical correctness.
 //!
-//! Each test verifies a specific property stated in the specification.
-//! Tests are added per kernel as Step 1 progresses.
+//! Each test verifies one property of one kernel through the public
+//! Rust API, and its doc comment names the property and the source it
+//! comes from. Grouped by kernel; the groups are not in pipeline
+//! order.
+//!
+//! What lives elsewhere: per-kernel unit tests sit in the
+//! `#[cfg(test)]` module beside each kernel, the validation contract is
+//! swept by `tests/properties.rs`, cross-backend agreement by
+//! `tests/cuda_conformance.rs`, and the Python binding contract by
+//! `tests/ffi.py`.
 
 use std::collections::HashMap;
 
@@ -1608,9 +1616,8 @@ use phaios_core::denoise::{DenoiseParams, MAX_RADIUS, denoise};
 /// **The key cross-check.** On a single-channel non-constant image,
 /// `denoise` must agree with `local_contrast` at `strength = −amount`
 /// and `eps = noise_sigma²` — exercised end-to-end through the public
-/// API rather than argued only in prose. Bounded, not bit-exact: since
-/// the maintainer's cancellation fix (`.cache/scratch/denoise/PLAN.md`,
-/// "Decision 2"), `denoise`'s self-guided path sums its own window
+/// API rather than argued only in prose. Bounded, not bit-exact:
+/// `denoise`'s self-guided path sums its own window
 /// statistics directly rather than calling `local_contrast`'s SAT-based
 /// `guided_filter`, so the two no longer round identically at every
 /// step — they agree only within the guided filter's own class (`rtol
@@ -1668,9 +1675,9 @@ fn denoise_single_channel_agrees_with_local_contrast_at_negative_amount() {
     );
 }
 
-/// `radius` is bounded above by `MAX_RADIUS` (`.cache/scratch/denoise/PLAN.md`,
-/// "Decision 2": direct window sums make cost linear in radius, unlike
-/// `local_contrast`'s unbounded, O(1)-per-pixel table query). The bound
+/// `radius` is bounded above by `MAX_RADIUS`, because direct window
+/// sums make cost linear in radius, unlike `local_contrast`'s
+/// unbounded, O(1)-per-pixel table query. The bound
 /// itself must still work, and `MAX_RADIUS + 1` must be refused, naming
 /// `radius`.
 #[test]

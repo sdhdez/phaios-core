@@ -27,8 +27,9 @@
 //!   signature of glare, and the printed table shows why a tone curve
 //!   cannot reproduce it: the lift depends on the brightness of the
 //!   whole frame, which a per-pixel transfer cannot see.
-//! - Images 2 and 3 use nearly the same numbers and look different,
-//!   because position in the pipeline is doing the work.
+//! - Images 2 and 3 use similar amounts at different σ, and look
+//!   different beyond what those numbers account for, because position
+//!   in the pipeline is doing the work.
 //!
 //! The output is passed through `encode_srgb` before it is written
 //! (the terminal pipeline stage), so the PPMs are display-referred.

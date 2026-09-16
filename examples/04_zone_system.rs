@@ -8,8 +8,9 @@
 //!    — a classic landscape / darkroom interpretation curve.
 //!
 //! What to look for:
-//! - Configuration 1 and 3 are written side by side; compare the grey
-//!   ramp in row 4 of the chart.
+//! - Each configuration is written as its own file —
+//!   `04_zone_{reference,pull_v,push_vii}.ppm`. Put the reference and
+//!   the push beside each other and compare the grey ramp in row 4.
 //! - The Gaussian blending means a Zone V offset also affects Zones IV
 //!   and VI (σ = 0.8 zones) — the influence is gradual, not a sharp step.
 //! - Patches near the target zone show the most change.

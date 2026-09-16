@@ -25,9 +25,9 @@
 //! Everything runs **device-resident**: the chart is uploaded once,
 //! `luminance_bw_device` and each `blur_device` run without an
 //! intermediate crossing the bus, and only the finished rendering comes
-//! back. The five impulse frames are separate images and so are
-//! uploaded separately; within each, the two separable passes (six for
-//! the box path) stay on the card.
+//! back. The six impulse frames of the second table are separate images
+//! and so are uploaded separately; within each, the two separable
+//! passes (six for the box path) stay on the card.
 //!
 //! What to look for in the output:
 //!
@@ -40,13 +40,14 @@
 //!   a comparison of raw bit patterns, stricter than `==` because it
 //!   separates `+0.0` from `-0.0` — has to be empty for it.
 //! - **The impulse response table.** Below the crossover the transfer
-//!   matches a true Gaussian exactly; at or above it, three box passes
-//!   take over and the profile deviates by a few parts in a thousand —
-//!   invisible in a picture, and the price of a cost that no longer
-//!   grows with radius. That deviation is a property of the *algorithm*,
-//!   not of the backend: the CPU column and the GPU column show the same
-//!   figure, and the separate agreement column is what measures the
-//!   backend.
+//!   matches a sampled true Gaussian to within about a part in a
+//!   million; at or above it, three box passes take over and the
+//!   profile departs by a few parts in ten thousand of the impulse's
+//!   total energy, less as σ grows — invisible in a picture, and the
+//!   price of a cost that no longer grows with radius. That deviation
+//!   is a property of the *algorithm*, not of the backend: the CPU
+//!   column and the GPU column show the same figure, and the separate
+//!   agreement column is what measures the backend.
 //! - **Energy.** A blur redistributes light rather than creating it, so
 //!   the impulse sums to one — until the kernel is wide enough to
 //!   overrun the frame, at which point clamped borders lose the tail.

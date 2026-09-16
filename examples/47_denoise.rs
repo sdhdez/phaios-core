@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Example 47 — Guided-filter noise reduction, self- and cross-guided.
+//! Example 47 — Guided-filter noise reduction, cross-guided on RGB.
 //!
 //! Demonstrates `denoise` on the RGB Macbeth chart, cross-guided
 //! (`C == 3`): a shared luminance guide `I` provides the edges, and each
@@ -18,10 +18,14 @@
 //! [`phaios_core::film_grain::splitmix64`] — no image assets, ever, and
 //! reproducible bit-for-bit on every run.
 //!
+//! Three files are written: `47_none` (the clean chart), `47_noisy`
+//! (the same chart with the noise added) and `47_denoised`.
+//!
 //! What to look for:
-//! - `47_denoised` visibly quiets the noise inside every patch while
-//!   `47_none`'s patch boundaries stay legible — the printed variance
-//!   and edge-height tables below make both effects numeric.
+//! - `47_noisy` against `47_denoised`: the noise inside every patch is
+//!   visibly quieter while the patch boundaries stay as legible as they
+//!   are in `47_none` — the printed variance and edge-height tables
+//!   below make both effects numeric.
 //! - The third table plants a synthetic RGB probe (not from the chart):
 //!   a channel with no structure of its own is smoothed at essentially
 //!   the *same* rate whether or not the *other* channels' shared

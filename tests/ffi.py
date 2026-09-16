@@ -1,11 +1,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Python-side FFI smoke tests for phaios_core.
+"""Python-side contract tests for phaios_core.
 
 Verifies that each PyO3 binding:
 - Is callable from Python with a numpy.float32 C-contiguous input.
 - Returns numpy.float32, C-contiguous output.
 - Raises a clean Python exception on wrong dtype — no Rust panic.
 - Raises ValueError on wrong shape (shape validation in the kernel).
+- Accepts any array layout, including strided, Fortran-order and
+  negative-stride views, and gives the same values for all of them.
+- Raises MemoryError rather than aborting when an output would exceed
+  the single-allocation limit.
+- Is deterministic, and seeded where it uses randomness.
+
+It also checks the kernels' values against independent numpy oracles
+where one exists, and the param classes' defaults, `__repr__` and
+equality. The last two tests run `stub_contract.py` over the runtime
+module, so stub drift fails here too.
 
 Run with: pytest tests/ffi.py
 """

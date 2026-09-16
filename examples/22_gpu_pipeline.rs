@@ -37,12 +37,13 @@
 //!   bit-exact kernel downstream of a divergent one still prints a
 //!   difference. Divergence enters at `local_contrast`, where the device
 //!   replaces the CPU's global f64 summed-area tables with separable
-//!   window sums: f64 for the L and L² statistics, Kahan-compensated f32
-//!   for the a/b coefficient sums downstream. It is a few ULP there and it is still a few
-//!   ULP eight stages later: the middle column, the committed
-//!   whole-chain bound as a multiple, barely moves. **That** is the
-//!   property residency needs — a long device-resident chain is no less
-//!   faithful than a short one.
+//!   window sums: f64 for the L and L² statistics, Kahan-compensated
+//!   f32 for the a/b coefficient sums downstream. It is a few ULP there
+//!   and it is still a few ULP seven stages later: the middle column,
+//!   the committed whole-chain bound as a multiple, stays around a
+//!   hundredth of the limit all the way down. **That** is the property
+//!   residency needs — a long device-resident chain is no less faithful
+//!   than a short one.
 //! - **The first three rows, and why they prove less than they look
 //!   like.** `exposure` (one multiply) and `luminance_bw` (one dot
 //!   product) are documented bit-exact, so their zeros are a promise.
