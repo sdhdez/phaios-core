@@ -258,8 +258,11 @@ Caller guarantees:
 
 - The input array must be alive for the duration of the call (Python
   reference counting ensures this for ordinary calls).
-- The dtype must be `float32`. Anything else is a `TypeError` or
-  `ValueError` from PyO3 before the kernel runs.
+- The dtype must be native-endian `float32`, and each array argument
+  must have the number of dimensions its binding declares. Anything
+  else is a `TypeError` raised by rust-numpy while it extracts the
+  argument, before the kernel runs: `type mismatch: from=float64,
+  to=float32`, or `dimensionality mismatch: from=2, to=3`.
 
 The caller does *not* have to make the array contiguous. Kernels use
 `ndarray::Zip`, which walks any layout; `.ascontiguousarray()` before a
@@ -279,7 +282,7 @@ Pattern:
 
 ```rust
 /// Parameters for the guided filter.
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct GuidedFilterParams {
     /// Filter radius in pixels.
@@ -308,7 +311,14 @@ result = phaios_core.local_contrast(img, params, strength=0.3)
 
 Every param struct must:
 
-- Derive `Clone` (the pipeline may clone params for preview rendering).
+- Derive `Clone` (the pipeline may clone params for preview rendering)
+  and declare `#[pyclass(from_py_object)]`. Since PyO3 0.30 no
+  `FromPyObject` is derived unless asked. The CPU bindings take params
+  as `PyRef<'_, T>`, which needs none, but enum arguments and several
+  GPU bindings in `src/gpu_py.rs` take them by value, and those do not
+  compile without the attribute (the GPU ones only under
+  `--features cuda`). Declaring it on every param struct keeps either
+  form available.
 - Expose all fields for reading — `#[pyo3(get, set)]` for plain fields,
   or a `#[getter]` returning a copy for fields whose Rust type needs
   converting (`ZoneParams.offsets` returns a dict). Consumers serialise
@@ -350,7 +360,7 @@ Variant-to-exception mapping:
 
 | PhaiosError variant | Python exception | Raised for |
 |--------------------|-----------------|------------|
-| `Shape(_)` | `ValueError` | wrong channel count or dimensionality |
+| `Shape(_)` | `ValueError` | wrong channel count, or a shape a kernel cannot accept (a wrong *number* of dimensions never gets this far: rust-numpy rejects it, and a wrong dtype, with `TypeError` while extracting the argument — §2) |
 | `Parameter(_)` | `ValueError` | a parameter outside its domain — zone index not in 0..=10, negative `eps`, any non-finite float |
 | `Backend(_)` | `RuntimeError` | no CUDA device, driver missing, compute capability below 8.0, or a device operation failed — an environment condition, not a bad argument |
 | `Allocation(_)` | `MemoryError` | an array would exceed the 8 GiB single-allocation limit, or its shape overflows a count. Not a `ValueError`: the arguments are well-formed, there is simply too much of them — and it is what numpy raises for the same request |
@@ -385,8 +395,8 @@ The rules:
 ## 5. GIL release
 
 Any kernel that is O(N) or worse on image pixels must release the GIL
-via `py.detach(move || { ... })`. PyO3 0.22 removed `allow_threads`;
-the closure must be `Send`. `ArrayView3<f32>` is `Copy + Send` so it
+via `py.detach(move || { ... })`. PyO3 0.26 renamed `allow_threads` to
+`detach` and 0.28 removed the old name; the closure must be `Send`. `ArrayView3<f32>` is `Copy + Send` so it
 can be captured by `move`.
 
 ```rust

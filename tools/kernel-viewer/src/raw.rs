@@ -4,9 +4,11 @@
 //! this tool sits in the consumer seat, like the desktop app does with
 //! rawpy/libraw.
 //!
-//! Viewer-grade development only: rawler's own pipeline (rescale,
-//! demosaic, crop, white balance, colour calibration) **minus the final
-//! sRGB gamma step**, so the result is the linear scene-referred data
+//! Viewer-grade development only: rawler's own default pipeline (as of
+//! rawler 0.8: rescale, demosaic, Fuji sensor rotation, active-area
+//! crop, white balance, colour calibration, default crop) **minus the
+//! final sRGB gamma step**, so
+//! the result is the linear scene-referred data
 //! the kernels contract for. Highlight reconstruction, CA and lens
 //! corrections are the desktop's job, not this tool's.
 
@@ -41,16 +43,12 @@ pub fn load_dng(path: &std::path::Path) -> Result<Array3<f32>, String> {
 
     // rawler's default pipeline, with the terminal SRgb gamma removed:
     // the kernels want linear, and display encoding is color.rs's job.
-    let dev = RawDevelop {
-        steps: vec![
-            ProcessingStep::Rescale,
-            ProcessingStep::Demosaic,
-            ProcessingStep::CropActiveArea,
-            ProcessingStep::WhiteBalance,
-            ProcessingStep::Calibrate,
-            ProcessingStep::CropDefault,
-        ],
-    };
+    // Derived from the default rather than listed by hand, so a step
+    // rawler adds is kept instead of silently dropped: 0.8 added
+    // FujiRotate, which a hand-written list from 0.7 lacked, and Fuji's
+    // 45-degree sensors then loaded unrotated.
+    let mut dev = RawDevelop::default();
+    dev.steps.retain(|step| *step != ProcessingStep::SRgb);
     let intermediate = dev
         .develop_intermediate(&raw)
         .map_err(|e| format!("RAW develop failed: {e}"))?;

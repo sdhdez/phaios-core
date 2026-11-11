@@ -759,11 +759,7 @@ class Histogram:
 that fell outside the counted range.
 
 Counts are `u64`, which cannot overflow for any image that fits in
-memory.
-
-`skip_from_py_object` because this is a *result*: it is handed to
-Python and never taken back as a kernel argument, so the conversion
-PyO3 would derive has no call site."""
+memory."""
 
     @property
     def bins(self) -> int:

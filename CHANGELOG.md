@@ -196,6 +196,25 @@ is a reduction rather than a stage.
 
 ### Changed
 
+- **Python 3.15 is supported.** The wheel is still the single
+  `cp312-abi3` build and installs unchanged on CPython 3.12 through
+  3.15; CI's Python job now runs all four, and the 3.15 classifier is
+  declared. Free-threaded interpreters (3.14t, 3.15t) are still not
+  covered (README "Install"). Building from source on free-threaded
+  3.13t, which 0.1.x's PyO3 0.28 allowed, now fails: PyO3 supports
+  free-threaded CPython from 3.14 only.
+- **Built against PyO3 0.30 and rust-numpy 0.30**, up from 0.28 in
+  0.1.x. No Python signature or default changed. Two things a caller
+  can see:
+  - An array of the wrong dtype or number of dimensions is still a
+    `TypeError`, but the message now names the mismatch —
+    `type mismatch:\n from=float64, to=float32` or
+    `dimensionality mismatch:\n from=2, to=3` — where 0.1.x raised a
+    generic conversion error that did not say which. Code matching on
+    the old message text must be updated.
+  - A module function's `__self__` is now the module rather than
+    `None`, as for any C extension: PyO3 0.28, which 0.1.x used,
+    wrongly marked `#[pyfunction]`s `METH_STATIC`.
 - **The backend fingerprint names the CUDA toolkit.**
   `GpuContext.fingerprint` is now
   `cuda/<device>/cc<maj>.<min>/ptx-compute_80/nvcc-<maj>.<min>.<patch>`,
@@ -237,7 +256,12 @@ is a reduction rather than a stage.
   raised `PanicException`. `dependencies = ["numpy>=1.26"]` is now
   declared. `[project]` also declared no `readme`, so the PyPI page
   would have been blank; `readme = "README.md"` fixes it. Added the
-  Python 3 / 3.12 / 3.13 / 3.14 classifiers.
+  Python 3 / 3.12 / 3.13 / 3.14 / 3.15 classifiers.
+- **A borrowed input array raised `PanicException`.** An input that
+  another rust-numpy extension held mutably borrowed through rust-numpy's
+  cross-extension borrow tracking panicked on extraction, because
+  rust-numpy before 0.30 unwrapped the borrow check. Under 0.30 it is
+  a catchable `TypeError` ("The given array is already borrowed").
 - **The GPU entry points panicked on a machine with no NVIDIA driver.**
   cudarc's dynamic-loading path panics rather than returning an error
   when no driver library loads. All three entry points now probe with

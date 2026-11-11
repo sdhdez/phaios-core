@@ -137,11 +137,14 @@ impl Default for HistogramParams {
 ///
 /// Counts are `u64`, which cannot overflow for any image that fits in
 /// memory.
-///
-/// `skip_from_py_object` because this is a *result*: it is handed to
-/// Python and never taken back as a kernel argument, so the conversion
-/// PyO3 would derive has no call site.
-#[pyclass(skip_from_py_object)]
+//
+// No `from_py_object`, unlike the parameter classes: this is a *result*,
+// handed to Python and never taken back as a kernel argument, so a
+// derived `FromPyObject` would have no call site. PyO3 0.30 derives none
+// unless asked, so the attribute list is empty; 0.29 needed an explicit
+// `skip_from_py_object`, which 0.30 deprecates. A plain comment, not a
+// doc comment, so it stays out of the Python `__doc__`.
+#[pyclass]
 #[derive(Clone, Debug)]
 pub struct Histogram {
     counts: Array2<u64>,

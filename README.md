@@ -25,10 +25,13 @@ cargo add phaios-core       # Rust, CPU backend
 ```
 
 The published wheel is `cp312-abi3`: one build serves every CPython
-3.12 or later that has the GIL. Free-threaded interpreters (3.13t,
-3.14t) are not covered, because PyO3 ignores `abi3` when building
-against them; `pip install` there compiles the sdist and needs a Rust
-toolchain.
+3.12 or later that has the GIL, and CI tests 3.12 through 3.15.
+Free-threaded interpreters cannot load an `abi3` wheel, so on 3.14t
+and 3.15t `pip install` compiles the sdist, which needs a Rust
+toolchain, into a version-specific extension that no CI job tests.
+3.13t does not build at all: PyO3 supports free-threaded CPython from
+3.14 only. The stable ABI for free-threaded builds (`abi3t`, PEP 803)
+is not enabled.
 
 The wheel is CPU-only. The CUDA backend is a source build with
 `--features cuda`, needs `nvcc` at build time and an NVIDIA driver at
@@ -174,7 +177,7 @@ kernel per upload does not.
 **No hosted CI runs the GPU suite.** GitHub's runners have neither
 `nvcc` nor a device. The backend is verified by hand with
 `./scripts/gpu-verify.sh`, most recently on an NVIDIA GeForce RTX 5070
-Ti (cc 12.0, driver 615.71.09, nvcc 13.4, rustc 1.98.1, Linux). Build
+Ti (cc 12.0, driver 620.70.06, nvcc 13.4, rustc 1.99.1, Linux). Build
 instructions, the agreement classes, measured performance and the table
 of confirmed devices are in
 [docs/gpu.md](https://github.com/sdhdez/phaios-core/blob/main/docs/gpu.md).
@@ -212,6 +215,7 @@ section 6.
 |---|---|
 | A parameter outside its domain | `ValueError` |
 | A wrong shape or channel count | `ValueError` |
+| An array that is not native-endian `float32`, or has the wrong number of dimensions | `TypeError` |
 | An output above the 8 GiB single-allocation limit | `MemoryError` |
 | No CUDA device, no driver, or a device below compute capability 8.0 | `RuntimeError` |
 

@@ -89,7 +89,7 @@ implementing.
   intermediates reaches gigabytes. Drop each as soon as it is consumed,
   and prefer mapping during accumulation to materialising a copy.
 - **GIL release.** Long-running kernels release the GIL via
-  `py.detach(...)` (PyO3 ≥ 0.22; `allow_threads` was removed). Document
+  `py.detach(...)` (PyO3 ≥ 0.26; `allow_threads` was removed in 0.28). Document
   any kernel that doesn't, and why.
 - **Public API stability.** Once a function ships in a tagged release its
   signature is stable until the next major version. Breaking changes go
@@ -111,19 +111,27 @@ kernels after that accept any channel count, so a pipeline need not
 branch on whether toning is enabled. Order matters — document any
 kernel with order sensitivity in its doc comment.
 
-## 4. PyO3 0.29 traps
+## 4. PyO3 0.30 traps
 
-Current as of PyO3 0.29 / numpy 0.29, and several contradict older
+Current as of PyO3 0.30 / numpy 0.30, and several contradict older
 tutorials you may have seen:
 
 - **GIL release:** `py.detach(move || { ... })`; `allow_threads` was
-  removed in 0.22. The closure must be `Send` — `ArrayView3<f32>` is
-  `Copy + Send`, so `move` works.
+  renamed `detach` in 0.26 and removed in 0.28. The closure must be
+  `Send` — `ArrayView3<f32>` is `Copy + Send`, so `move` works.
 - **Array output:** `use numpy::IntoPyArray;` must be imported
   explicitly. `array.into_pyarray(py)` returns `Bound<'py, PyArray3>`;
   call `.unbind()` for the `Py<PyArray3<f32>>` a `#[pyfunction]` returns.
-- **`#[pyclass]` with `Clone`:** add `from_py_object` to opt into the
-  `FromPyObject` derive. Without it 0.28+ warns and will break later.
+- **`FromPyObject` is opt-in:** since 0.30 `#[pyclass]` derives none.
+  Add `from_py_object` (needs `Clone`) to every class taken *by value*:
+  the enum arguments, and the param structs that several GPU bindings
+  in `src/gpu_py.rs` take by value. Without it that use fails to
+  compile, on the GPU path only under `--features cuda` (§5). A
+  `PyRef<'_, T>` argument, which is how every CPU binding takes params,
+  needs none; every param class carries the attribute anyway so either
+  form works. A class that is only returned (`Histogram`) needs no
+  attribute at all; `skip_from_py_object` is deprecated because it is
+  now the default.
 - **Enums:** `#[pyclass(eq, eq_int)]` enables integer comparison. Use
   `#[derive(Default)]` with `#[default]` — clippy `-D warnings` rejects a
   manual `impl Default` where derive would do.
@@ -134,11 +142,15 @@ tutorials you may have seen:
   frozen. Kernels already return `Result`.
 - **`__eq__` removes `__hash__`**, matching Python's own rule for
   value-compared objects — so param objects cannot be dict keys.
-- **Interpreter-dependent tests don't link:** with `extension-module` the
-  test binary has no libpython, so `Python::attach` in `#[cfg(test)]`
-  fails. Test error *values* in Rust and exception *types* from
-  `tests/ffi.py` — and there use `pytest.raises(Exception)`, since a
-  dtype mismatch raises `TypeError` or `ValueError` depending on version.
+- **Interpreter-dependent tests don't link:** with the `extension-module`
+  feature the test binary has no libpython, so `Python::attach` in
+  `#[cfg(test)]` fails. The feature is deprecated upstream in favour of
+  `PYO3_BUILD_EXTENSION_MODULE`, which maturin sets, but 0.30 still
+  honours it and the crate keeps it. Test error *values* in Rust and
+  exception *types* from `tests/ffi.py` — and there use
+  `pytest.raises(Exception)`: under numpy 0.30 a wrong dtype or number
+  of dimensions is a `TypeError` (`type mismatch: from=float64,
+  to=float32`), but the type has varied across rust-numpy versions.
 - **Fixed-size arrays cross the boundary:** `[f32; 8]` works as a
   `#[pyo3(get, set)]` field and a `#[new]` argument.
 - **`#[pyo3(signature = ...)]` gives keyword defaults** on `#[new]`;

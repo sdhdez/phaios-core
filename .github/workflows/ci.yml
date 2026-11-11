@@ -68,10 +68,14 @@ jobs:
           fi
           echo "no image assets tracked ✓"
 
+      # The RustSec tool itself, built from crates.io with its own lockfile.
+      # It replaced `rustsec/audit-check`, whose last release (v2.0.0, 2024)
+      # still declares the node20 runtime; its `v2` ref is a branch frozen
+      # at that release, not a maintained floating tag.
       - name: cargo audit
-        uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
 
       - name: Version consistency check
         run: |
@@ -102,18 +106,20 @@ jobs:
   # supposed to serve every 3.12+ interpreter that has the GIL. Until now CI
   # only ever ran 3.12, so that promise was never exercised. Its own job
   # rather than a matrix on `test`: the Rust half above has nothing to do
-  # with the interpreter and must not run three times.
+  # with the interpreter and must not run once per interpreter.
   #
-  # Free-threaded builds (3.13t, 3.14t) are deliberately absent — PyO3 0.29
-  # ignores `abi3` there, so they are not what this wheel targets; see
-  # README "Type hints".
+  # Free-threaded builds (3.14t, 3.15t) are deliberately absent: with only
+  # `abi3-py312` enabled, PyO3 0.30 gives a free-threaded interpreter a
+  # version-specific build rather than this wheel (PEP 803's `abi3t` would
+  # need the `abi3t-py315` feature, which is not enabled), and PyO3 has not
+  # supported 3.13t at all since 0.29. See README "Install".
   python:
     name: Python ${{ matrix.python }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.12", "3.13", "3.14"]
+        python: ["3.12", "3.13", "3.14", "3.15"]
 
     steps:
       - uses: actions/checkout@v7
@@ -128,13 +134,14 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          # Keyed per interpreter so the three jobs do not race for one
+          # Keyed per interpreter so the matrix jobs do not race for one
           # cache entry; `restore-keys` still warms them from `test`.
           key: ${{ runner.os }}-cargo-py${{ matrix.python }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Set up uv + Python ${{ matrix.python }}
-        uses: astral-sh/setup-uv@v10
+        # setup-uv publishes full version tags only (no floating `v10`).
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: ${{ matrix.python }}
           enable-cache: true

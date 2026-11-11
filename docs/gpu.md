@@ -202,7 +202,7 @@ cuda/<device name>/cc<major>.<minor>/ptx-compute_80/nvcc-<major>.<minor>.<patch>
 the fingerprint of the context the image belongs to. On this machine:
 
 ```
-cuda/NVIDIA GeForce RTX 5070 Ti/cc12.0/ptx-compute_80/nvcc-13.4.59
+cuda/NVIDIA GeForce RTX 5070 Ti/cc12.0/ptx-compute_80/nvcc-13.4.92
 ```
 
 The `nvcc-` segment is load-bearing. The PTX is not committed: it is
@@ -375,10 +375,10 @@ The block it prints last is the one to share:
 
 ```
 phaios-core   0.2.0-dev
-device        NVIDIA GeForce RTX 5070 Ti, 615.71.09
+device        NVIDIA GeForce RTX 5070 Ti, 620.70.06
 nvcc          13.4
-rustc         1.98.1
-host          Linux 7.2.6-zen2-1-zen x86_64
+rustc         1.99.1
+host          Linux 7.2.15-zen1-1-zen x86_64
 result        all GPU checks passed
 ```
 
@@ -392,6 +392,7 @@ backend works on a given card is that someone ran it there.
 | phaios-core | device | driver | nvcc | rustc | host | date | result |
 |---|---|---|---|---|---|---|---|
 | 0.2.0-dev | NVIDIA GeForce RTX 5070 Ti (cc 12.0) | 615.71.09 | 13.4 | 1.98.1 | Linux 7.2.6-zen2-1-zen x86_64 | 2026-09-16 | all GPU checks passed |
+| 0.2.0-dev | NVIDIA GeForce RTX 5070 Ti (cc 12.0) | 620.70.06 | 13.4 | 1.99.1 | Linux 7.2.15-zen1-1-zen x86_64 | 2026-11-11 | all GPU checks passed |
 
 To add a row: run `./scripts/gpu-verify.sh` and open an issue titled
 `GPU report: <device>` containing the block it printed. The table grows

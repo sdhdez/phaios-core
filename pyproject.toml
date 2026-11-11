@@ -15,6 +15,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Programming Language :: Python :: Implementation :: CPython",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Topic :: Multimedia :: Graphics",
@@ -22,11 +23,13 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Typing :: Typed",
 ]
-# rust-numpy 0.29 resolves the NumPy array-API capsule lazily, so a missing
-# numpy surfaces as a PanicException on the first kernel call, not an
-# ImportError. 1.26 is the oldest release that supports Python 3.12, this
-# package's own floor; rust-numpy 0.29 supports the 1.x C-API (its README
-# recommends >= 1.16). Development and CI exercise 2.x — see
+# rust-numpy 0.30 (like 0.29) resolves the NumPy array-API capsule lazily,
+# so a missing numpy surfaces as a PanicException on the first kernel call,
+# not an ImportError. 1.26 is the oldest release that supports Python 3.12,
+# this package's own floor; rust-numpy 0.30 still targets the 1.x C-API for
+# the abi3 build shipped here (its README recommends >= 1.16; an `abi3t`
+# build would need >= 2.5). Newer interpreters need newer NumPy releases,
+# which the resolver picks. Development and CI exercise 2.x — see
 # requirements-dev.txt.
 dependencies = ["numpy>=1.26"]
 

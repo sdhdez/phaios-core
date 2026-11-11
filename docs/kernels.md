@@ -96,7 +96,9 @@ reproduction should record it beside the parameters. Details in
 ### Errors
 
 A bad parameter raises `ValueError`. A wrong channel count or shape
-raises `ValueError`. An output larger than the 8 GiB single-allocation
+raises `ValueError`. An array that is not native-endian `float32`, or
+has the wrong number of dimensions, raises `TypeError` before the
+kernel runs. An output larger than the 8 GiB single-allocation
 limit raises `MemoryError`. A missing or unsupported CUDA device raises
 `RuntimeError`. Pixel values are never validated: they must be finite,
 and with a NaN or an infinity present the result is unspecified and the

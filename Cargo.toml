@@ -9,9 +9,11 @@ repository = "https://github.com/sdhdez/phaios-core"
 keywords = ["image-processing", "black-and-white", "photography", "pyo3"]
 categories = ["multimedia::images", "science"]
 # Floor set by the let-chain in build.rs's find_nvcc (stable since
-# 1.88), not by edition 2024 (1.85) or any dependency (criterion's
-# 1.86 is the highest). build.rs compiles with or without the cuda
-# feature, so this binds the library, not just the GPU path.
+# 1.88), not by edition 2024 (1.85). Two locked dependencies declare the
+# same 1.88 and so do not raise it: libloading 0.9 (via cudarc, `cuda`
+# feature only) and proptest 1.12 (dev-only). pyo3 0.30 and numpy 0.30
+# declare 1.85, criterion 1.86. build.rs compiles with or without the
+# cuda feature, so this binds the library, not just the GPU path.
 rust-version = "1.88"
 # What must never ship in the published crate or the sdist (which mirrors
 # `cargo package`). Git-tracked files bypass .gitignore, so this list is
@@ -67,8 +69,14 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # licence: MIT OR Apache-2.0  source: https://github.com/PyO3/pyo3
-# PyO3 bindings to the Python interpreter. abi3-py312 builds a stable-ABI
-# wheel compatible with CPython 3.12+.
+# PyO3 bindings to the Python interpreter. abi3-py312 builds one
+# stable-ABI wheel for every GIL-enabled CPython 3.12+ (3.15 included);
+# free-threaded 3.14t/3.15t get a version-specific build instead (README
+# "Install"). `extension-module` is deprecated in PyO3 0.30: the build
+# backend is now meant to set PYO3_BUILD_EXTENSION_MODULE, which maturin
+# does. It is kept until the maturin floor in pyproject.toml is raised to
+# a release known to set the variable, and while CLAUDE.md §4's test
+# linking note depends on it.
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py312"] }
 
 # licence: BSD-2-Clause  source: https://github.com/PyO3/rust-numpy
@@ -111,14 +119,15 @@ thiserror = "2"
 # viable while staying above the floor. The feature selects which
 # generated declarations compile, nothing about the nvcc that build.rs
 # runs — this crate compiles PTX and links no toolkit library. cudarc's
-# newest bindings are CUDA 13.3 while the toolkit here is 13.4: harmless,
-# since a 13.x driver exports every CUDA-12.0 symbol and nothing here
-# passes a versioned struct. Exit strategy documented in
+# bindings reach CUDA 13.4 (`cuda-13040`, since 0.19.10), the toolkit
+# here; staying at cuda-12000 is deliberate and harmless, since a 13.x
+# driver exports every CUDA-12.0 symbol and nothing here passes a
+# versioned struct. Exit strategy documented in
 # src/cuda/context.rs: 22 entry points, dlopen + dlsym (not
 # cuGetProcAddress — cudarc does not use it), with two allocation paths
 # to reproduce rather than one, which makes it more than the "days" an
 # earlier version of this comment claimed.
-cudarc = { version = "0.19.9", optional = true, default-features = false, features = [
+cudarc = { version = "0.19.10", optional = true, default-features = false, features = [
     "std",
     "driver",
     # nvrtc: needed only because cudarc's `load_module` takes the `Ptx`

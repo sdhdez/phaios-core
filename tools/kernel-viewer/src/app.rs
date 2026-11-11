@@ -253,7 +253,7 @@ impl ViewerApp {
                 self.params.grain_seed =
                     phaios_core::film_grain::splitmix64(self.params.grain_seed);
             }
-            // Dropped files (egui 0.36: handles with path()).
+            // Dropped files (egui 0.37: handles with path()).
             if let Some(file) = i.raw.dropped_files.first() {
                 self.scene = SceneId::File(file.path().to_path_buf());
             }

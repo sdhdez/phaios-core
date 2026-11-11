@@ -32,7 +32,9 @@ _EMPTY = inspect.Parameter.empty
 
 
 def parse_stub(path: Path) -> ast.Module:
-    return ast.parse(path.read_text(), str(path))
+    # Explicit: the stubs hold non-ASCII text, and before 3.15 (PEP 686)
+    # read_text() decodes with the locale's encoding, not UTF-8.
+    return ast.parse(path.read_text(encoding="utf-8"), str(path))
 
 
 def _is_dunder(name: str) -> bool:

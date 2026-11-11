@@ -150,9 +150,9 @@ Every new dependency is a supply-chain decision. Ask before adding one.
   justification, recorded as a comment in `Cargo.toml` beside the dep.
 - **Prefer std > established crate > new dep.** "Established" means >1M
   downloads, active maintenance, and use by at least one major project.
-- **`cargo audit`** is blocking in CI. Locally it is a separate binary
-  (`cargo install cargo-audit`); CI uses the `rustsec/audit-check`
-  action, so a fresh clone will not have the command.
+- **`cargo audit`** is blocking in CI. It is a separate binary, so a
+  fresh clone will not have the command: install it with
+  `cargo install cargo-audit --locked`, which is exactly what CI runs.
 
 Core dependencies, not to be exceeded without justification: `pyo3`,
 `numpy`, `ndarray`, `rayon`, `thiserror`, plus `cudarc` behind
