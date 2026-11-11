@@ -60,13 +60,27 @@ jobs:
         run: |
           # Sees tracked files, so it catches what .gitignore cannot: a
           # `git add -f` of a photograph (CONTRIBUTING.md, "Examples").
-          HITS=$(git ls-files | grep -Ei '\.(dng|nef|cr2|cr3|arw|raf|orf|rw2|pef|srw|jpe?g|png|tiff?|webp|heic|heif|bmp|gif|exr|hdr|p[bgp]m|psd)$' || true)
+          # The one exception is the maintainer's test photographs, and
+          # the checksum list in tools/kernel-viewer/testdata/README.md is
+          # the allowlist: an image passes only if that list names it,
+          # and every listed file must match its checksum. quotePath=false:
+          # git C-quotes non-ASCII paths by default, and a quoted line ends
+          # in `"`, which the extension pattern would never match.
+          T=tools/kernel-viewer/testdata
+          SUMS=$(grep -E '^[0-9a-f]{64}  [A-Za-z0-9._-]+$' "$T/README.md" || true)
+          if [ -z "$SUMS" ]; then
+            echo "No checksum list in $T/README.md"
+            exit 1
+          fi
+          (cd "$T" && printf '%s\n' "$SUMS" | sha256sum --check --strict --quiet -)
+          LISTED=$(printf '%s\n' "$SUMS" | sed "s#^[0-9a-f]*  #$T/#")
+          HITS=$(git -c core.quotePath=false ls-files | grep -Ei '\.(dng|nef|cr2|cr3|arw|raf|orf|rw2|pef|srw|jpe?g|png|tiff?|webp|heic|heif|bmp|gif|exr|hdr|p[bgp]m|psd)$' | grep -vxF "$LISTED" || true)
           if [ -n "$HITS" ]; then
-            echo "Image assets are never committed (CONTRIBUTING.md):"
+            echo "Image assets other than the listed test photographs are never committed (CONTRIBUTING.md):"
             echo "$HITS"
             exit 1
           fi
-          echo "no image assets tracked ✓"
+          echo "no image assets tracked beyond the listed test photographs, checksums match ✓"
 
       # The RustSec tool itself, built from crates.io with its own lockfile.
       # It replaced `rustsec/audit-check`, whose last release (v2.0.0, 2024)

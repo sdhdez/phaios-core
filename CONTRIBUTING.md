@@ -84,12 +84,19 @@ self-contained, one concept each.
 - One Rust binary per example, writing an 8-bit PPM to `examples/output/`
   so it needs no dependencies to view.
 - The test image is a Macbeth-style chart built in code. **No real image
-  inputs in this crate, ever.** That rule is about committed assets;
-  `tools/kernel-viewer/` loads images at runtime and its `testdata/` is
-  gitignored. Three layers enforce it: `.gitignore` ignores every raster
-  and RAW extension, CI fails on any tracked image file (so a
-  `git add -f` is caught), and `Cargo.toml`'s `exclude` keeps one out of
-  the crate even then.
+  inputs in this crate, ever.** That rule is about committed assets, and
+  it has one exception: the maintainer's test photographs in
+  `tools/kernel-viewer/testdata/`, with the camera's own JPEG where the
+  RAW embeds one, tracked for the viewer and for measurements on real
+  images and never packaged (their README gives the terms). Three layers
+  enforce the rule: `.gitignore` ignores every raster and RAW extension
+  and re-includes only the normalised names there
+  (`photoNN.<dng|arw|nef>`, `photoNN.camera.jpg`), CI fails on any
+  tracked image file not named, with a matching checksum, in that
+  README's list (so a `git add -f` is caught), and `Cargo.toml`'s
+  `exclude` keeps every image, the photographs included, out of the
+  crate and the sdist; `.gitattributes` keeps the photographs out of
+  source archives as well.
 - A doc comment saying what the example demonstrates and what to look for
   in the output.
 - A new kernel gets a new example. A kernel with a GPU path gets a twin

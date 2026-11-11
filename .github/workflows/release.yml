@@ -46,14 +46,26 @@ jobs:
       - name: No image assets in the repository
         run: |
           # Same guard as ci.yml: tracked files bypass .gitignore, and a
-          # tag must never carry a photograph into either registry.
-          HITS=$(git ls-files | grep -Ei '\.(dng|nef|cr2|cr3|arw|raf|orf|rw2|pef|srw|jpe?g|png|tiff?|webp|heic|heif|bmp|gif|exr|hdr|p[bgp]m|psd)$' || true)
+          # tag must never carry a photograph into either registry. The
+          # listed test photographs are tracked but never packaged:
+          # Cargo.toml's `exclude` drops tools/ and every image extension
+          # from the crate and the sdist, and .gitattributes from source
+          # archives. The allowlist and quotePath=false: see ci.yml.
+          T=tools/kernel-viewer/testdata
+          SUMS=$(grep -E '^[0-9a-f]{64}  [A-Za-z0-9._-]+$' "$T/README.md" || true)
+          if [ -z "$SUMS" ]; then
+            echo "::error::no checksum list in $T/README.md"
+            exit 1
+          fi
+          (cd "$T" && printf '%s\n' "$SUMS" | sha256sum --check --strict --quiet -)
+          LISTED=$(printf '%s\n' "$SUMS" | sed "s#^[0-9a-f]*  #$T/#")
+          HITS=$(git -c core.quotePath=false ls-files | grep -Ei '\.(dng|nef|cr2|cr3|arw|raf|orf|rw2|pef|srw|jpe?g|png|tiff?|webp|heic|heif|bmp|gif|exr|hdr|p[bgp]m|psd)$' | grep -vxF "$LISTED" || true)
           if [ -n "$HITS" ]; then
-            echo "::error::image assets are never committed (CONTRIBUTING.md):"
+            echo "::error::image assets other than the listed test photographs are never committed (CONTRIBUTING.md):"
             echo "$HITS"
             exit 1
           fi
-          echo "no image assets tracked ✓"
+          echo "no image assets tracked beyond the listed test photographs, checksums match ✓"
 
   # ── Build wheels ─────────────────────────────────────────────────────────
 

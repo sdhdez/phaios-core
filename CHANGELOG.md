@@ -234,7 +234,12 @@ is a reduction rather than a stage.
 - The "no image assets" rule is enforced rather than stated:
   `.gitignore` covers every raster and RAW extension anywhere in the
   tree, CI and the release `verify` job fail on any tracked image file,
-  and `Cargo.toml`'s `exclude` carries the same patterns.
+  and `Cargo.toml`'s `exclude` carries the same patterns. The one named
+  exception is the maintainer's test photographs in
+  `tools/kernel-viewer/testdata/` (five RAW files from four cameras, with
+  the camera's JPEG where the RAW embeds one): tracked for the viewer and
+  for measurements on real images, and kept out of the crate, the sdist
+  and source archives.
 - The package moved to maturin's mixed layout
   (`python-source = "python"`) so `phaios_core.gpu` can carry its own
   stub; maturin's pure-Rust layout supports only one, at the package

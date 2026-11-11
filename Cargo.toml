@@ -32,9 +32,10 @@ exclude = [
     # the working agreement, local scratch conventions, and pointers to
     # the release runbook. Public on GitHub, where contributors find it.
     "CLAUDE.md",
-    # Image assets are never committed (CONTRIBUTING.md, "Examples"):
+    # Image assets never enter the package (CONTRIBUTING.md, "Examples"):
     # the same bracket-class patterns as .gitignore, case-insensitive by
-    # construction, matching at any depth.
+    # construction, matching at any depth. The tracked test photographs
+    # under tools/ are dropped twice, by "tools/" and here.
     "*.[Dd][Nn][Gg]",
     "*.[Nn][Ee][Ff]",
     "*.[Cc][Rr]2",

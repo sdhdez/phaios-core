@@ -1,0 +1,5 @@
+# The maintainer's test photographs are tracked but never distributed
+# (tools/kernel-viewer/testdata/README.md): keep them out of `git archive`
+# and so out of GitHub's per-tag source archives. Cargo.toml's `exclude`
+# does the same for the crate and the sdist.
+/tools/kernel-viewer/testdata/photo[0-9][0-9].* export-ignore

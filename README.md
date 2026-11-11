@@ -286,6 +286,12 @@ GNU General Public License v3.0 or later. See
 Corresponding source is available at this repository (GPLv3 section
 6(d)).
 
+One exception: the photographs in `tools/kernel-viewer/testdata/` (RAW
+files and the camera's JPEG of some) are © their author, all rights
+reserved, and not covered by the GPL. They are test inputs for this
+repository and are left out of the crate, the Python packages and
+source archives; that directory's README gives the terms.
+
 Every dependency is permissively licensed and GPLv3-compatible; the
 list and the check are in
 [CONTRIBUTING.md](https://github.com/sdhdez/phaios-core/blob/main/CONTRIBUTING.md#dependencies).

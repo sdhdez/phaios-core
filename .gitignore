@@ -40,19 +40,21 @@ phaios-core.code-workspace
 # Criterion benchmark artefacts
 criterion/
 
-# kernel-viewer tool: build artefacts and local test images (never commit
-# image assets — CONTRIBUTING.md, "Examples")
+# kernel-viewer tool: build artefacts, and everything in testdata/ except
+# the files re-included at the end of the image block below. The
+# directory's contents are ignored rather than the directory itself,
+# because git cannot re-include a file below an ignored directory.
 tools/kernel-viewer/target/
-tools/kernel-viewer/testdata/
+/tools/kernel-viewer/testdata/*
 
 # Image assets are never committed (CONTRIBUTING.md, "Examples"): the
-# test image is built in code, and a real photograph anywhere in the tree
-# would ship to both registries. One bracket-class pattern per format,
-# because git ignore patterns are case-sensitive and cameras write
-# upper-case extensions. Three layers enforce the rule: these lines, the
-# "No image assets" step in CI (which sees tracked files, so it catches a
-# `git add -f`), and Cargo.toml's `exclude`. This repo has no deliberate
-# exception and wants none.
+# test image is built in code, and a real photograph in the tree could
+# ship to both registries. One bracket-class pattern per format, because
+# git ignore patterns are case-sensitive and cameras write upper-case
+# extensions. Three layers enforce the rule: these lines, the "No image
+# assets" step in CI (which sees tracked files, so it catches a
+# `git add -f`), and Cargo.toml's `exclude`. The one exception is
+# re-included by name pattern at the end of this block.
 *.[Dd][Nn][Gg]
 *.[Nn][Ee][Ff]
 *.[Cc][Rr]2
@@ -79,6 +81,20 @@ tools/kernel-viewer/testdata/
 *.[Pp][Bb][Mm]
 *.[Pp][Pp][Mm]
 *.[Pp][Ss][Dd]
+# The one exception: the maintainer's test photographs, the camera's own
+# JPEG of each where the RAW embeds one, and their README
+# (tools/kernel-viewer/testdata/). Only the normalised names are
+# re-included, photoNN.<dng|arw|nef> and photoNN.camera.jpg, so stray
+# files and sidecars beside them stay ignored. This is convenience, not
+# the gate: CI accepts only the files listed, with their checksums, in
+# that README, so a correctly named photograph that is not listed still
+# fails. Cargo.toml's `exclude` keeps them out of the crate and the
+# sdist, and .gitattributes out of source archives.
+!/tools/kernel-viewer/testdata/README.md
+!/tools/kernel-viewer/testdata/photo[0-9][0-9].dng
+!/tools/kernel-viewer/testdata/photo[0-9][0-9].arw
+!/tools/kernel-viewer/testdata/photo[0-9][0-9].nef
+!/tools/kernel-viewer/testdata/photo[0-9][0-9].camera.jpg
 
 # Claude Code's per-project directory (settings, worktrees, session
 # state). It lives in the working tree but is never part of the crate and
