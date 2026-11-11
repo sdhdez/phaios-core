@@ -26,7 +26,7 @@ fn usage() -> String {
         "usage: kernel-viewer [KERNEL] [IMAGE] [--scene photo|macbeth] [--gpu] [--full]\n\
          \n\
          KERNEL: {}\n\
-         IMAGE:  a JPEG/PNG/DNG to load (default: testdata/R0000096.DNG if\n\
+         IMAGE:  a JPEG/PNG/DNG to load (default: testdata/photo05.dng if\n\
          present, else the synthetic scene)\n\
          --gpu   start on the CUDA backend (needs --features cuda + a device)\n\
          --full  disable the 1600-px working-copy cap (full-resolution renders)\n\

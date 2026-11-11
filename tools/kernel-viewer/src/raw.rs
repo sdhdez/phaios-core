@@ -99,18 +99,19 @@ pub fn is_raw_extension(path: &std::path::Path) -> bool {
 mod tests {
     use super::*;
 
-    /// Decode the maintainer's test DNG when present (testdata/ is
-    /// gitignored, so this skips on machines without the file).
+    /// Decode the maintainer's test DNG. It is tracked
+    /// (testdata/README.md), so a missing file fails rather than skips:
+    /// a skip is how this test went silently dead when the file was
+    /// renamed.
     #[test]
     fn decodes_the_test_dng() {
-        let path = std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/testdata/R0000096.DNG"
-        ));
-        if !path.is_file() {
-            eprintln!("skip: no test DNG");
-            return;
-        }
+        let path =
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/photo05.dng"));
+        assert!(
+            path.is_file(),
+            "missing tracked test DNG {}",
+            path.display()
+        );
         let img = load_dng(path).expect("decode");
         let (h, w, c) = img.dim();
         assert_eq!(c, 3);

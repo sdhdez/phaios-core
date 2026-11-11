@@ -56,11 +56,11 @@ pub struct ViewerApp {
 
 impl ViewerApp {
     pub fn new(kernel: KernelId, image: Option<PathBuf>, use_gpu: bool, full_res: bool) -> Self {
-        // Default photo: the maintainer's test DNG when present.
-        let default_dng = PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/testdata/R0000096.DNG"
-        ));
+        // Default photo: the maintainer's tracked test DNG
+        // (testdata/README.md); the synthetic scene if it is missing,
+        // as in a checkout that skipped it.
+        let default_dng =
+            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/photo05.dng"));
         let scene = match image {
             Some(p) => SceneId::File(p),
             None if default_dng.is_file() => SceneId::File(default_dng),

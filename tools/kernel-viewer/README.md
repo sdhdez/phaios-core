@@ -23,7 +23,7 @@ kernel-viewer [KERNEL] [IMAGE] [--scene photo|macbeth] [--gpu] [--full]
 - **KERNEL** — any of the sixteen kernel names (`exposure`, `hsl_bw`,
   `zone_system`, …); the in-window dropdown or `[` `]` switch at runtime.
 - **IMAGE** — a JPEG, PNG or RAW/DNG. Defaults to
-  `testdata/R0000096.DNG` when present, else the synthetic scene.
+  `testdata/photo05.dng` when present, else the synthetic scene.
   Drag-and-drop a file onto the window to load it at any time.
 - `--gpu` — start on the CUDA backend (`--features cuda` + a device).
 - `--full` — disable the 1600-px working-copy cap. Interaction defaults
@@ -60,6 +60,8 @@ display-referred. The viewer keeps one canonical path:
 It has its own `Cargo.toml` **and `Cargo.lock`** and an empty
 `[workspace]` table: the GUI/RAW dependency stack never enters
 phaios-core's lockfile, `cargo audit` surface, CI, or published crate.
-It consumes only the crate's public Rust API. `testdata/` is gitignored —
-the repo's "no real image inputs, ever" rule governs committed assets;
-this tool loads images at runtime only.
+It consumes only the crate's public Rust API. `testdata/` holds the
+maintainer's test photographs (DNG, ARW and NEF from four cameras) and
+the camera JPEGs, the only images the repository tracks; its README
+lists them with checksums, and CI accepts no other image. Stray files
+you drop there stay gitignored. The tool loads images at runtime only.
