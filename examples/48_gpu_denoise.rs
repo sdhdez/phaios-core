@@ -10,15 +10,17 @@
 //! does not repeat that argument; it asks whether the card reproduces
 //! it, and how closely.
 //!
-//! `denoise` is **not** bit-exact (`docs/ffi.md` §6): it inherits
-//! `local_contrast`'s own GUIDED_FILTER bound (rtol 1e-4, atol 1e-6) —
-//! at `C == 1` because it is, bit for bit, the same device kernel
-//! ([`local_contrast_device`] with `strength = -amount`); at `C == 3`
-//! because the three new cross-guided kernels add one new cancelling
-//! subtraction, `cov(I, p_c)`, that the self-guided path never
-//! exercises. Each row below prints the worst element as a multiple of
-//! that bound; 1.000 is the limit. Both inputs here are RGB, so only
-//! the `C == 3` path actually runs; `C == 1` is example 23's row.
+//! `denoise` is **not** bit-exact (`docs/ffi.md` §6): `build.rs`
+//! compiles it, like `local_contrast`, with FMA contraction, and it
+//! inherits `local_contrast`'s own GUIDED_FILTER bound (rtol 1e-4,
+//! atol 1e-6) — at `C == 1` because it is, bit for bit, the same device
+//! kernel ([`local_contrast_device`] with `strength = -amount`); at
+//! `C == 3` because the three new cross-guided kernels add one new
+//! cancelling subtraction, `cov(I, p_c)`, that the self-guided path
+//! never exercises. Each row below prints the worst element as a
+//! multiple of that bound; 1.000 is the limit. Both inputs here are
+//! RGB, so only the `C == 3` path actually runs; `C == 1` is example
+//! 23's row.
 //!
 //! Everything runs device-resident: the chart is uploaded once and
 //! `denoise_device` runs on it directly, no intermediate crossing the

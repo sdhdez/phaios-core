@@ -20,38 +20,50 @@
 //!
 //! - **The pictures are example 08's pictures.** The neutral patches
 //!   (row 4) are identical in all four images — zero chroma means zero
-//!   modulation, whatever the weights say. In image 2 the blue-sky patch
+//!   modulation, whatever the weights say. That is a property of each
+//!   backend's own output, checked on the device below; between the
+//!   backends the neutrals are bounded like every other pixel, for the
+//!   reason given two points down. In image 2 the blue-sky patch
 //!   (#03) darkens sharply while the bluish-green patch (#06) barely
 //!   moves, about 70° from the blue band centre with a 30° sigma. In
 //!   image 4 the red patch (#15) goes nearly black while the orange
 //!   patch (#07) only dims: the bands overlap, they do not partition.
-//!   That last property is checked on the device output below rather
+//!   That last property is printed from the device output below rather
 //!   than left to the eye.
 //! - **Why the promise is a bound.** The device kernel mirrors the CPU
 //!   one line for line — hexagonal hue, chroma ratio, circular band
-//!   distance, fixed-order eight-term Gaussian sum — and `expf` is the
-//!   single operation IEEE-754 does not standardise. `docs/ffi.md` §6
-//!   therefore commits rtol 1e-5 / atol 1e-7 rather than bit-exactness,
-//!   and the table prints the worst element as a multiple of that bound.
-//! - **The chart rows come out bit-exact, and that is not evidence of
-//!   exactness.** Two separate reasons conspire. The reference row is
-//!   exact arithmetically: with every weight zero each of the eight
-//!   terms is `0.0 · expf(…)`, exactly zero whatever the two libms
-//!   return, so the multiplier is 1 on both sides and the kernel
-//!   degenerates to `luminance_bw`, which §6 *does* promise exactly. The
-//!   other three are exact only because the chart is a degenerate
-//!   input: 24 flat patches means 24 distinct hues, so `expf` is
-//!   evaluated at a handful of arguments and the two libms happen to
-//!   agree on all of them. Example 22 documents the same trap for
-//!   `zone_system`. A photograph is not 24 colours.
+//!   distance, fixed-order eight-term Gaussian sum — but `build.rs`
+//!   compiles it with fast math. The GPU side's `expf` is the hardware's
+//!   approximate `ex2`, its divisions are approximate, and its
+//!   multiply-adds are contracted into FMAs; the CPU, which is the
+//!   specification, calls the platform libm (glibc on Linux) and rounds
+//!   every step separately. `docs/ffi.md` §6 therefore commits
+//!   rtol 1e-5 / atol 1e-7 rather than bit-exactness, and the table
+//!   prints the worst element as a multiple of that bound.
+//! - **The reference row is bounded too, and so are the neutrals.**
+//!   With every weight zero each of the eight terms is `0.0 · expf(…)`,
+//!   exactly zero on both backends whatever `expf` returns, so the hue
+//!   modulation `1 + multiplier · chroma` is exactly 1 and the kernel
+//!   reduces to the luminance dot product `wr·r + wg·g + wb·b`.
+//!   `luminance_bw` computes that same product and *is* bit-exact,
+//!   because it is compiled strict; here fast math contracts it into
+//!   FMAs, so the reference row can differ from the CPU by about a
+//!   rounding step. A neutral pixel has zero chroma, so whatever the
+//!   weights it reduces to the same product and is bounded as well — it
+//!   may compare equal on a given input, but that is not a promise.
+//! - **The chart is still a degenerate input for `expf`.** 24 flat
+//!   patches means 24 distinct hues, so the other three rows evaluate
+//!   `expf` at a handful of arguments, and their small multiples say
+//!   little about a photograph. Example 29 makes the same point about
+//!   `encode_srgb`'s `powf`. A photograph is not 24 colours.
 //! - **So the example runs a second, harder input.** The same xorshift
 //!   image the conformance suite and `benches/gpu.rs` use — 98 304
 //!   pixels, essentially all distinct — goes through the same four
-//!   configurations, and that table is where the `expf` disagreement
-//!   actually shows up. Its numbers are comparable with example 23's
+//!   configurations, and that table is where `expf` is exercised across
+//!   the hue circle. Its numbers are comparable with example 23's
 //!   `hsl_bw` row, which uses the same generator. If the first table
-//!   were the whole example, the twin would be advertising an exactness
-//!   the kernel does not have.
+//!   were the whole example, the twin would be measuring the bound on
+//!   24 hues and presenting it as the kernel's.
 //! - **The 8-bit verdict.** The last column counts how many of the
 //!   98 304 codes in the written PPM differ, after the same
 //!   `encode_srgb` that `write_ppm_grey_display` applies — the
@@ -77,9 +89,10 @@ use ndarray::Array3;
 use phaios_core::bw::{HslWeightedParams, LuminanceStandard};
 use phaios_core::cuda::{self, kernels as k};
 
-/// The committed cross-backend bound for a kernel whose transcendental
-/// content is a single `expf` (`docs/ffi.md` §6). Copied from the
-/// document rather than invented here.
+/// The committed cross-backend bound for the one-transcendental class
+/// (`docs/ffi.md` §6), which takes `hsl_bw`: eight `expf` per pixel, on
+/// the device compiled with fast math. Copied from the document rather
+/// than invented here.
 const RTOL: f32 = 1e-5;
 const ATOL: f32 = 1e-7;
 
@@ -205,6 +218,10 @@ fn main() {
         "{:<11} {:<10} {:>9} {:>12} {:>9} {:>18}",
         "config", "promise", "CPU == GPU", "max |delta|", "bound", "8-bit codes differ"
     );
+    // The worst row of both tables, against the one bound they share:
+    // the verdict printed at the end.
+    let mut worst_row = 0.0_f32;
+    let mut cpu_reference: Option<Array3<f32>> = None;
     let mut gpu_outputs: Vec<Array3<f32>> = Vec::with_capacity(configs.len());
     for (name, weights) in configs {
         let params = HslWeightedParams::new(weights, LuminanceStandard::Bt709, 30.0);
@@ -215,38 +232,62 @@ fn main() {
         let gpu = ctx
             .download(&k::hsl_bw_device(&uploaded, &params).unwrap())
             .unwrap();
+        let violation = worst_violation(&cpu, &gpu, RTOL, ATOL);
+        if violation > worst_row {
+            worst_row = violation;
+        }
 
         println!(
             "{name:<11} {:<10} {:>9} {:>12.3e} {:>9.4} {:>18}",
             "1e-5/1e-7",
             cpu == gpu,
             max_abs_diff(&cpu, &gpu),
-            worst_violation(&cpu, &gpu, RTOL, ATOL),
+            violation,
             format!("{}/{}", codes_differing(&cpu, &gpu), cpu.len()),
         );
 
         let path = format!("examples/output/30_gpu_hsl_{name}.ppm");
         shared::write_ppm_grey_display(Path::new(&path), gpu.view(), shared::WIDTH, shared::HEIGHT);
+        cpu_reference.get_or_insert(cpu);
         gpu_outputs.push(gpu);
     }
     println!(
-        "  bound is the committed one-expf pair (rtol 1e-5, atol 1e-7) from\n  \
-         docs/ffi.md §6, as a multiple: 1.0000 is the limit. §6 promises this\n  \
-         kernel bounded, not bit-exact, and a row reading true here does not\n  \
-         make it exact: reference has no expf left in it (every weight is zero),\n  \
-         and the chart gives the other three only 24 distinct hues to disagree\n  \
-         over. The xorshift table below is the one that exercises expf."
+        "  bound is the committed one-transcendental pair (rtol 1e-5, atol 1e-7)\n  \
+         from docs/ffi.md §6, as a multiple: 1.0000 is the limit. §6 promises this\n  \
+         kernel bounded, not bit-exact, the reference row included: no expf term\n  \
+         survives zero weights, but fast math contracts the luminance dot product\n  \
+         into FMAs. The chart gives the other three only 24 distinct hues to\n  \
+         disagree over; the xorshift table below is the one that exercises expf."
     );
 
-    // The two properties example 08 asks the reader to look for, checked
-    // on the device output rather than left to the eye.
+    // The properties example 08 asks the reader to look for, read from
+    // the device output rather than left to the eye: the neutrals are
+    // checked, the band overlap is printed.
     let reference = &gpu_outputs[0];
     let neutrals_held = gpu_outputs.iter().all(|out| {
         (19..=24).all(|p| patch_centre(out, p).to_bits() == patch_centre(reference, p).to_bits())
     });
     println!(
         "\ndevice output, the properties example 08 is about:\n  \
-         neutral patches (#19-#24) bit-identical in all four configs: {neutrals_held}"
+         neutral patches (#19-#24) bit-identical across the four device configs: {neutrals_held}"
+    );
+
+    // The same neutrals against the CPU. Zero chroma removes the hue
+    // terms on both sides, but the dot product left over is contracted
+    // on the device, so this is a bounded comparison, not an exact one.
+    let cpu_reference = cpu_reference.expect("configs is not empty");
+    let neutrals =
+        |img: &Array3<f32>| Array3::from_shape_fn((1, 6, 1), |(_, i, _)| patch_centre(img, 19 + i));
+    let (cpu_neutrals, gpu_neutrals) = (neutrals(&cpu_reference), neutrals(reference));
+    let neutrals_differing = cpu_neutrals
+        .iter()
+        .zip(gpu_neutrals.iter())
+        .filter(|(x, y)| x.to_bits() != y.to_bits())
+        .count();
+    println!(
+        "  the same neutrals against the CPU: {neutrals_differing} of 6 differ, {:.4}x the bound \
+         (bounded, not promised exact)",
+        worst_violation(&cpu_neutrals, &gpu_neutrals, RTOL, ATOL)
     );
     println!(
         "  blue_down:  sky #03 {:.5} -> {:.5}, bluish green #06 {:.5} -> {:.5} (70 deg away)",
@@ -290,15 +331,23 @@ fn main() {
             .zip(gpu.iter())
             .filter(|(x, y)| x.to_bits() != y.to_bits())
             .count();
+        let violation = worst_violation(&cpu, &gpu, RTOL, ATOL);
+        if violation > worst_row {
+            worst_row = violation;
+        }
         println!(
             "{name:<11} {:<10} {:>9} {:>12.3e} {:>9.4} {:>18}",
             "1e-5/1e-7",
             cpu == gpu,
             max_abs_diff(&cpu, &gpu),
-            worst_violation(&cpu, &gpu, RTOL, ATOL),
+            violation,
             format!("{differing}/{}", cpu.len()),
         );
     }
+    println!(
+        "  verdict: all eight rows within the 1e-5/1e-7 bound: {} (worst {worst_row:.4}x)",
+        worst_row <= 1.0
+    );
 
     println!("\nwrote examples/output/30_gpu_hsl_{{reference,blue_down,foliage,red_down}}.ppm");
     println!(

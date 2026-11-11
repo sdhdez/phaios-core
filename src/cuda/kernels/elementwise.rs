@@ -4,14 +4,19 @@
 //! (H, W, 3) → (H, W, 1) B&W conversions `luminance_bw`,
 //! `channel_mixer_bw` and `color_filter_bw`.
 //!
-//! With FMA contraction disabled at PTX compile time (`-fmad=false` in
-//! build.rs) and every operation involved correctly rounded (mul, add,
-//! div, sqrt, min/max), `vignette`, `luminance_bw` and `tone_curve`'s
-//! `power == 1` path are **bit-exact** against their CPU kernels — the
-//! conformance suite asserts them with `assert_eq!`. `encode_srgb` and
-//! the general `tone_curve` path each contain one `powf`, the only
-//! operation IEEE-754 leaves implementation-defined, and are asserted
-//! against a committed tolerance instead.
+//! `vignette`, `luminance_bw` (whose PTX serves all three B&W
+//! conversions), `highlight_rolloff` and `shadow_rolloff` are compiled
+//! strict (`-fmad=false`, IEEE division and square root; build.rs
+//! `PRECISION`) and every operation involved is correctly rounded (mul,
+//! add, div, sqrt, min/max), so they are **bit-exact** against their CPU
+//! kernels — the conformance suite asserts them with `assert_eq!`.
+//! `encode_srgb` and `tone_curve` are compiled with fast math (FMA
+//! contraction, approximate `powf`, subnormal inputs and results flushed
+//! to zero), and `encode_srgb` and the general `tone_curve` path are
+//! asserted against a committed tolerance instead. `tone_curve`'s affine
+//! step is pinned to the CPU's two roundings (`__fmul_rn`, `__fadd_rn`),
+//! so its `power == 1` path is bit-exact on normal inputs. The identity
+//! fast paths are device copies, bit-exact.
 
 use cudarc::driver::PushKernelArg;
 use ndarray::{Array3, ArrayView3};
@@ -52,7 +57,8 @@ fn copy_device(img: &DeviceImage) -> Result<DeviceImage, PhaiosError> {
 // ── encode_srgb ──────────────────────────────────────────────────────────────
 
 /// IEC 61966-2-1 sRGB transfer, device-resident. Mirrors
-/// [`crate::encode::encode_srgb`]; agreement bounded by one `powf`.
+/// [`crate::encode::encode_srgb`]; agreement bounded (rtol 1e-5, atol
+/// 1e-7): one `powf` and an affine step, compiled with fast math.
 ///
 /// # Errors
 /// [`PhaiosError::Backend`] on device failure (the CPU kernel is
@@ -92,8 +98,12 @@ pub fn encode_srgb(ctx: &Context, img: ArrayView3<f32>) -> Result<Array3<f32>, P
 
 /// ASC CDL slope/offset/power, device-resident. Mirrors
 /// [`crate::tone::tone_curve`], including the identity fast path (a
-/// device copy) and the `power == 1` path that skips `powf` — both of
-/// which are bit-exact; the general path is bounded by one `powf`.
+/// device copy, bit-exact) and the `power == 1` path that skips `powf`.
+/// The file is compiled with fast math, but the affine step is pinned
+/// to the CPU's two roundings (`__fmul_rn`, `__fadd_rn`, never
+/// contracted), so the `power == 1` path is bit-exact on normal inputs;
+/// only a subnormal value differs, flushed to zero. The general path is
+/// bounded (rtol 1e-5, atol 1e-7) by one approximate `powf`.
 ///
 /// # Errors
 /// Same [`PhaiosError::Parameter`] as the CPU kernel; plus

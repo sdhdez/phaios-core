@@ -112,15 +112,15 @@ diff against. Examples 15, 22 and 23 are not twins of one CPU example:
 | File | Kernel | What to look for |
 |---|---|---|
 | `15_gpu_exposure.rs` | `exposure` | Device enumeration, a context, one kernel; bit-exactness and why per-call offload does not pay |
-| `22_gpu_pipeline.rs` | the whole chain | Upload once, download once, in the canonical order, against a per-call offload chain: 7x the bytes moved |
+| `22_gpu_pipeline.rs` | the whole chain | Upload once, download once, in the canonical order, against a per-call offload chain: 7x the bytes moved; drift enters at the fast-math `zone_system` and ends far inside the whole-chain bound |
 | `23_gpu_selftest.rs` | all 27 | Every device entry point against its CPU oracle, with the committed per-kernel bounds. The one to run on a new card |
 | `24_gpu_luminance.rs` | `luminance_bw` | The twin of 01: same pixels, different processor |
 | `25_gpu_channel_mixer.rs` | `channel_mixer_bw` | The twin of 02 |
 | `26_gpu_color_filter.rs` | `color_filter_bw` | The twin of 03, all six presets |
-| `27_gpu_zone_system.rs` | `zone_system` | The twin of 04 |
+| `27_gpu_zone_system.rs` | `zone_system` | The twin of 04; fast math, so bounded, with only the no-op identity bit-exact |
 | `28_gpu_local_contrast.rs` | `local_contrast` | The twin of 05; the guided filter's 1e-4 / 1e-6 class in practice |
-| `29_gpu_srgb_encode.rs` | `encode_srgb` | The twin of 06 |
-| `30_gpu_hsl_weighted.rs` | `hsl_bw` | The twin of 08; eight `expf` per pixel, and among the largest CPU/GPU ratios in the crate |
+| `29_gpu_srgb_encode.rs` | `encode_srgb` | The twin of 06; the strict `luminance_bw` bit-exact, the fast-math encode bounded |
+| `30_gpu_hsl_weighted.rs` | `hsl_bw` | The twin of 08; eight `expf` per pixel, and among the largest CPU/GPU ratios in the crate; fast math, so bounded throughout, neutral pixels and the all-zero reference included |
 | `31_gpu_tone_curve.rs` | `tone_curve` | The twin of 09; bit-exact at `power == 1`, bounded otherwise |
 | `32_gpu_vignette.rs` | `vignette` | The twin of 10, computed from a device-resident monochrome intermediate |
 | `33_gpu_split_toning.rs` | `split_toning` | The twin of 11; the 1 to 3 channel step on the device |

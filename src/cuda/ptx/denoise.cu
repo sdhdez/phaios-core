@@ -57,7 +57,12 @@
 // downstream of a_c/b_c is squared or subtracted, so f32 is enough,
 // exactly as local_contrast.cu's own comment on `box_h_ab` argues.
 //
-// No transcendentals anywhere in this file.
+// No transcendentals anywhere in this file, but it is compiled with FMA
+// contraction (build.rs PRECISION; IEEE division and square root
+// otherwise), like local_contrast.cu: the multiply-adds in the I*p_c
+// sums, var(I), cov(I, p_c), b_c, q_c and the blend fuse, one rounding
+// fewer than the CPU, and the driver's JIT may fuse more, so a driver
+// update can move the last bits. The (1e-4, 1e-6) bound covers it.
 
 // Row (horizontal) window sums of p_c and I*p_c, f64 accumulation
 // exactly like box_h_l_l2 -- generalises it from one array (L, summed

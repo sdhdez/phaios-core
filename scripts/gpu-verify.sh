@@ -46,7 +46,7 @@ cargo clippy --all-targets --features cuda -- -D warnings
 
 step "Test suite, GPU required"
 # PHAIOS_REQUIRE_GPU turns cuda_conformance.rs's device-missing skip into a
-# hard panic, so a green run here cannot mean "quietly skipped 75 tests".
+# hard panic, so a green run here cannot mean "quietly skipped the GPU tests".
 PHAIOS_REQUIRE_GPU=1 cargo test --features cuda
 
 step "Examples gated behind --features cuda"

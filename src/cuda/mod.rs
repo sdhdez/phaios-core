@@ -3,9 +3,9 @@
 //!
 //! Everything here mirrors a CPU kernel one-for-one: same signature
 //! shape, same validation with the same error messages, same output —
-//! bit-identical where the maths allows it (integer work and bare
-//! multiplies), bounded and tabulated where transcendentals are involved
-//! (see `docs/ffi.md` §6). **The CPU implementation is the
+//! bit-identical for the kernels in `docs/ffi.md` §6's bit-exact list,
+//! bounded and tabulated where a transcendental, FMA or fast math
+//! (`build.rs`, `PRECISION`), or a reformulated sum is involved. **The CPU implementation is the
 //! specification**; every kernel here is tested against it, never the
 //! other way round.
 //!

@@ -283,21 +283,28 @@ impl Context {
     /// `docs/ffi.md` §6:
     /// `cuda/<device>/cc<maj>.<min>/ptx-compute_80/nvcc-<maj>.<min>.<patch>`.
     ///
-    /// Two machines with the same fingerprint produce bit-identical
-    /// output for the same input, parameters and seed.
+    /// Two machines with the same fingerprint and driver produce
+    /// bit-identical output for the same input, parameters and seed.
+    /// The driver is not part of the key: in the files `build.rs`
+    /// compiles with FMA or fast math, and wherever approximate
+    /// instructions remain (libdevice `cbrtf` in `split_toning`), the
+    /// driver's JIT finishes part of the arithmetic (it may fuse
+    /// multiply-adds, and it lowers the approximate instructions), so a
+    /// driver update can move their last bits under an unchanged
+    /// fingerprint — expected to stay within about one 8-bit code, not
+    /// measured across drivers.
     ///
     /// The `nvcc-` segment is the toolkit that compiled the embedded PTX,
     /// captured by `build.rs` from the same `nvcc` the compile used. It
     /// is part of the key because it has to be: the PTX is regenerated at
-    /// build time by whatever toolkit is present, and the bounded kernels
-    /// (`hsl_bw`, `zone_system`, `local_contrast`, `denoise`, `film_grain`,
-    /// `split_toning`, `tone_curve` at power != 1, `encode_srgb`, `blur`,
-    /// `glow`, `sharpen`) inline libdevice bodies for `powf`, `expf`,
-    /// `log2f` and `cbrtf` that change between toolkits. Without it, two
-    /// builds from different toolkits reported the same fingerprint and
-    /// could differ in the low bits — this project moved 13.3 -> 13.4 with
-    /// the key unchanged. The bit-exact kernels use IEEE operations only
-    /// and are unaffected either way.
+    /// build time by whatever toolkit is present, and bounded kernels
+    /// inline toolkit code that changes between toolkits — libdevice
+    /// `cbrtf` in `split_toning` and `logf`/`cosf` in `film_grain`, and
+    /// nvcc's fast-math intrinsics in the files compiled with fast math.
+    /// Without it, two builds from different toolkits reported the same
+    /// fingerprint and could differ in the low bits — this project moved
+    /// 13.3 -> 13.4 with the key unchanged. The bit-exact kernels use
+    /// IEEE operations only and are unaffected either way.
     #[must_use]
     pub fn fingerprint(&self) -> String {
         format!(

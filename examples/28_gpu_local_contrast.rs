@@ -22,7 +22,8 @@
 //!   builds four global f64 summed-area tables, the device runs
 //!   separable window sums — f64 for the L and L² statistics,
 //!   Kahan-compensated f32 for the a/b coefficient sums downstream
-//!   (`docs/ffi.md` §6). §6 therefore commits a bound of
+//!   (`docs/ffi.md` §6) — and `build.rs` compiles the device kernel with
+//!   FMA contraction. §6 therefore commits a bound of
 //!   rtol 1e-4 / atol 1e-6 across backends and **not** bit-exactness,
 //!   so the table prints the worst element as a multiple of that bound
 //!   rather than claiming an equality this kernel is not promised.

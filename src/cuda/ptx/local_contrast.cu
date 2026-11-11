@@ -10,6 +10,12 @@
 // in a fixed order. No cross-thread reduction exists anywhere, so the
 // result is bit-reproducible on any launch geometry.
 //
+// Compiled with FMA contraction (build.rs PRECISION; IEEE division and
+// square root otherwise): the multiply-adds in the sums, the variance,
+// the model and the blend fuse, one rounding fewer than the CPU, and the
+// driver's JIT may fuse more, so a driver update can move the last bits.
+// The (1e-4, 1e-6) bound covers it; C = 1 denoise runs on these kernels.
+//
 // Dropping the global prefix sum did NOT license dropping the f64, and an
 // earlier version of this file argued that it did: "the accumulation is
 // over at most tens of values, where f32 is comfortably sufficient". That

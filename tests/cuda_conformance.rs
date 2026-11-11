@@ -308,9 +308,11 @@ fn local_contrast_agrees_within_bound_across_the_dynamic_range() {
     }
 }
 
-/// radius = 0 makes the filter the identity — and because no windowed
-/// arithmetic happens at all in that configuration, CPU and GPU agree
-/// bit-for-bit, not merely closely.
+/// radius = 0 makes the filter the identity, and CPU and GPU agree
+/// bit-for-bit, not merely closely: the one-pixel window's variance is
+/// `x·x − x·x` formed in f64, where the square of an f32 is exact, so the
+/// FMA contraction this file is compiled with (build.rs, `PRECISION`) has
+/// no rounding to remove and the variance is exactly zero.
 #[test]
 fn local_contrast_radius_zero_is_bit_exact_identity() {
     let Some(ctx) = try_context() else { return };
@@ -451,10 +453,20 @@ fn luminance_bw_is_bit_exact() {
     }
 }
 
-/// tone_curve: the identity and power == 1 paths are bit-exact; the
-/// general path carries one powf and is bounded.
+/// tone_curve: compiled with fast math (build.rs, `PRECISION`), so the
+/// powf path is bounded. The affine step is pinned in the source to the
+/// CPU's two roundings (`__fmul_rn`, `__fadd_rn`), so the `power == 1`
+/// path is exact on every normal input; only a subnormal result would
+/// differ, flushed to zero, and these inputs produce none.
+///
+/// The last cases are why the step is pinned. A negative offset makes
+/// `slope·x + offset` cancel to exactly 0 on the CPU for some `x`; fused
+/// into one FMA it kept the product's rounding residue instead, and powf
+/// at power < 1 lifted that residue to 2.4e-3 (8 codes at 8 bits,
+/// 24 000× the bound). The ramp crosses the cancellation point densely,
+/// and `CANCEL` hits it exactly for (1.1, −0.05).
 #[test]
-fn tone_curve_exact_paths_and_powf_bound() {
+fn tone_curve_affine_exact_and_powf_bounded() {
     let Some(ctx) = try_context() else { return };
     let img = pseudo_random_image(517, 733, 1);
 
@@ -477,6 +489,32 @@ fn tone_curve_exact_paths_and_powf_bound() {
         assert!(
             v <= 1.0,
             "powf path at ({slope}, {offset}, {power}): {v:.2}x the (1e-5, 1e-7) bound"
+        );
+    }
+
+    const CANCEL: f32 = 0.045_454_547;
+    let ramp = Array3::from_shape_fn((1, 1 << 20, 1), |(_, x, _)| {
+        if x == 0 {
+            CANCEL
+        } else {
+            x as f32 / (1u32 << 20) as f32 * 0.2
+        }
+    });
+    for (slope, offset, power) in [
+        (1.1_f32, -0.05_f32, 0.3_f32),
+        (1.1, -0.05, 0.5),
+        (1.2, -0.05, 0.3),
+        (1.4, -0.1, 0.3),
+        (1.05, -0.01, 0.3),
+        (0.8, -0.02, 0.7),
+    ] {
+        let params = phaios_core::tone::ToneCurveParams::new(slope, offset, power);
+        let cpu = phaios_core::tone::tone_curve(ramp.view(), &params).unwrap();
+        let gpu = cuda::kernels::tone_curve(&ctx, ramp.view(), &params).unwrap();
+        let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+        assert!(
+            v <= 1.0,
+            "negative offset at ({slope}, {offset}, {power}): {v:.2}x the (1e-5, 1e-7) bound"
         );
     }
 }
@@ -530,8 +568,12 @@ fn mixer_and_filter_are_bit_exact() {
     }
 }
 
-/// hsl_bw carries eight expf terms; bounded. The neutral-pixel property
-/// (zero chroma → weights ignored) is exact and asserted separately.
+/// hsl_bw carries eight expf terms; bounded. Neutral pixels (zero
+/// chroma → weights ignored) bypass the transcendentals, but the kernel
+/// is compiled with fast math, which contracts the base dot product into
+/// FMAs, so they are bounded too. They are asserted separately on a
+/// non-dyadic grey ramp: a constant grey of 0.5 makes every product
+/// exact, and would pass whether or not the dot product is contracted.
 #[test]
 fn hsl_bw_agrees_within_expf_bound() {
     let Some(ctx) = try_context() else { return };
@@ -546,11 +588,16 @@ fn hsl_bw_agrees_within_expf_bound() {
     let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
     assert!(v <= 1.0, "hsl_bw: {v:.2}x the (1e-5, 1e-7) bound");
 
-    // Neutral pixels bypass every transcendental: exact.
-    let grey = Array3::from_elem((16, 16, 3), 0.5_f32);
-    let cpu = phaios_core::bw::hsl_bw(grey.view(), &params).unwrap();
-    let gpu = cuda::kernels::hsl_bw(&ctx, grey.view(), &params).unwrap();
-    assert_eq!(cpu, gpu, "neutral pixels must be exact");
+    // Neutral pixels bypass every transcendental; only the contracted
+    // dot product separates the backends. Measured 0.021× the bound.
+    let greys = Array3::from_shape_fn((16, 1000, 3), |(y, x, _)| (y * 1000 + x) as f32 / 9973.0);
+    let cpu = phaios_core::bw::hsl_bw(greys.view(), &params).unwrap();
+    let gpu = cuda::kernels::hsl_bw(&ctx, greys.view(), &params).unwrap();
+    let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+    assert!(
+        v <= 1.0,
+        "hsl_bw neutral pixels: {v:.2}x the (1e-5, 1e-7) bound"
+    );
 }
 
 /// zone_system: log2f/expf/powf bound the general case; the empty-map
@@ -1568,6 +1615,84 @@ fn non_finite_pixels_agree_across_backends() {
             c.to_bits(),
             g.to_bits(),
             "hsl_bw diverges on {pixel:?}: cpu={c}, gpu={g}"
+        );
+    }
+}
+
+/// The element-wise kernels compiled with fast math (build.rs,
+/// `PRECISION`) agree with the CPU on non-finite pixels in class: NaN
+/// where the CPU returns NaN (`zone_system`, `encode_srgb`), the same ±inf
+/// where it returns ±inf, and the same finite value where the CPU clamps
+/// (`tone_curve` maps NaN and −inf to 0.0 on both backends). NaN payload
+/// and sign are not compared: these kernels are bounded, and the two
+/// backends' math libraries produce different NaN bits. Finite results
+/// stay within the one-transcendental bound, and the one deliberate
+/// difference is asserted directly: fast math flushes subnormal inputs
+/// and results to zero, so a ±1e-40 pixel comes out as ±0.0 here (through
+/// `tone_curve` at power 0.3 the CPU gives 1e-12).
+#[test]
+fn fast_math_kernels_agree_on_special_values() {
+    let Some(ctx) = try_context() else { return };
+    let specials = [
+        0.0_f32,
+        -0.0,
+        1e-40,
+        -1e-40,
+        1e-30,
+        -1e-3,
+        0.5,
+        1.0,
+        7.5,
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+    ];
+    let one = Array3::from_shape_fn((1, specials.len(), 1), |(_, x, _)| specials[x]);
+
+    let check = |name: &str, cpu: &Array3<f32>, gpu: &Array3<f32>, atol: f32| {
+        assert_eq!(cpu.dim(), gpu.dim(), "{name}: shape");
+        for (i, (&c, &g)) in cpu.iter().zip(gpu.iter()).enumerate() {
+            if c.is_nan() {
+                assert!(g.is_nan(), "{name}[{i}]: cpu NaN, gpu {g}");
+            } else if c.is_infinite() {
+                assert_eq!(c, g, "{name}[{i}]: infinity");
+            } else {
+                assert!(g.is_finite(), "{name}[{i}]: cpu {c}, gpu {g}");
+                assert!(
+                    (c - g).abs() <= atol + 1e-5 * c.abs(),
+                    "{name}[{i}]: cpu {c}, gpu {g}"
+                );
+            }
+            if specials[i].is_subnormal() {
+                assert_eq!(g, 0.0, "{name}[{i}]: a subnormal input must flush to zero");
+            }
+        }
+    };
+
+    let mut offsets = std::collections::HashMap::new();
+    for (z, o) in [(0, -0.7_f32), (3, 0.9), (5, 0.6), (7, 0.45), (10, 0.55)] {
+        offsets.insert(z, o);
+    }
+    let zones = phaios_core::tone::ZoneParams::new(offsets);
+    check(
+        "zone_system",
+        &phaios_core::tone::zone_system(one.view(), &zones).unwrap(),
+        &cuda::kernels::zone_system(&ctx, one.view(), &zones).unwrap(),
+        1e-7,
+    );
+    check(
+        "encode_srgb",
+        &phaios_core::encode::encode_srgb(one.view()).unwrap(),
+        &cuda::kernels::encode_srgb(&ctx, one.view()).unwrap(),
+        1e-7,
+    );
+    for power in [0.3_f32, 1.0, 1.7] {
+        let params = phaios_core::tone::ToneCurveParams::new(1.1, 0.0, power);
+        check(
+            &format!("tone_curve power {power}"),
+            &phaios_core::tone::tone_curve(one.view(), &params).unwrap(),
+            &cuda::kernels::tone_curve(&ctx, one.view(), &params).unwrap(),
+            1e-7,
         );
     }
 }
@@ -3179,13 +3304,14 @@ fn denoise_cross_guided_agrees_within_bound_when_only_some_channels_carry_the_ba
 ///
 /// `amount = 0` is the device-copy fast path, bit-exact by construction.
 /// `radius = 0` collapses every window to one pixel: `var`/`cov` become
-/// an exact `x - x = 0.0` on both backends for any input (the same
-/// value cast or
-/// multiplied twice via the same deterministic operation always produces
-/// identical bits, so the cancelling subtraction is exactly zero, not
-/// merely close to it), so it is *also* an exact identity -- against the
-/// original input directly, not merely "close to the CPU" -- for any
-/// `amount`, mirroring `local_contrast_radius_zero_is_bit_exact_identity`.
+/// an exact `x·x − x·x = 0.0` on both backends for any input. The
+/// products are formed in f64, where the square of an f32 is exact, so
+/// they carry no rounding for the FMA contraction this file is compiled
+/// with (build.rs, `PRECISION`) to fuse away, and the cancelling
+/// subtraction is exactly zero, not merely close to it. So it is *also*
+/// an exact identity -- against the original input directly, not merely
+/// "close to the CPU" -- for any `amount`, mirroring
+/// `local_contrast_radius_zero_is_bit_exact_identity`.
 #[test]
 fn denoise_degenerate_shapes_and_identity_agree() {
     use phaios_core::bw::LuminanceStandard;

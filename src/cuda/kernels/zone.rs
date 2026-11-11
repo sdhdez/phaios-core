@@ -15,11 +15,12 @@ const PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/zone_system.ptx"));
 /// Zone System tone curve, device-resident.
 ///
 /// Mirrors [`crate::tone::zone_system`]. The offsets cross to the
-/// device as a dense 11-entry array in zone order; adding an exact
-/// `+0.0` term is the IEEE-754 identity, so the dense ascending loop
-/// computes bit-for-bit the same sum as the CPU's sparse sorted
-/// iteration — the ordered-reduction rule ports mechanically.
-/// `log2f`/`expf`/`powf` are implementation-defined; agreement is
+/// device as a dense 11-entry array in zone order; an absent zone adds
+/// an exact `+0.0` term, fused or not, which is the IEEE-754 identity,
+/// so the dense ascending loop sums in the same order as the CPU's
+/// sparse sorted iteration — the ordered-reduction rule ports
+/// mechanically. The file is compiled with fast math (approximate
+/// `log2f`/`expf`/`powf` and division, FMA contraction); agreement is
 /// bounded (rtol 1e-5, atol 1e-7). The empty-offsets identity path is
 /// a device copy, exactly as the CPU assigns its input through.
 ///

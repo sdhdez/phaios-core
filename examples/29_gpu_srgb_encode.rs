@@ -23,15 +23,19 @@
 //!   even progression.
 //! - **The two agreement rows say different things, and the difference
 //!   is the lesson.** `luminance_bw` is a dot product with no
-//!   transcendental in it, so `docs/ffi.md` §6 promises it bit-exact
-//!   across backends and the row is checked with `==`. `encode_srgb` is
-//!   `1.055·x^(1/2.4) − 0.055`, and IEEE-754 standardises no
-//!   transcendental: neither the host libm nor the device's is required
-//!   to round `powf` correctly, so §6 commits a bound of
-//!   rtol 1e-5 / atol 1e-7 instead. That row prints the worst element as
-//!   a multiple of the bound. Claiming bit-exactness for it would be
-//!   claiming something the crate does not promise and cannot enforce
-//!   across a driver update.
+//!   transcendental in it, and `build.rs` compiles it strict — every
+//!   multiply and add correctly rounded, none fused — so `docs/ffi.md`
+//!   §6 promises it bit-exact across backends and the row is checked
+//!   with `==`. `encode_srgb` is `1.055·x^(1/2.4) − 0.055`, and IEEE-754
+//!   standardises no transcendental. The CPU, the specification, calls
+//!   the platform libm's `powf` (glibc on Linux); `build.rs` compiles the
+//!   device kernel with fast math, so its `powf` is the hardware's
+//!   approximate `lg2`/`ex2` and the scale-and-offset is contracted into
+//!   an FMA. §6 therefore commits a bound of rtol 1e-5 / atol 1e-7
+//!   instead, and that row prints the worst element as a multiple of the
+//!   bound. Claiming bit-exactness for it would be claiming something
+//!   the crate does not promise and cannot enforce across a driver
+//!   update.
 //! - **The neutral-patch table, and the count beneath it.** The chart
 //!   holds only 24 distinct luminance values, 4096 pixels each, so the
 //!   entire disagreement between the two backends is a property of 24
@@ -39,13 +43,15 @@
 //!   the units the difference is actually measured in — and the line
 //!   under the table says how many of all 24 differ, and by how much.
 //!   Every value on this chart is above the 0.0031308 threshold and so
-//!   takes the `powf` branch; the linear segment below it is a bare
-//!   multiply and cannot differ at all.
+//!   takes the `powf` branch. The linear segment below it is a single
+//!   multiply, correctly rounded on both sides even under fast math; it
+//!   can differ only on a subnormal input, which fast math reads as
+//!   zero on the GPU.
 //! - **A degenerate input does not prove exactness.** 24 distinct
-//!   arguments is a very small sample of `powf`, and the two libms may
-//!   well agree on most or all of them. A row reading `0 ULP` is a
-//!   measurement on this chart, on this card, under this driver — not
-//!   a promise. §6's bound is the promise.
+//!   arguments is a very small sample of `powf`, and the CPU's libm and
+//!   the device's fast-math approximation may well agree on some of
+//!   them. A row reading `0 ULP` is a measurement on this chart, on this
+//!   card, under this driver — not a promise. §6's bound is the promise.
 //! - **The 8-bit verdict.** A handful of ULP in f32 almost never crosses
 //!   a rounding boundary, so the count of differing codes in the written
 //!   file is the number that matters to a photographer, and it is much
@@ -70,9 +76,10 @@ use ndarray::Array3;
 use phaios_core::bw::LuminanceStandard;
 use phaios_core::cuda::{self, kernels as k};
 
-/// The committed cross-backend bound for a kernel whose transcendental
-/// content is a single `powf` (`docs/ffi.md` §6). Copied from the
-/// document rather than invented here.
+/// The committed cross-backend bound for the one-transcendental class
+/// (`docs/ffi.md` §6), which takes `encode_srgb`: a single `powf`, on
+/// the device compiled with fast math. Copied from the document rather
+/// than invented here.
 const RTOL: f32 = 1e-5;
 const ATOL: f32 = 1e-7;
 
@@ -133,8 +140,10 @@ fn code(v: f32) -> u8 {
 }
 
 /// One row of the agreement table: how the two backends compare on one
-/// image, and what §6 promises about it.
-fn report(name: &str, promise: &str, exact: bool, cpu: &Array3<f32>, gpu: &Array3<f32>) {
+/// image, and what §6 promises about it. Returns whether the promise
+/// held — `==` for an exact row, at most 1.0 times the bound otherwise.
+fn report(name: &str, promise: &str, exact: bool, cpu: &Array3<f32>, gpu: &Array3<f32>) -> bool {
+    let violation = worst_violation(cpu, gpu, RTOL, ATOL);
     let differing = cpu
         .iter()
         .zip(gpu.iter())
@@ -148,7 +157,7 @@ fn report(name: &str, promise: &str, exact: bool, cpu: &Array3<f32>, gpu: &Array
     let bound = if exact {
         "-".to_string()
     } else {
-        format!("{:.4}", worst_violation(cpu, gpu, RTOL, ATOL))
+        format!("{violation:.4}")
     };
     println!(
         "{name:<10} {promise:<10} {:>9} {:>12.3e} {bound:>9} {:>15} {:>15}",
@@ -157,6 +166,7 @@ fn report(name: &str, promise: &str, exact: bool, cpu: &Array3<f32>, gpu: &Array
         format!("{differing}/{}", cpu.len()),
         format!("{codes}/{}", cpu.len()),
     );
+    if exact { cpu == gpu } else { violation <= 1.0 }
 }
 
 fn main() {
@@ -199,13 +209,18 @@ fn main() {
         "{:<10} {:<10} {:>9} {:>12} {:>9} {:>15} {:>15}",
         "image", "promise", "CPU == GPU", "max |delta|", "bound", "f32 differing", "codes differ"
     );
-    report("linear", "bit-exact", true, &cpu_linear, &gpu_linear);
-    report("srgb", "1e-5/1e-7", false, &cpu_encoded, &gpu_encoded);
+    let linear_held = report("linear", "bit-exact", true, &cpu_linear, &gpu_linear);
+    let srgb_held = report("srgb", "1e-5/1e-7", false, &cpu_encoded, &gpu_encoded);
     println!(
-        "  bound is the committed one-powf pair (rtol 1e-5, atol 1e-7) from\n  \
-         docs/ffi.md §6, as a multiple: 1.0000 is the limit. §6 promises\n  \
-         luminance_bw bit-exact and encode_srgb only bounded, so only the first\n  \
-         row is checked with =="
+        "  bound is the committed one-transcendental pair (rtol 1e-5, atol 1e-7)\n  \
+         from docs/ffi.md §6, as a multiple: 1.0000 is the limit. luminance_bw is\n  \
+         compiled strict and §6 promises it bit-exact, so the first row is checked\n  \
+         with ==; encode_srgb is compiled with fast math and §6 promises it only\n  \
+         bounded, so the second is checked against the bound"
+    );
+    println!(
+        "  verdict: linear CPU == GPU as promised: {linear_held}; \
+         srgb within its bound: {srgb_held}"
     );
 
     // The neutral patches (row 4 of the chart), where the transfer does

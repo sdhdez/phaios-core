@@ -40,11 +40,12 @@
 //! `local_contrast` alone.
 //!
 //! Agreement class for both dispatched paths: `local_contrast`'s own,
-//! **(rtol 1e-4, atol 1e-6)** — confirmed empirically for `C == 1`
-//! (inherited automatically, since it is the same device kernel) and
-//! for `C == 3` (a new cancelling subtraction, `cov(I, p_c)`, that the
-//! self-guided path never exercises) by the sweeps in
-//! `tests/cuda_conformance.rs`.
+//! **(rtol 1e-4, atol 1e-6)**, which also covers the FMA contraction
+//! `local_contrast.cu` and `denoise.cu` are compiled with (build.rs
+//! `PRECISION`) — confirmed empirically for `C == 1` (inherited
+//! automatically, since it is the same device kernel) and for `C == 3`
+//! (a new cancelling subtraction, `cov(I, p_c)`, that the self-guided
+//! path never exercises) by the sweeps in `tests/cuda_conformance.rs`.
 
 use cudarc::driver::{CudaSlice, LaunchConfig, PushKernelArg};
 use ndarray::{Array3, ArrayView3};

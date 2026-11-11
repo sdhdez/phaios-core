@@ -35,22 +35,39 @@
 //!   back and compared with the CPU chain at the same point, so each row
 //!   is *cumulative*: it carries everything upstream of it, and a
 //!   bit-exact kernel downstream of a divergent one still prints a
-//!   difference. Divergence enters at `local_contrast`, where the device
-//!   replaces the CPU's global f64 summed-area tables with separable
-//!   window sums: f64 for the L and L² statistics, Kahan-compensated
-//!   f32 for the a/b coefficient sums downstream. It is a few ULP there
-//!   and it is still a few ULP seven stages later: the middle column,
-//!   the committed whole-chain bound as a multiple, stays around a
-//!   hundredth of the limit all the way down. **That** is the property
-//!   residency needs — a long device-resident chain is no less faithful
-//!   than a short one.
-//! - **The first three rows, and why they prove less than they look
-//!   like.** `exposure` (one multiply) and `luminance_bw` (one dot
-//!   product) are documented bit-exact, so their zeros are a promise.
-//!   `zone_system`'s is not: it evaluates `log2f` and `expf`, which are
-//!   implementation-defined. The chart has only 24 distinct patch
-//!   values and the two libms happen to agree exactly on all of them.
-//!   On photographic input that row would show a few ULP like the rest.
+//!   difference. Divergence enters at `zone_system`, the first stage
+//!   `build.rs` compiles with fast math (`PRECISION`): approximate
+//!   `log2` and `exp`, and FMA contraction. Each bounded stage after it
+//!   adds its own share: `local_contrast`, compiled with FMA, where the
+//!   device also replaces the CPU's global f64 summed-area tables with
+//!   separable window sums (f64 for the L and L² statistics,
+//!   Kahan-compensated f32 for the a/b coefficient sums downstream);
+//!   `tone_curve` and `encode_srgb`, fast math like `zone_system`; and
+//!   the transcendentals of `film_grain` and `split_toning`. The typical
+//!   difference is a few ULP from the row where it enters to the last,
+//!   with a longer tail on values near black, where a tiny absolute
+//!   difference is many ULP. The middle column, the committed
+//!   whole-chain bound as a multiple, rises over the chain — not row by
+//!   row, since a stage that darkens or compresses can shrink it too —
+//!   and ends at about two hundredths of the limit. Its largest step is
+//!   at `encode_srgb`, whose linear toe multiplies an absolute
+//!   difference near black by 12.92 while the bound, mostly its atol
+//!   there, grows far less. **That** is the property residency needs —
+//!   eleven stages on the card, three of them fast math, and the chain
+//!   still ends far inside its committed bound.
+//! - **The first three rows, and the bit-exact rows after them.**
+//!   `exposure` (one multiply) and `luminance_bw` (one dot product) are
+//!   compiled strict and documented bit-exact, so their zeros are a
+//!   promise. `zone_system`'s row is the first that is not:
+//!   `docs/ffi.md` §6 bounds it rather than promising exactness. At
+//!   that point every chart patch is still a single value, so its count
+//!   is a whole number of 4 096-element patches — those of the 24 patch
+//!   values on which the approximations land a ULP or two from the
+//!   CPU's libm. Further down, `shadow_rolloff`, `vignette` and
+//!   `highlight_rolloff` are bit-exact too, yet their rows are not zero:
+//!   they carry what came in. They can even show fewer differing
+//!   elements than the row above, wherever a darkening or compressing
+//!   stage maps two neighbouring inputs to the same output.
 //! - **The 8-bit verdict.** Agreement in f32 is not the question a
 //!   photographer asks. The example quantises both chains the way
 //!   `write_ppm` does and counts how many of the 294 912 codes differ,
@@ -58,8 +75,10 @@
 //!   it, because a few ULP almost never crosses a rounding boundary.
 //!   `22_pipeline_diff.ppm` is the map of the f32 disagreement: white
 //!   wherever the two backends differ by so much as one ULP, black
-//!   where they match to the bit. It is where the drift lives, and it
-//!   follows the grain and the patch edges rather than being uniform.
+//!   where they match to the bit. With fast math in the chain it is not
+//!   sparse: most elements differ, a ULP or so each, and the map is a
+//!   speckle over the whole frame whose density changes from patch to
+//!   patch — which is why the 8-bit count is the number to read.
 //! - **The transfer economics.** At 24 MP the resident chain moves six
 //!   floats per pixel across the bus and the offload chain forty-two —
 //!   the same arithmetic, seven times the traffic and eleven times the
@@ -105,6 +124,14 @@ const STAGES: [&str; 11] = [
     "highlight_rolloff",
     "encode_srgb",
 ];
+
+/// How many leading stages `docs/ffi.md` §6 promises bit-exact *as rows
+/// of the drift table*: `exposure` and `luminance_bw`, on §6's bit-exact
+/// list with nothing bounded upstream. The later bit-exact stages
+/// (`shadow_rolloff`, `vignette`, `highlight_rolloff`) carry the drift
+/// of the bounded stages before them, so their rows are held to the
+/// whole-chain bound like the rest.
+const EXACT_PREFIX: usize = 2;
 
 /// Export size, the same 24 MP frame example 15 and `benches/gpu.rs`
 /// measure on, so the numbers here can be divided by theirs.
@@ -387,6 +414,16 @@ fn main() {
         "  bound is the committed whole-chain (rtol 1e-3, atol 1e-5) from\n  \
          tests/cuda_conformance.rs, as a multiple: 1.0000 is the limit"
     );
+    println!(
+        "  rows 1-{EXACT_PREFIX}, bit-exact with nothing bounded upstream, equal to the bit: {}",
+        drift[..EXACT_PREFIX]
+            .iter()
+            .all(|&(_, _, differing)| differing == 0)
+    );
+    println!(
+        "  every row within the whole-chain bound: {}",
+        drift.iter().all(|&(_, viol, _)| viol <= 1.0)
+    );
 
     // ── The verdict in 8-bit codes, which is what reaches a file ─────
     let codes_differ = cpu
@@ -423,9 +460,9 @@ fn main() {
 
     // White wherever the two backends disagree in f32 by so much as one
     // ULP, black where they match to the bit. Not an amplified
-    // difference: the magnitudes are a few ULP everywhere and would
-    // amplify to a uniform grey, where the *position* is what carries
-    // information.
+    // difference: the magnitudes are mostly a ULP or two and would
+    // amplify to a near-uniform grey, where *whether* an element differs
+    // is what carries information.
     let mut map = Array3::<f32>::zeros(cpu.dim());
     ndarray::Zip::from(&mut map)
         .and(&cpu)

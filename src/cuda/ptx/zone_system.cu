@@ -3,10 +3,13 @@
 //
 // The offsets arrive as a DENSE 11-entry array in zone order (absent
 // zones are 0.0). This preserves the CPU's ordered-reduction guarantee
-// mechanically: adding an exact +0.0 term is the identity in IEEE-754,
-// so the dense ascending loop computes bit-for-bit the same sum as the
-// CPU's sparse sorted iteration. log2f/expf/powf are the
-// implementation-defined operations; the bound covers them.
+// mechanically: an absent zone adds an exact +0.0 term, fused or not,
+// which is the identity in IEEE-754, so the dense ascending loop sums in
+// the same order as the CPU's sparse sorted iteration.
+// Compiled with fast math (build.rs PRECISION): log2f/expf/powf and the
+// divisions are approximate, the multiply-adds are contracted into FMAs
+// and subnormal inputs and results flush to zero; the bound (rtol 1e-5,
+// atol 1e-7) covers all of it, and a driver update can move the last bits.
 
 extern "C" __global__ void zone_system_kernel(const float* __restrict__ input,
                                               float* __restrict__ output,

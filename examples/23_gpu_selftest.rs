@@ -23,16 +23,17 @@
 //! What a row asserts comes from `docs/ffi.md` §6, which is the source
 //! of truth for the agreement class of each kernel:
 //!
-//! - **bit-exact** — kernels free of transcendentals, where every
-//!   operation is correctly rounded on both sides and the PTX is built
-//!   with `-fmad=false`. The check is `==` over the whole array. There
-//!   is no tolerance here and there must never be one.
-//! - **a committed `(rtol, atol)` bound** — kernels containing a
-//!   transcendental, which IEEE-754 does not standardise. The check is
-//!   the worst element expressed as a multiple of that bound; at or
-//!   below 1.000 passes. The numbers are copied from §6, not invented
-//!   here, so a driver update that regresses accuracy shows up as a
-//!   failing row rather than being quietly absorbed.
+//! - **bit-exact** — the kernels in §6's bit-exact list. The check is
+//!   `==` over the whole array. There is no tolerance here and there
+//!   must never be one.
+//! - **a committed `(rtol, atol)` bound** — the kernels in §6's bounded
+//!   list: those containing a transcendental, which IEEE-754 does not
+//!   standardise, those compiled with FMA or fast math (`build.rs`,
+//!   `PRECISION`), and those whose device algorithm is reformulated.
+//!   The check is the worst element expressed as a multiple of that
+//!   bound; at or below 1.000 passes. The numbers are copied from §6,
+//!   not invented here, so a driver update that regresses accuracy
+//!   shows up as a failing row rather than being quietly absorbed.
 //!
 //! The exit status is the point: 0 when every kernel agrees, 1 when any
 //! does not, so this doubles as the gate of a locally-installed CI. A
@@ -64,7 +65,8 @@ struct Bound {
 /// fixed number of `powf`, `expf`, `log2f` or `cbrtf` calls per pixel.
 /// `hsl_bw` makes eight, one per hue band; `zone_system` makes one
 /// `log2f`, one `powf` and one `expf` per offset present, so at most
-/// thirteen. Both sit in this class.
+/// thirteen. Both sit in this class, as do `blur`, `glow` and `sharpen`,
+/// whose sums the device reformulates.
 const ONE_TRANSCENDENTAL: Bound = Bound {
     rtol: 1e-5,
     atol: 1e-7,
@@ -129,7 +131,8 @@ const EXTRA_NOTES: &[(&str, &str)] = &[
     ),
     (
         "tone_curve",
-        "power == 1 also required bit-exact; the bound covers power != 1",
+        "power == 1 also required bit-exact: the affine step is pinned; \
+         the bound covers power != 1",
     ),
     (
         "blur",
@@ -741,7 +744,9 @@ fn check_all(ctx: &cuda::Context) -> Vec<Row> {
 
     rows.push(run("tone_curve", ONE_TRANSCENDENTAL.label, |ck| {
         let dev = ctx.upload(rgb.view())?;
-        // power == 1 skips the powf entirely, so §6 promises exactness.
+        // power == 1 skips the powf, and the .cu pins the affine step to
+        // the CPU's two roundings, so §6 promises exactness on normal
+        // inputs; this image has no subnormals.
         for (slope, offset) in [(1.0_f32, 0.0_f32), (1.4, -0.05), (0.7, 0.1)] {
             let params = tone::ToneCurveParams::new(slope, offset, 1.0);
             let cpu = tone::tone_curve(rgb.view(), &params)?;
@@ -957,12 +962,16 @@ fn check_all(ctx: &cuda::Context) -> Vec<Row> {
 
 // ── reporting ────────────────────────────────────────────────────────────────
 
-/// CUDA driver version, as the driver itself reports it.
+/// The CUDA driver API version the installed driver supports, from
+/// `cuDriverGetVersion` (e.g. 13.5) — not the driver's own release
+/// number, which this call does not report.
 ///
-/// §6 makes a driver update something that can move these numbers, so a
-/// pasted report has to name it. `cudarc` wraps this call only at the
-/// `sys` level, which is why it is made directly; it is reached only
-/// after `cuda::devices()` has already loaded the driver successfully.
+/// §6 lets a driver update move the last bits of the FMA and fast-math
+/// kernels and of `split_toning`'s libdevice `cbrtf`, so a pasted report
+/// should name the driver; `nvidia-smi` gives its release number.
+/// `cudarc` wraps this call only at the `sys` level, which is why it is
+/// made directly; it is reached only after `cuda::devices()` has already
+/// loaded the driver successfully.
 fn driver_version() -> String {
     let mut version: std::ffi::c_int = 0;
     // Safety: cuDriverGetVersion writes a single `int` through the
@@ -1005,7 +1014,7 @@ fn main() -> ExitCode {
     let require_gpu = std::env::var_os("PHAIOS_REQUIRE_GPU").is_some();
 
     println!("phaios-core GPU self-test");
-    println!("crate version : {}", env!("CARGO_PKG_VERSION"));
+    println!("crate version   : {}", env!("CARGO_PKG_VERSION"));
 
     let devices = cuda::devices();
     if devices.is_empty() {
@@ -1018,10 +1027,10 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    println!("cuda driver   : {}", driver_version());
+    println!("cuda driver API : {}", driver_version());
     for d in &devices {
         println!(
-            "device {}      : {} (cc {}.{}, supported: {})",
+            "device {}        : {} (cc {}.{}, supported: {})",
             d.ordinal, d.name, d.compute_capability.0, d.compute_capability.1, d.supported
         );
     }
@@ -1038,7 +1047,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
     };
-    println!("fingerprint   : {}", ctx.fingerprint());
+    println!("fingerprint     : {}", ctx.fingerprint());
     println!();
 
     let rows = check_all(&ctx);

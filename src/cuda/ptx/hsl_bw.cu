@@ -2,9 +2,14 @@
 // HSL-weighted B&W conversion, device side. Mirrors src/bw.rs::hsl_bw
 // line for line: hexagonal hue, chroma ratio (max-min)/max, circular
 // Gaussian blend over eight fixed band centres. fmodf has the same
-// sign-of-dividend semantics as Rust's % on f32. expf is the one
-// implementation-defined operation; everything else is correctly
-// rounded (no FMA contraction at build time).
+// sign-of-dividend semantics as Rust's % on f32.
+// Compiled with fast math (build.rs PRECISION): expf and the divisions
+// are approximate, the multiply-adds (the base dot product among them)
+// are contracted into FMAs and subnormal inputs and results flush to
+// zero, so
+// agreement is bounded (rtol 1e-5, atol 1e-7) on every pixel: a neutral
+// pixel's hue weights drop out, but its contracted dot product does not.
+// A driver update can move the last bits.
 
 __device__ const float BAND[8] = {0.0f, 30.0f, 60.0f, 120.0f, 180.0f, 240.0f, 270.0f, 300.0f};
 

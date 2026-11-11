@@ -25,24 +25,29 @@
 //!   stage can put it back.
 //! - **This one kernel spans both of §6's agreement classes, which is
 //!   why it is the most instructive twin in the set.** Rows 1–3 have
-//!   `power == 1`: the arithmetic is a multiply, an add and a `max`, all
-//!   correctly rounded on both sides, and the device kernel skips `powf`
-//!   entirely — row 1 does not even launch a kernel, it is the identity
-//!   fast path, a device-to-device copy. `docs/ffi.md` §6 promises those
-//!   bit-exact, so they are checked with `==` and nothing else. Rows 4
-//!   and 5 raise a `powf`, which IEEE-754 does not standardise, so §6
-//!   commits rtol 1e-5 / atol 1e-7 instead and those rows print the
-//!   worst element as a multiple of that bound. A single kernel, two
-//!   promises, decided by a parameter — which is exactly why the promise
-//!   column is read from §6 rather than guessed from the kernel name.
+//!   `power == 1`: the device skips `powf` as the CPU does, leaving a
+//!   multiply, an add and a `max`. Row 1 does not even launch a kernel:
+//!   it is the identity fast path, a device-to-device copy. Rows 2 and 3
+//!   do, and `build.rs` compiles the kernel with fast math, but the `.cu`
+//!   pins `slope * x + offset` to the CPU's two roundings (`__fmul_rn`,
+//!   `__fadd_rn`), which fast math never fuses into an FMA. `docs/ffi.md`
+//!   §6 therefore promises all three bit-exact unless an input or
+//!   `slope * x + offset` is subnormal — flushed to zero then, and the
+//!   chart has none — so they are checked with `==` and nothing else. Rows 4 and 5
+//!   raise a `powf`, which IEEE-754 does not standardise and fast math
+//!   computes from approximate `log2` and `exp2`, so §6 commits
+//!   rtol 1e-5 / atol 1e-7 instead and those rows print the worst
+//!   element as a multiple of that bound. A single kernel, two promises,
+//!   decided by a parameter — which is exactly why the promise column is
+//!   read from §6 rather than guessed from the kernel name.
 //! - **The zone-anchor table.** The combined grade is evaluated at the
 //!   eleven Zone System anchors on both backends and printed side by
 //!   side in ULP, so any disagreement is visible as a count of
 //!   representable steps at known photographic stops rather than as an
-//!   abstract tolerance. Eleven arguments is a small sample of `powf`
-//!   and on this card they all agree to the bit — while the chart rows
-//!   above, which put 24 through, do not. A column of zeros there is a
-//!   measurement, not a promise; §6's bound is the promise.
+//!   abstract tolerance. On the card this was written against the
+//!   anchors differ by at most two ULP, about two hundredths of §6's
+//!   bound. Those counts are a measurement, not a promise; §6's bound is
+//!   the promise.
 //! - **The 8-bit verdict.** The last column counts how many of the
 //!   98 304 codes in the written PPM differ after the same `encode_srgb`
 //!   that `write_ppm_grey_display` applies — the disagreement that
@@ -70,10 +75,11 @@ use phaios_core::bw::LuminanceStandard;
 use phaios_core::cuda::{self, kernels as k};
 use phaios_core::tone::{ToneCurveParams, tone_curve};
 
-/// The committed cross-backend bound for a kernel whose transcendental
-/// content is a single `powf` (`docs/ffi.md` §6). Copied from the
-/// document rather than invented here. It applies only to the rows with
-/// `power != 1`; the rest are promised exact and get no tolerance.
+/// The committed cross-backend bound of `docs/ffi.md` §6's
+/// one-transcendental class, which `tone_curve` belongs to at
+/// `power != 1`: a single `powf`, compiled with fast math. Copied from
+/// the document rather than invented here. It applies only to the rows
+/// with `power != 1`; the rest are promised exact and get no tolerance.
 const RTOL: f32 = 1e-5;
 const ATOL: f32 = 1e-7;
 
@@ -192,6 +198,7 @@ fn main() {
         "{:<12} {:>5} {:<10} {:>9} {:>12} {:>9} {:>18}",
         "grade", "power", "promise", "CPU == GPU", "max |delta|", "bound", "8-bit codes differ"
     );
+    let mut all_within = true;
     for (name, params) in configs {
         let cpu = tone_curve(cpu_bw.view(), &params).unwrap();
         let gpu = ctx
@@ -199,16 +206,17 @@ fn main() {
             .unwrap();
 
         // §6 decides the class, and for this kernel the deciding fact is
-        // the exponent: `power == 1` skips powf on both backends and is
-        // promised exact, everything else is bounded.
+        // the exponent: `power == 1` skips powf on both backends and the
+        // affine step is pinned to the CPU's roundings, so it is promised
+        // exact; everything else is bounded.
         let exact = params.power == 1.0;
         let (promise, bound) = if exact {
+            all_within &= cpu == gpu;
             ("bit-exact", "-".to_string())
         } else {
-            (
-                "1e-5/1e-7",
-                format!("{:.4}", worst_violation(&cpu, &gpu, RTOL, ATOL)),
-            )
+            let v = worst_violation(&cpu, &gpu, RTOL, ATOL);
+            all_within &= v <= 1.0;
+            ("1e-5/1e-7", format!("{v:.4}"))
         };
         println!(
             "{name:<12} {:>5} {promise:<10} {:>9} {:>12.3e} {bound:>9} {:>18}",
@@ -222,11 +230,14 @@ fn main() {
         shared::write_ppm_grey_display(Path::new(&path), gpu.view(), shared::WIDTH, shared::HEIGHT);
     }
     println!(
-        "  bound is the committed one-powf pair (rtol 1e-5, atol 1e-7) from\n  \
-         docs/ffi.md §6, as a multiple: 1.0000 is the limit. The three power == 1\n  \
+        "  bound is the committed one-transcendental pair (rtol 1e-5, atol 1e-7)\n  \
+         from docs/ffi.md §6, as a multiple: 1.0000 is the limit. The three power == 1\n  \
          rows are promised bit-exact there, so they are checked with == and given\n  \
-         no tolerance at all; reference is the identity fast path, a device copy"
+         no tolerance at all: the kernel is compiled with fast math, but it pins\n  \
+         slope * x + offset to the CPU's two roundings. reference is the identity\n  \
+         fast path, a device copy"
     );
+    println!("every grade within its docs/ffi.md §6 promise: {all_within}");
 
     // The shape of the combined curve at the eleven zone anchors, as
     // example 09 prints it — with the device column beside it, which is

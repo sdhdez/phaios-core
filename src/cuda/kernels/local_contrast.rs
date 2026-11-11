@@ -26,13 +26,15 @@ fn grid_2d(h: usize, w: usize) -> LaunchConfig {
 ///
 /// Same algorithm as [`crate::local_contrast::local_contrast`], with one
 /// documented reformulation (`docs/ffi.md` §6): the four global **f64**
-/// summed-area tables become separable **f32** box filters with
-/// Kahan-compensated accumulation, because each window sum then adds at
-/// most `2r+1` values per pass instead of feeding on a
-/// 24-million-element prefix sum. Every output element is produced by
-/// one thread accumulating in a fixed sequential order, so the result
-/// is bit-reproducible on any launch geometry. Agreement with the CPU
-/// oracle is asserted at rtol 1e-4 / atol 1e-6.
+/// summed-area tables become separable box filters, because each window
+/// sum then adds at most `2r+1` values per pass instead of feeding on a
+/// 24-million-element prefix sum. The L and L² partial sums stay f64,
+/// their difference being the cancelling variance; the coefficient sums
+/// are Kahan-compensated f32. Every output element is produced by one
+/// thread accumulating in a fixed sequential order, so the result is
+/// bit-reproducible on any launch geometry. The file is compiled with
+/// FMA contraction (build.rs `PRECISION`), and agreement with the CPU
+/// oracle, covering both, is asserted at rtol 1e-4 / atol 1e-6.
 ///
 /// # Errors
 /// Same [`PhaiosError::Shape`] / [`PhaiosError::Parameter`] as the CPU

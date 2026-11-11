@@ -18,20 +18,26 @@
 //!   nearest the targeted zone move most.
 //! - **The agreement lines — and unlike examples 24 to 26, this kernel
 //!   is *not* promised bit-exact.** The zone position is
-//!   `5 + log2(L / 0.18)` and each zone's weight is a Gaussian, so the
-//!   kernel evaluates `log2f` and `expf`. IEEE-754
-//!   standardises `+ − × ÷ √` and requires those to be correctly
-//!   rounded; it standardises **no** transcendental. Host libm and
-//!   device libm are therefore allowed to differ in the last bits, and
-//!   `docs/ffi.md` §6 commits a bound instead of exactness: rtol 1e-5,
-//!   atol 1e-7. The lines below print the worst element as a multiple
-//!   of that bound, where 1.000 is the limit — copied from §6 rather
-//!   than chosen here, so a driver update that regresses accuracy shows
-//!   up as a number above 1 instead of being quietly absorbed.
+//!   `5 + log2(L / 0.18)`, each zone's weight is a Gaussian and the
+//!   offset is applied as `2^total`, so the kernel evaluates `log2f`,
+//!   `expf` and `powf`. The CPU, which is the specification, calls the
+//!   platform libm (glibc on Linux) for those and rounds every other
+//!   step separately. The device does not try to match it: `build.rs`
+//!   compiles this kernel with fast math, so the GPU side uses the
+//!   hardware's approximate `lg2`/`ex2` and approximate division, and
+//!   contracts the multiply-adds — the zone sum among them — into FMAs.
+//!   The two therefore differ in the last bits, and `docs/ffi.md` §6
+//!   commits a bound instead of exactness: rtol 1e-5, atol 1e-7. The
+//!   lines below print the worst element as a multiple of that bound,
+//!   where 1.000 is the limit — copied from §6 rather than chosen here,
+//!   so a driver update that regresses accuracy shows up as a number
+//!   above 1 instead of being quietly absorbed. Fast math also flushes
+//!   subnormal inputs and results to zero; the chart produces neither.
 //! - **The identity path is still exact.** With no offsets the kernel
 //!   does no zone arithmetic at all — the CPU assigns its input
-//!   through and the device issues a device-to-device copy — so
-//!   configuration 1 is checked with `==` and no tolerance.
+//!   through and the device issues a device-to-device copy, which fast
+//!   math has nothing to act on — so configuration 1 is checked with
+//!   `==` and no tolerance.
 //! - **What survives to 8 bits.** A few ULP in f32 is not the question
 //!   a photographer asks. Each line therefore also counts how many of
 //!   the written 8-bit codes differ from the CPU twin's, after the same
@@ -42,9 +48,11 @@
 //! The whole thing runs from a **single** upload. `luminance_bw_device`
 //! produces the mono image on the card and the three `zone_system_device`
 //! calls read it there — the (H, W, 1) intermediate never crosses the
-//! bus. Its own agreement is checked first and separately: `luminance_bw`
-//! is bit-exact per §6, so the three zone lines below are attributable
-//! to `zone_system` alone rather than to something inherited upstream.
+//! bus. Its own agreement is checked first and separately:
+//! `luminance_bw` is compiled strict and has no transcendental in it, so
+//! §6 promises it bit-exact and it is checked with `==`. The two bounded
+//! zone lines below are therefore attributable to `zone_system` alone
+//! rather than to something inherited upstream.
 //!
 //! Reference: Ansel Adams, *The Negative*, Little, Brown (1948), ch. 5;
 //! modernised in Davis, *Beyond the Zone System*, Focal Press (1999),
@@ -65,8 +73,9 @@ use phaios_core::cuda;
 use phaios_core::encode::encode_srgb;
 use phaios_core::tone::{ZoneParams, zone_system};
 
-/// `docs/ffi.md` §6's committed cross-backend bound for a kernel whose
-/// transcendental content is a single `powf` / `expf` / `log2f`.
+/// `docs/ffi.md` §6's committed cross-backend bound for the
+/// one-transcendental class: a few `powf` / `expf` / `log2f` per pixel,
+/// on the device compiled with fast math, as `zone_system` is.
 ///
 /// Copied from §6, not invented here: the point of printing a multiple
 /// of a *committed* bound is that the number means the same thing on
@@ -161,9 +170,10 @@ fn report_bounded(label: &str, cpu: &Array3<f32>, gpu: &Array3<f32>) {
 
 /// Print an exact configuration's agreement: `==`, no tolerance.
 ///
-/// Used for the identity path, which §6 and example 23 both require to
-/// be bit-exact — it is a copy on the device and an assignment on the
-/// host, so there is no arithmetic to disagree about.
+/// Used for the `luminance_bw` input, compiled strict and free of
+/// transcendentals, and for the identity path — a copy on the device and
+/// an assignment on the host, so there is no arithmetic to disagree
+/// about. §6 and example 23 require both to be bit-exact.
 fn report_exact(label: &str, cpu: &Array3<f32>, gpu: &Array3<f32>) {
     if cpu == gpu {
         println!(

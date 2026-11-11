@@ -14,9 +14,15 @@ per stage::
 
 The context is explicit: there is no global device state, and a context
 the caller drops releases its device memory. Determinism is promised
-per backend — bit-identical within a backend, bounded across — and
-kernels free of transcendentals are bit-exact against the CPU as well.
-See docs/ffi.md section 6.
+per backend: the same input on the same backend and driver gives
+bit-identical output. Across backends output is bounded, and the
+kernels in the bit-exact list of docs/ffi.md section 6 match the CPU
+to the bit. In the kernels compiled with FMA or fast math, and
+wherever approximate instructions remain (libdevice ``cbrtf`` in
+``split_toning``), the driver's JIT finishes part of the arithmetic,
+so a driver or CUDA update can move their last bits — expected to
+stay within about one 8-bit code, not measured across drivers. Fast
+math also flushes subnormal inputs and results to zero.
 
 Call ``available()`` before constructing a context; ``devices()`` lists
 what is present."""
@@ -107,14 +113,22 @@ or the device is older than compute capability 8.0 (Ampere)."""
     def fingerprint(self) -> str:
         """The backend fingerprint — the reproducibility key of
 ``docs/ffi.md`` §6. Record it wherever exact reproduction is
-promised.
+promised: the same input on the same fingerprint and driver
+gives bit-identical output.
 
 ``cuda/<device>/cc<maj>.<min>/ptx-compute_80/nvcc-<maj>.<min>.<patch>``:
 the device, the architecture the embedded PTX targets, and the
 CUDA toolkit that compiled it. The toolkit is part of the key
-because the PTX is rebuilt at build time and the kernels using
-transcendentals inline libdevice code that differs between
-toolkits."""
+because the PTX is rebuilt at build time and inlines toolkit
+code that differs between toolkits: libdevice ``cbrtf`` in
+``split_toning`` and ``logf``/``cosf`` in ``film_grain``, and
+nvcc's fast-math intrinsics in the kernels compiled with fast
+math. The driver is not part of the key: in the kernels compiled
+with FMA or fast math, and wherever approximate instructions
+remain (libdevice ``cbrtf`` in ``split_toning``), its JIT
+finishes part of the arithmetic, so a driver update can move
+their last bits — expected to stay within about one 8-bit code,
+not measured across drivers."""
         ...
 
     def upload(self, img: NDArray[np.float32]) -> GpuImage:
@@ -198,9 +212,11 @@ def local_contrast(img: GpuImage, params: GuidedFilterParams, strength: float) -
 
 Same algorithm as ``phaios_core.local_contrast`` with one documented
 reformulation: the CPU's global f64 summed-area tables become
-separable f32 box filters with compensated summation. Agreement with
-the CPU is bounded at 1e-4 relative (asserted by the conformance
-suite); output is bit-reproducible within this backend.
+separable box filters, the L and L² partial sums in f64 and the
+coefficient sums in Kahan-compensated f32. Compiled with FMA
+contraction; agreement with the CPU is bounded at 1e-4 relative
+(asserted by the conformance suite); output is bit-reproducible
+within this backend and driver.
 
 Parameters
 ----------
@@ -226,12 +242,16 @@ RuntimeError
 
 def encode_srgb(img: GpuImage) -> GpuImage:
     """IEC 61966-2-1 sRGB transfer on the GPU. Mirrors
-``phaios_core.encode_srgb``; agreement bounded by one ``powf``."""
+``phaios_core.encode_srgb``; agreement bounded by one ``powf``,
+compiled with fast math."""
     ...
 
 def tone_curve(img: GpuImage, params: ToneCurveParams) -> GpuImage:
     """ASC CDL tone curve on the GPU. Mirrors ``phaios_core.tone_curve``;
-the ``power == 1`` and identity paths are bit-exact."""
+compiled with fast math. The identity path is bit-exact, and so is
+``power == 1`` on normal inputs: the affine step is pinned to the
+CPU's two roundings, so only a subnormal value differs, flushed to
+zero. The general path is bounded by one ``powf``."""
     ...
 
 def vignette(img: GpuImage, params: VignetteParams) -> GpuImage:
@@ -329,15 +349,18 @@ Collapses ``(H, W, 3)`` to ``(H, W, 1)``."""
 
 def hsl_bw(img: GpuImage, params: HslWeightedParams) -> GpuImage:
     """HSL-weighted B&W conversion on the GPU. Mirrors
-``phaios_core.hsl_bw``; agreement bounded by ``expf``.
+``phaios_core.hsl_bw``; agreement bounded by ``expf``, compiled with
+fast math.
 
 Collapses ``(H, W, 3)`` to ``(H, W, 1)``."""
     ...
 
 def zone_system(img: GpuImage, params: ZoneParams) -> GpuImage:
     """Zone System tone curve on the GPU. Mirrors
-``phaios_core.zone_system``; the dense in-order offset sum inherits
-the CPU's ordered-reduction guarantee mechanically."""
+``phaios_core.zone_system``; agreement bounded by ``log2f``,
+``expf`` and ``powf``, compiled with fast math. The dense in-order
+offset sum inherits the CPU's ordered-reduction guarantee
+mechanically."""
     ...
 
 def split_toning(img: GpuImage, params: SplitToningParams) -> GpuImage:
@@ -375,7 +398,7 @@ agreement bounded by the guided filter's own class (rtol 1e-4, atol
 1e-6) -- confirmed for both dispatch branches: ``C == 1`` is a direct
 call to the same device kernel ``local_contrast`` uses, and ``C ==
 3`` adds three new cross-guided kernels that stay within the same
-bound.
+bound. Both branches are compiled with FMA contraction.
 
 ``amount = 0.0`` (the default) is the exact identity on both
 backends."""
