@@ -43,7 +43,15 @@ One commit containing all of:
 5. `examples/NN_<name>.rs`, declared in `Cargo.toml`.
 6. A criterion benchmark in `benches/kernels.rs` on the 24 MP image —
    and, if the kernel has a GPU path, one in `benches/gpu.rs` too, using
-   the same channel count so the two ids can be divided.
+   the same channel count so the two ids can be divided. A new CUDA file
+   also needs an entry in `build.rs`'s `PRECISION` table (the build
+   fails without one): strict unless a whole-build measurement in FMA
+   or fast math shows a gain worth more than about 0.04 ms at 24 MP for
+   at most one 8-bit code against the CPU, with an error that stays
+   within a fixed (rtol, atol) bound at every input and parameter
+   (`vignette`'s grew with input × amount / feather) and is at most
+   about 10× the strict build's difference from the CPU (`film_grain`'s
+   was about 45×).
 7. A section in `docs/architecture.md` with the citation.
 8. A section in `docs/kernels.md`: shape contract, visible effect, every
    parameter with its identity value, order constraints, backend class.

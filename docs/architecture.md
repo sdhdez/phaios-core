@@ -507,6 +507,18 @@ to know when reaching for a negative offset.
 Applies to any channel count, since it sits after split-toning where the
 data may have become three-channel again.
 
+### On the device
+
+The file is compiled with fast math, so `powf` is approximate and the
+`power != 1` path is bounded (rtol 1e-5, atol 1e-7). The affine step is
+pinned to the CPU's two roundings with `__fmul_rn`/`__fadd_rn`, which
+fast math never contracts, so `power == 1` agrees to the bit on normal
+inputs; a subnormal result flushes to zero. The pin is there because of
+the clamp: with a negative `offset`, `in · slope + offset` cancels to
+exactly 0 on the CPU for some inputs; fused into one multiply-add, the
+step kept the product's rounding residue instead, and `powf` at
+power < 1 lifted it by up to 8 codes at 8 bits.
+
 Reference: American Society of Cinematographers Technology Committee,
 "ASC Color Decision List (ASC CDL) Transfer Functions and Interchange
 Syntax", version 1.2 (2009), §2.1.
@@ -656,8 +668,9 @@ Subtracting it from L gives the high-frequency (detail) component.
 ### On the device
 
 The device replaces the global f64 summed-area tables with separable
-window sums, which is the whole reason for this kernel's 1e-4 / 1e-6
-agreement class rather than a tighter one. It drops the *global prefix
+window sums, and its file is compiled with FMA contraction (see
+[gpu.md](gpu.md#precision-modes)); together they are why the kernel's
+class is 1e-4 / 1e-6, not a tighter one. It drops the *global prefix
 sum*, not the f64: the L and L² sums stay f64 because their difference
 is the variance, a cancelling subtraction, so they must carry the
 magnitude. The coefficient sums downstream stay Kahan-compensated f32,
@@ -842,6 +855,14 @@ feather has no banding edge.
 
 Every channel of a pixel gets the same factor, so the vignette darkens
 without tinting.
+
+### On the device
+
+Bit-exact against the CPU: every operation (mul, add, div, sqrt,
+min/max) is correctly rounded and the file is compiled strict, so
+nothing is contracted. Fast math would save 23 % (0.1 ms), but its
+error grows with input × amount / feather, so no fixed bound holds
+([gpu.md](gpu.md#precision-modes)).
 
 ### What this is not
 
@@ -1384,7 +1405,7 @@ would render different images.
 
 Both are **pure index permutations** — no arithmetic on pixel values —
 so they are bit-identical across every backend unconditionally, unlike
-the transcendental-bearing kernels listed in `docs/ffi.md` §6.
+the bounded kernels listed in `docs/ffi.md` §6.
 
 **`crop(img, CropParams{x, y, width, height})`** extracts the
 rectangle; it must lie entirely within the frame (validated with u64
@@ -1887,10 +1908,11 @@ at all.
 
 Self-guided (`C == 1`, and every other `C` via a per-channel host round
 trip): zero new device kernels — a direct call to `local_contrast_
-device(img, &GuidedFilterParams{radius, eps}, -amount)`, so the
-exact-negation argument above makes it bit-exact against the CPU
-self-guided path by construction (confirmed:
-`denoise_device_c1_is_bit_exact_with_local_contrast_device`).
+device(img, &GuidedFilterParams{radius, eps}, -amount)`, so it is
+bit-exact against `local_contrast_device` at `strength = -amount` by
+construction (confirmed:
+`denoise_device_c1_is_bit_exact_with_local_contrast_device`), and
+bounded, not exact, against the CPU.
 Cross-guided (`C == 3`) adds three new kernels — `box_h_cross` and
 `coeff_ab_cross` generalise `local_contrast.cu`'s `box_h_l_l2`/
 `coeff_ab` from one array to a guide/channel pair, `final_out_cross`
@@ -1900,8 +1922,12 @@ alongside three reused unchanged (`luminance_bw_kernel`, `box_h_l_l2`,
 4 for `local_contrast` alone.
 
 Agreement class for both dispatched paths: `local_contrast`'s own
-**GUIDED_FILTER** (rtol 1e-4, atol 1e-6), added to `docs/ffi.md` §6.
-Measured worst-case ratios, all comfortably inside the bound:
+**GUIDED_FILTER** (rtol 1e-4, atol 1e-6), added to `docs/ffi.md` §6;
+`local_contrast.cu` and `denoise.cu` are both compiled with FMA
+contraction ([gpu.md](gpu.md#precision-modes)). Measured worst-case
+ratios on the strict build, before the two files moved to FMA, all
+comfortably inside the bound; the FMA build stays within the same bound
+in the conformance suite:
 
 | Sweep | Worst ratio | Where |
 |---|---|---|

@@ -199,13 +199,17 @@ except ImportError:
 
 ### Determinism
 
-Same backend, same input, same parameters, same seed: the same bytes,
-at any thread count and any launch geometry. Across backends the
-difference is bounded, and the bound is committed per kernel. A backend
-has a name: the CPU target triple, or `GpuContext.fingerprint`. A
-consumer that promises exact reproduction should record it beside the
-parameters. Kernels free of transcendentals are bit-exact across CPU
-and GPU as well. The full contract is
+Same backend and driver, same input, same parameters, same seed: the
+same bytes, at any thread count and any launch geometry. Across backends
+the difference is bounded, and the bound is committed per kernel. A
+backend has a name: the CPU target triple, or `GpuContext.fingerprint`.
+A consumer that promises exact reproduction should record it beside the
+parameters. Most kernels free of transcendentals are bit-exact across
+CPU and GPU as well; a few GPU kernels are compiled with FMA or fast
+math for speed and stay within one 8-bit code on every image measured
+instead; a driver update can move their last bits, and those of the
+libdevice `cbrtf` in `split_toning`. The full
+contract is
 [docs/ffi.md](https://github.com/sdhdez/phaios-core/blob/main/docs/ffi.md)
 section 6.
 

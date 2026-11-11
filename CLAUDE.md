@@ -44,11 +44,16 @@ implementing.
 - **`f32`, linear, scene-referred** for all pipeline math. The sRGB
   transfer is applied only by `encode_srgb`, the last stage and the only
   kernel producing display-referred output.
-- **Determinism is per backend.** Bit-identical within a backend (any
-  thread count, any launch geometry), bounded across — `docs/ffi.md` §6.
-  Kernels free of transcendentals are bit-exact even across. Any kernel
-  using randomness takes an explicit `seed: u64`. No global RNG. A GPU
-  port must reproduce the *integer* part of a noise scheme bit-for-bit.
+- **Determinism is per backend.** Bit-identical within a backend and
+  driver (any thread count, any launch geometry), bounded across —
+  `docs/ffi.md` §6. The kernels in §6's bit-exact list are bit-exact
+  even across; the files compiled with FMA or fast math (`build.rs`,
+  `PRECISION`) trade some exactness for speed, and a driver update may
+  move their last bits and those of `split_toning`'s libdevice `cbrtf`.
+  A new CUDA file picks its mode in `PRECISION`, from a measurement. Any
+  kernel using randomness takes an explicit `seed: u64`. No global RNG.
+  A GPU port must reproduce the *integer* part of a noise scheme
+  bit-for-bit.
 - **The CPU implementation is the specification.** Every GPU kernel is
   validated against it, never the other way round; disagreement beyond
   the committed bound means the GPU kernel is wrong. Validation is

@@ -134,7 +134,7 @@ if the settings record everything that varied. That means:
 - the **backend fingerprint**, per `ffi.md` §6. Determinism is promised
   per backend; a file rendered on CUDA and one rendered on the CPU agree
   within the committed bound but are not guaranteed byte-identical for
-  kernels containing transcendentals.
+  the bounded kernels of `ffi.md` §6.
 
 A consumer that promises exact reproduction MUST either record the
 fingerprint or designate `cpu` as its archival backend.

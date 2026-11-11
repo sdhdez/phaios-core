@@ -133,12 +133,24 @@ is a reduction rather than a stage.
   so sidecars and presets stay backend-neutral.
 - Rust: `cuda::Context`, `DeviceImage`, and `<kernel>_device` plus
   per-call forms under `cuda::kernels`.
-- Determinism is scoped to a backend: bit-identical within one,
-  bounded across, with the bound committed per kernel and asserted by
-  `tests/cuda_conformance.rs` (75 tests, skipped cleanly without a
-  device; `PHAIOS_REQUIRE_GPU=1` forbids skipping). Kernels free of
-  transcendentals are bit-exact across backends, the PTX being built
-  with `-fmad=false`.
+- Determinism is scoped to a backend: bit-identical within one (and one
+  driver), bounded across, with the bound committed per kernel and
+  asserted by `tests/cuda_conformance.rs` (76 tests, skipped cleanly
+  without a device; `PHAIOS_REQUIRE_GPU=1` forbids skipping).
+- Each CUDA file is compiled in its own precision mode, chosen from
+  measured speed gains (`build.rs`, `PRECISION`; docs/gpu.md, "Precision
+  modes"). Fast math for `zone_system`, `hsl_bw`, `encode_srgb` and
+  `tone_curve` (13–47 % faster), FMA for `local_contrast` and `denoise`
+  (8–12 %), strict IEEE for the other 15 files. `vignette` stays strict:
+  fast math saved 23 % (0.1 ms), but its error grew with
+  input × amount / feather, so no fixed bound held. `tone_curve` pins
+  its affine step to the CPU's two roundings, so its `power == 1` path
+  stays bit-exact unless an input or the affine result is subnormal. The kernels in docs/ffi.md §6's
+  bit-exact list are bit-exact across backends; the others stay within
+  one 8-bit code of the CPU on every image measured. The build removes
+  `NVCC_APPEND_FLAGS`, `NVCC_PREPEND_FLAGS`, `CUDAFE_FLAGS`, `INCLUDES`,
+  `PTXAS_FLAGS` and `LIBRARIES` from nvcc's environment, so a
+  developer's shell cannot change the PTX.
 - New `PhaiosError::Backend`, mapped to Python `RuntimeError`. A
   missing GPU is an environment condition, not a bad argument.
   Source-breaking for Rust consumers matching `PhaiosError`
@@ -221,8 +233,9 @@ is a reduction rather than a stage.
   for example
   `cuda/NVIDIA GeForce RTX 5070 Ti/cc12.0/ptx-compute_80/nvcc-13.4.59`.
   The PTX is not committed and is rebuilt by whatever toolkit is
-  present, and the bounded kernels inline libdevice bodies that change
-  between toolkits, so the toolkit is part of the backend's identity. A
+  present, and the bounded kernels inline toolkit code that changes
+  between toolkits (libdevice `cbrtf` in `split_toning`, `logf`/`cosf`
+  in `film_grain`, nvcc's fast-math intrinsics), so the toolkit is part of the backend's identity. A
   consumer that records a fingerprint must re-record it.
 - **`local_contrast` is 2.5x faster and uses 3.5x less memory.** The
   summed-area tables are built in two parallel passes instead of one

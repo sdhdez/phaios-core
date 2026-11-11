@@ -204,10 +204,12 @@ they are structural rather than incidental:
 - *`local_contrast` does not, and cannot cheaply.* The CPU computes its
   box filters from global f64 summed-area tables, so one non-finite
   sample enters every prefix at or after its position and `∞ − ∞ = NaN`
-  spreads to the whole image; the CUDA kernel uses separable box passes,
-  which confine the damage to a `(4r+1)²` neighbourhood. Measured on a
-  96×96 frame at r = 4 with a single ∞ pixel: 9216 non-finite outputs on
-  the CPU against 81 on the GPU, with every finite GPU pixel bit-correct.
+  spreads over the quadrant below and right of it, widened by 2r; the
+  CUDA kernel uses separable box passes, which confine the damage to a
+  `(4r+1)²` neighbourhood. Measured on a 96×96 frame at r = 4 with a
+  single ∞ pixel at its centre: 3136 non-finite outputs on the CPU
+  against 289 on the GPU, the whole `(4r+1)²` neighbourhood, and every pixel finite on both within the
+  (1e-4, 1e-6) bound.
   Making these agree would mean giving up either the CPU's O(1)-per-pixel
   SAT or the GPU's locality, and neither is worth buying agreement on
   input the contract already excludes.
@@ -437,20 +439,35 @@ and target:
 
   The `nvcc-` segment is load-bearing, not decoration. The PTX is not
   committed: it is regenerated at build time by whatever toolkit is
-  present, and the bounded kernels below inline libdevice code for
-  `powf`, `expf`, `log2f` and `cbrtf` whose bodies change between
-  toolkits. Two builds of the same commit under different toolkits are
-  two different backends, and without this segment they would report the
-  same key. Nothing else would catch the drift: the conformance suite
-  compares against the CPU with tolerances, not against a stored golden
-  GPU output. The bit-exact kernels listed below use IEEE operations
-  only and agree across toolkits regardless.
+  present, and the bounded kernels below inline toolkit code — libdevice
+  `cbrtf` in `split_toning` and `logf`/`cosf` in `film_grain`, nvcc's
+  fast-math intrinsics in the four files compiled with fast math — that
+  changes between toolkits. Two builds of the same commit under
+  different toolkits are two different backends, and without this
+  segment they would report the same key. Nothing else would catch the
+  drift: the conformance suite compares against the CPU with tolerances,
+  not against a stored golden GPU output. The bit-exact kernels listed
+  below use IEEE operations only and agree across toolkits regardless.
 
-**Within one backend**, two calls with the same input, parameters and
-seed produce **bit-identical** output — in the same process, in another
-process, on another machine with the same fingerprint, at any thread
-count, block schedule or launch geometry. This is asserted per kernel
-by the conformance suite and must never be relaxed.
+  Each CUDA file is compiled in one of three precision modes, chosen per
+  file by `build.rs` (`PRECISION`) from measured speed gains and listed in
+  [gpu.md](gpu.md#precision-modes): **strict** (no FMA contraction, IEEE
+  division and square root), **FMA** (`local_contrast`, `denoise`) and
+  **fast math** (`zone_system`, `hsl_bw`, `encode_srgb`, `tone_curve`).
+  The modes are part of the source, not of the fingerprint. In the FMA
+  and fast-math files, and wherever approximate instructions remain
+  (libdevice `cbrtf` in `split_toning`), the driver's JIT compiler
+  finishes part of the arithmetic — it may fuse a multiply with an add,
+  and it lowers the approximate instructions — so a driver update can
+  move their last bits while the fingerprint stays the same. The
+  fingerprint does not name the driver.
+
+**Within one backend and driver**, two calls with the same input,
+parameters and seed produce **bit-identical** output — in the same
+process, in another process, on another machine with the same
+fingerprint and driver, at any thread count, block schedule or launch
+geometry. This is asserted per kernel by the conformance suite and must
+never be relaxed.
 
 **Across backends**, output is *bounded*, not identical — and this was
 never achievable, GPU or no GPU. IEEE-754 standardises `+ − × ÷ √` and
@@ -460,7 +477,11 @@ CPU kernels do not implement `exp`, `pow`, `log`, `cos` or `cbrt` —
 libm, and the published wheels link three different libms (glibc,
 Windows UCRT, Apple's). Two CPU machines with different libms already
 disagree in the low bits. The CUDA backend adds one more math library
-to that list, not a new category of problem.
+to that list, not a new category of problem. On top of that, the CUDA
+backend gives up exactness on purpose where it pays: the files compiled
+with FMA or fast math trade a few ULP (at most 24 measured, in
+`tone_curve`'s powf) for up to half their run time,
+and stay within one 8-bit code of the CPU on every image measured.
 
 What is promised across backends. The four classes below are summarised
 once, as a table of kernels per class, in
@@ -468,14 +489,19 @@ once, as a table of kernels per class, in
 and says why each kernel sits where it does.
 
 **Bit-exact between CPU and CUDA.** These kernels contain no
-transcendental. The PTX is compiled with `-fmad=false` and Rust does not
-contract `a*b+c` into an FMA, so every remaining operation is correctly
-rounded on both sides.
+transcendental, and every operation in them is correctly rounded on
+both sides: Rust does not contract `a*b+c` into an FMA, their files are
+compiled strict (no FMA contraction, IEEE division and square root), and
+`tone_curve`, compiled with fast math, pins its affine step to the CPU's
+two roundings in the source. Strict and free of transcendentals is not
+enough on its own: `blur`, `glow` and `sharpen` are both, yet bounded,
+because the device reformulates the algorithm. The list decides, not a
+rule.
 
 | Kernel | Why it is exact |
 |---|---|
-| `exposure`, `luminance_bw`, `channel_mixer_bw`, `color_filter_bw`, `vignette` | multiplies and adds only |
-| `tone_curve` at `power == 1` | the power branch is skipped |
+| `exposure`, `luminance_bw`, `channel_mixer_bw`, `color_filter_bw`, `vignette` | multiplies and adds only, plus `vignette`'s divisions and square root, which IEEE-754 also rounds correctly |
+| `tone_curve` at `power == 1`, unless an input or the affine result is subnormal | the power branch is skipped and the affine step is pinned to the CPU's two roundings |
 | every identity fast path | the input is returned or copied |
 | `film_grain`'s integer hash | integer arithmetic, asserted over 2²⁰ coordinates |
 | `crop`, `orient` | pure index permutations, no arithmetic on pixel values |
@@ -494,17 +520,31 @@ being absorbed.
 
 | Kernel | rtol | atol | Why |
 |---|---|---|---|
-| `encode_srgb`, `tone_curve` at `power != 1`, `split_toning`, `hsl_bw`, `zone_system` | 1e-5 | 1e-7 | a small fixed number of `powf`/`expf`/`log2f`/`cbrtf` calls per pixel, from two different math libraries |
+| `encode_srgb`, `tone_curve` at `power != 1`, `hsl_bw`, `zone_system` | 1e-5 | 1e-7 | a small fixed number of `powf`/`expf`/`log2f` calls per pixel, the GPU side compiled with fast math: approximate `ex2`/`lg2`, approximate division, FMA contraction. `hsl_bw`'s neutral pixels skip the hue weights but not the contracted dot product, so they are not exact any more |
+| `split_toning` | 1e-5 | 1e-7 | one `cbrtf` per pixel, from two different math libraries (compiled strict; libdevice `cbrtf` on the GPU) |
 | `blur` | 1e-5 | 1e-7 | the direct path substitutes Kahan-compensated f32 for the CPU's f64, sound there because every weight is positive and nothing is subtracted; the box path keeps f64 on both sides, a sliding window being a subtraction |
 | `glow` | 1e-5 | 1e-7 | inherits `blur`'s bound: the threshold subtraction and the weighted add either side are correctly rounded, so the blur is the only inexact part |
 | `sharpen` | 1e-5 | 1e-7 | the same shared blur, and the subtract/gate/combine pass after it is free of transcendentals |
-| `local_contrast` | 1e-4 | 1e-6 | the device reformulates the global f64 summed-area tables as separable box filters. It drops the *global prefix sum*, not the f64: the L and L² partial sums stay f64 because their difference is the variance and that subtraction cancels. The coefficient sums downstream are Kahan-compensated f32, which is enough because nothing there is squared or subtracted |
-| `denoise` | 1e-4 | 1e-6 | `local_contrast`'s class, inherited at `C = 1` because it is bit-for-bit the same device kernel (`local_contrast_device` at `strength = -amount`), and confirmed empirically at `C = 3` for the one new cancelling subtraction cross-guided adds, `cov(I, p_c)` |
+| `local_contrast` | 1e-4 | 1e-6 | compiled with FMA contraction, and the device reformulates the global f64 summed-area tables as separable box filters. It drops the *global prefix sum*, not the f64: the L and L² partial sums stay f64 because their difference is the variance and that subtraction cancels. The coefficient sums downstream are Kahan-compensated f32, which is enough because nothing there is squared or subtracted |
+| `denoise` | 1e-4 | 1e-6 | compiled with FMA contraction; `local_contrast`'s class, inherited at `C = 1` because it is bit-for-bit the same device kernel (`local_contrast_device` at `strength = -amount`), and confirmed empirically at `C = 3` for the one new cancelling subtraction cross-guided adds, `cov(I, p_c)` |
 | `film_grain`'s Box–Muller half | 1e-3 | 1e-5 | one `logf`, one `sqrtf` and one `cosf` per sample, the loosest transcendental chain in the crate; the splitmix64 hash underneath is exact and is asserted over a coordinate grid by `hash_grid` |
 
-`denoise`'s worst measured ratios are 0.0022x (`C = 1`, unit range),
-0.0012x (`C = 1`, HDR), 0.0106x (`C = 3`, unit range) and 0.0012x
-(`C = 3`, both HDR sweeps, up to the required 1e8 highlight). Its
+Fast math flushes subnormal inputs and results to zero, so in the
+fast-math kernels a subnormal pixel reads as 0.0 on the GPU and a
+subnormal result comes out as 0.0: a 1e-40 pixel through `tone_curve`
+at power 0.3 gives 1e-12 on the CPU and 0.0 on the GPU, far below one
+16-bit code. Non-finite pixels keep their class
+(`fast_math_kernels_agree_on_special_values`): `zone_system` and
+`encode_srgb` return NaN where the CPU does, though NaN payload and
+sign bits may differ; `tone_curve` clamps NaN and −inf to 0 on both
+backends; ±inf comes out where the CPU returns it. `hsl_bw` agrees on
+them to the bit (§1).
+
+`denoise`'s worst measured ratios, on the strict build before
+`local_contrast` and `denoise` moved to FMA, were 0.0022x (`C = 1`,
+unit range), 0.0012x (`C = 1`, HDR), 0.0106x (`C = 3`, unit range) and
+0.0012x (`C = 3`, both HDR sweeps, up to the required 1e8 highlight);
+the FMA build stays within the same bound in the conformance suite. Its
 `radius` is capped at `MAX_RADIUS = 32` on both backends, because it
 sums each window directly from its own pixels rather than through a
 summed-area table (architecture.md §22), so cost is linear in `radius`
@@ -515,7 +555,11 @@ consumer that promises exact reproduction from a settings file must
 either record the fingerprint alongside the parameters, or designate
 `cpu` as the archival backend and use CUDA for interactive work.
 `phaios` desktop should do the latter and record the fingerprint
-regardless, so a preview render is identifiable as one.
+regardless, so a preview render is identifiable as one. A GPU render
+re-made after a driver update can differ in the last bits of the FMA
+and fast-math kernels and of `split_toning` even under the same
+fingerprint. At 8 bits that is expected to stay within about one code;
+it has not been measured across drivers.
 
 ### Explicit seeds
 

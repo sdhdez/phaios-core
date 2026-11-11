@@ -84,13 +84,17 @@ from there to `split_toning`, and three again after it. Every stage from
 
 ### Determinism, in one paragraph
 
-Same backend, same input, same parameters, same seed: the same bytes,
-at any thread count and any launch geometry. Across backends the
-difference is bounded, the bound is committed per kernel in the
+Same backend and driver, same input, same parameters, same seed: the
+same bytes, at any thread count and any launch geometry. Across backends
+the difference is bounded, the bound is committed per kernel in the
 "Backends" row below, and a driver or toolkit update that breaks it
 fails the conformance suite. A backend has a name: the CPU target
 triple, or `GpuContext.fingerprint`. A consumer promising exact
-reproduction should record it beside the parameters. Details in
+reproduction should record it beside the parameters. The fingerprint
+does not name the driver: a driver update can move the last bits of the
+kernels compiled with FMA contraction or fast math, and of
+`split_toning`, by a change expected to stay within about one 8-bit
+code but not measured across drivers. Details in
 [ffi.md §6](ffi.md#6-determinism).
 
 ### Errors
@@ -169,7 +173,7 @@ from a shared luminance guide when the input has three channels.
 | Output | `(H, W, C)` f32, C-contiguous |
 | Identity | `amount = 0.0` |
 | Order | right after `hot_pixels`, at native resolution |
-| Backends | bounded, rtol 1e-4 / atol 1e-6 |
+| Backends | bounded, rtol 1e-4 / atol 1e-6; CUDA compiled with FMA contraction |
 
 **What changes visually.** Flat areas lose their grain-like noise.
 Edges keep their position and their height: the filter is
@@ -381,7 +385,7 @@ circle from eight band centres.
 | Output | `(H, W, 1)` f32, C-contiguous |
 | Identity | all eight weights `0.0` gives the plain `luminance_bw` result |
 | Order | the B&W stage; it needs hue, so it cannot run after the collapse |
-| Backends | bounded, rtol 1e-5 / atol 1e-7 |
+| Backends | bounded, rtol 1e-5 / atol 1e-7, neutral pixels included; CUDA compiled with fast math |
 
 **What changes visually.** A continuously tunable filter set rather
 than one filter. Each of the eight hue bands can be lightened or
@@ -409,7 +413,7 @@ with a Gaussian of width 0.8 zones.
 | Output | `(H, W, 1)` f32, C-contiguous |
 | Identity | an empty offset map |
 | Order | first of the look stages after the B&W collapse |
-| Backends | bounded, rtol 1e-5 / atol 1e-7 |
+| Backends | bounded, rtol 1e-5 / atol 1e-7; CUDA compiled with fast math |
 
 **What changes visually.** It lifts or lowers the tones near each zone
 you offset, leaving the others where they are. Placing Zone III down by
@@ -494,7 +498,7 @@ guided-filter base.
 | Output | `(H, W, 1)` f32, C-contiguous |
 | Identity | `strength = 0.0` |
 | Order | after `zone_system`, before the tone stages |
-| Backends | bounded, rtol 1e-4 / atol 1e-6 |
+| Backends | bounded, rtol 1e-4 / atol 1e-6; CUDA compiled with FMA contraction |
 
 **What changes visually.** Texture and mid-scale structure come
 forward: cloud detail, stonework, fabric. Because the filter is
@@ -577,7 +581,7 @@ The ASC CDL slope, offset and power primary, applied per sample.
 | Output | `(H, W, C)` f32, C-contiguous |
 | Identity | `slope = 1.0`, `offset = 0.0`, `power = 1.0` |
 | Order | the straight section, between `shadow_rolloff` and `film_grain` |
-| Backends | bit-exact at `power == 1`; otherwise bounded, rtol 1e-5 / atol 1e-7 |
+| Backends | bit-exact at `power == 1` unless an input or the affine result is subnormal; otherwise bounded, rtol 1e-5 / atol 1e-7; CUDA compiled with fast math |
 
 **What changes visually.** `slope` is contrast, pivoting on black.
 `offset` lifts or lowers the whole scale and is what puts a milky,
@@ -724,7 +728,7 @@ Applies the IEC 61966-2-1 transfer function.
 | Output | `(H, W, C)` f32, C-contiguous, display-referred |
 | Identity | none; the transfer is the kernel |
 | Order | the last stage before `quantize_*`; the only kernel producing display-referred output |
-| Backends | bounded, rtol 1e-5 / atol 1e-7 |
+| Backends | bounded, rtol 1e-5 / atol 1e-7; CUDA compiled with fast math |
 
 **What changes visually.** Everything gets lighter, especially the
 shadows, because the transfer is roughly a 1/2.2 power. Nothing after
