@@ -58,7 +58,7 @@ fn main() {
         // compute_80: see module doc. Device-only PTX generation barely
         // touches the host compiler, which is why this works even when
         // the system gcc is newer than the toolkit officially supports.
-        let status = Command::new(&nvcc)
+        let status = nvcc_command(&nvcc)
             .arg("-arch=compute_80")
             // No FMA contraction: Rust does not contract either, and with
             // both sides emitting plain correctly-rounded mul/add, every
@@ -98,7 +98,7 @@ fn main() {
 /// is a reproducibility key (`docs/ffi.md` §6); an unparsed toolkit
 /// would silently weaken it for every render made with this binary.
 fn nvcc_version(nvcc: &std::path::Path) -> String {
-    let output = Command::new(nvcc)
+    let output = nvcc_command(nvcc)
         .arg("--version")
         .output()
         .unwrap_or_else(|e| panic!("failed to run {} --version: {e}", nvcc.display()));
@@ -125,6 +125,21 @@ fn nvcc_version(nvcc: &std::path::Path) -> String {
                 nvcc.display()
             )
         })
+}
+
+/// An `nvcc` invocation that sees only the flags this script passes.
+///
+/// nvcc appends `NVCC_APPEND_FLAGS` and prepends `NVCC_PREPEND_FLAGS` to
+/// every command line it runs, so a value left in a developer's shell
+/// (`--use_fast_math`, say) would change the PTX — and with it the GPU
+/// results — while the fingerprint stayed the same. Removing both from
+/// the child's environment keeps the PTX a function of this script and
+/// the `.cu` sources alone; nothing needs to re-run when they change.
+fn nvcc_command(nvcc: &std::path::Path) -> Command {
+    let mut cmd = Command::new(nvcc);
+    cmd.env_remove("NVCC_APPEND_FLAGS")
+        .env_remove("NVCC_PREPEND_FLAGS");
+    cmd
 }
 
 /// Locate `nvcc`: `$CUDA_PATH/bin`, then PATH, then the Arch default.
