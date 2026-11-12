@@ -22,15 +22,20 @@
 //! the driver's JIT compiler finishes part of the arithmetic, so a driver
 //! or CUDA update can move their last bits.
 //!
-//! The script also exports `PHAIOS_NVCC_VERSION` (e.g. `13.4.59`) for
+//! The script also exports `PHAIOS_NVCC_VERSION` (e.g. `13.4.92`) for
 //! `src/cuda/context.rs` to put in the backend fingerprint. The PTX and
 //! that string are produced by the same `nvcc` invocation and refreshed
 //! together, so the fingerprint always names the toolkit that built the
-//! PTX actually embedded in the binary — including when a toolkit is
-//! upgraded in place without this script re-running, in which case both
-//! stay at the old value and remain consistent with each other.
+//! PTX actually embedded in the binary.
+//!
+//! The script re-runs when a `.cu` file changes, when `CUDA_PATH`
+//! changes, and when the `nvcc` it ran or that toolkit's libdevice
+//! changes on disk (`watch_toolkit`), so a toolkit upgraded in place
+//! refreshes both. The changes cargo cannot see, listed at
+//! `watch_toolkit`, leave both at the old value, still consistent with
+//! each other; `touch src/cuda/ptx` refreshes them.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
@@ -49,6 +54,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed=src/cuda/ptx");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
+    watch_toolkit(&nvcc);
 
     let mut seen: Vec<String> = Vec::new();
     for entry in std::fs::read_dir(&ptx_src_dir)
@@ -135,7 +141,7 @@ enum Precision {
     /// `--use_fast_math`: FMA contraction, approximate division, square
     /// root and transcendentals (`ex2`/`lg2.approx`), and subnormal
     /// inputs and results flushed to zero. Within one 8-bit code of the
-    /// CPU on every image measured.
+    /// CPU on every finite test image measured.
     Fast,
 }
 
@@ -195,7 +201,7 @@ const PRECISION: &[(&str, Precision)] = &[
     ("split_toning", Precision::Strict), // within noise
 ];
 
-/// The toolkit release as `<major>.<minor>.<patch>`, e.g. `13.4.59`.
+/// The toolkit release as `<major>.<minor>.<patch>`, e.g. `13.4.92`.
 ///
 /// Parsed from the `V<major>.<minor>.<patch>` token on `nvcc --version`'s
 /// "Cuda compilation tools" line — the same three numbers every emitted
@@ -264,21 +270,80 @@ fn nvcc_command(nvcc: &std::path::Path) -> Command {
     cmd
 }
 
+/// Have cargo re-run this script when the toolkit it used changes on disk.
+///
+/// Watched: the `nvcc` that ran, by the absolute path `find_nvcc` returns
+/// however it was found, and its toolkit's libdevice directory.
+///
+/// libdevice is watched for two reasons. It is an input of its own: the
+/// bounded kernels inline its bodies, and a toolkit split into several
+/// packages can update it without touching nvcc. And as a *directory* it
+/// catches upgrades the binary alone would miss. Cargo compares
+/// modification times only, against the time this script last ran, and
+/// package managers restore each file's mtime from the package (pacman,
+/// dpkg and rpm do), so an upgrade can install an nvcc whose mtime is
+/// older than the last build. Replacing a file, by unlinking or renaming
+/// over it as package managers do, sets its directory's mtime to the time
+/// of the upgrade, and cargo counts a watched directory's own mtime. Only
+/// a toolkit install writes to the libdevice directory, so it costs no
+/// spurious rebuilds, where nvcc's `bin/` (`/usr/bin` on some systems)
+/// would rebuild after every package install. It is looked for at
+/// `<toolkit>/nvvm/libdevice` from nvcc's path as found, which follows a
+/// switched `/usr/local/cuda` symlink, else from its resolved path (an
+/// `nvcc` linked into `/usr/bin`), and watched only if it exists: a
+/// watched path that does not exist makes cargo re-run the script on
+/// every build.
+///
+/// PATH is deliberately not tracked: it differs between an IDE and a
+/// terminal, and tracking it would rebuild the PTX on every switch
+/// between the two. `CUDA_PATH`, which is tracked, is the way to select a
+/// toolkit; an nvcc reached only through a changed PATH is used from the
+/// next re-run on.
+///
+/// What this cannot see is a change that leaves only mtimes older than
+/// the last build. That is an nvcc upgraded without its libdevice, a
+/// toolkit with no `nvvm/libdevice` beside its `bin/` (where `nvcc` is a
+/// wrapper script, as in some distribution packages), or a symlink in
+/// nvcc's path switched to a toolkit whose nvcc and libdevice directory,
+/// contents included, all carry mtimes older than the last build: one
+/// installed earlier, or unpacked later by a tool that restores archive
+/// times (`tar`, `cp -a`, `rsync -a`). The PTX and `PHAIOS_NVCC_VERSION`
+/// then stay at the old toolkit until `touch src/cuda/ptx`, which re-runs
+/// this script in every profile and target directory, maturin's
+/// included, because `src/cuda/ptx` is watched and cargo counts a watched
+/// directory's own mtime.
+fn watch_toolkit(nvcc: &Path) {
+    println!("cargo:rerun-if-changed={}", nvcc.display());
+    let libdevice_of = |nvcc: &Path| {
+        let dir = nvcc.parent()?.parent()?.join("nvvm").join("libdevice");
+        dir.is_dir().then_some(dir)
+    };
+    let libdevice = libdevice_of(nvcc).or_else(|| libdevice_of(&std::fs::canonicalize(nvcc).ok()?));
+    if let Some(dir) = libdevice {
+        println!("cargo:rerun-if-changed={}", dir.display());
+    }
+}
+
 /// Locate `nvcc`: `$CUDA_PATH/bin`, then PATH, then the Arch default.
+/// The path returned is absolute, so `watch_toolkit` can name the binary
+/// to cargo.
 ///
 /// CI shells are not login shells, so `/etc/profile.d/cuda.sh` may not
 /// have run; never assume PATH alone.
 fn find_nvcc() -> PathBuf {
+    // `nvcc.exe` on Windows, where a path without the suffix is no file.
+    let name = format!("nvcc{}", std::env::consts::EXE_SUFFIX);
     if let Some(cuda_path) = std::env::var_os("CUDA_PATH") {
-        let candidate = PathBuf::from(cuda_path).join("bin").join("nvcc");
+        let candidate = PathBuf::from(cuda_path).join("bin").join(&name);
         if candidate.is_file() {
-            return candidate;
+            return std::path::absolute(&candidate).unwrap_or(candidate);
         }
     }
-    if let Ok(output) = Command::new("nvcc").arg("--version").output()
+    if let Some(candidate) = nvcc_on_path(&name)
+        && let Ok(output) = Command::new(&candidate).arg("--version").output()
         && output.status.success()
     {
-        return PathBuf::from("nvcc");
+        return candidate;
     }
     let arch_default = PathBuf::from("/opt/cuda/bin/nvcc");
     if arch_default.is_file() {
@@ -289,4 +354,26 @@ fn find_nvcc() -> PathBuf {
          not found via $CUDA_PATH, PATH, or /opt/cuda/bin. \
          Runtime users need only the NVIDIA driver."
     );
+}
+
+/// The first PATH entry that holds an executable `name` (`find_nvcc`
+/// passes nvcc's file name), made absolute: the file a shell would run
+/// for `nvcc`. Searched for here rather than left to the OS so that
+/// `watch_toolkit` knows which file ran.
+fn nvcc_on_path(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(name))
+        .find(|candidate| is_executable(candidate))
+        .map(|candidate| std::path::absolute(&candidate).unwrap_or(candidate))
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
 }

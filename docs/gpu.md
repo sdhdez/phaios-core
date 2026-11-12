@@ -58,10 +58,17 @@ build gives no warning. This is the single most common mistake.
 Rust:
 
 ```sh
+export CUDA_CACHE_PATH="${CUDA_CACHE_PATH:-$PWD/.cache/cuda-jit}"
 cargo build --features cuda
 cargo test --features cuda
 cargo run --release --example 22_gpu_pipeline --features cuda
 ```
+
+The driver JIT-compiles the PTX for the device on first use and caches
+the result, in `~/.nv/ComputeCache` unless `CUDA_CACHE_PATH` names
+another directory. The first line, run from the repository root, keeps
+that cache in the repository's gitignored `.cache/`, as
+`scripts/gpu-verify.sh` does, and leaves a setting of your own alone.
 
 `cargo test` and `cargo clippy` skip the CUDA backend entirely without
 `--features cuda`: it sits behind `#[cfg]`, so even a type error there
@@ -160,7 +167,7 @@ The reasoning behind each is in
 
 | Class | Bound | Kernels |
 |---|---|---|
-| bit-exact | `==` | `exposure`, `luminance_bw`, `channel_mixer_bw`, `color_filter_bw`, `vignette`, `tone_curve` at `power == 1` (no subnormal input or result), `crop`, `orient`, `resize`, `straighten`, `hot_pixels`, `shadow_rolloff`, `highlight_rolloff`, `apply_lut`, `histogram`, `quantize_u8`, `quantize_u16`, `film_grain`'s integer hash, every identity fast path |
+| bit-exact | `==`, NaN payload and sign aside | `exposure`, `luminance_bw`, `channel_mixer_bw`, `color_filter_bw`, `vignette`, `tone_curve` at `power == 1` (no subnormal input or result), `crop`, `orient`, `resize`, `straighten`, `hot_pixels`, `shadow_rolloff`, `highlight_rolloff`, `apply_lut`, `histogram`, `quantize_u8`, `quantize_u16`, `film_grain`'s integer hash, every identity fast path |
 | one transcendental | rtol 1e-5, atol 1e-7 | `encode_srgb`, `tone_curve` at `power != 1`, `split_toning`, `hsl_bw`, `zone_system`, `blur`, `glow`, `sharpen` |
 | guided filter | rtol 1e-4, atol 1e-6 | `local_contrast`, `denoise` (both `C == 1` and `C == 3`) |
 | Box–Muller | rtol 1e-3, atol 1e-5 | `film_grain`'s Box–Muller half |
@@ -403,41 +410,110 @@ Reading the table:
 
 ```sh
 ./scripts/gpu-verify.sh              # full run
-./scripts/gpu-verify.sh --quick      # skip the release-profile examples
+./scripts/gpu-verify.sh --quick      # examples in the dev profile, no release build
 ```
 
-It runs, in order:
+It first exports
+`CUDA_CACHE_PATH="${CUDA_CACHE_PATH:-$PWD/.cache/cuda-jit}"`, from the
+repository root, so the driver's JIT cache goes to `.cache/cuda-jit`
+rather than `~/.nv/ComputeCache`; a `CUDA_CACHE_PATH` already set in
+your environment is kept. Then it runs, in order:
 
-1. an environment probe: `nvcc --version`, `nvidia-smi`,
-   `rustc --version`, the crate version;
+1. an environment probe: the `nvcc` that `build.rs` compiles with
+   (`$CUDA_PATH/bin`, then `PATH`, then `/opt/cuda/bin`) and its full
+   release (`13.4.92`, not `13.4`), `nvidia-smi`, `rustc --version`,
+   the crate version;
 2. `cargo fmt --check`;
 3. `cargo clippy --all-targets --features cuda -- -D warnings`;
 4. `PHAIOS_REQUIRE_GPU=1 cargo test --features cuda`: the environment
    variable turns the conformance suite's device-missing skip into a
    hard failure, so a green run cannot mean "quietly skipped the CUDA
    tests";
-5. every example with `required-features = ["cuda"]`, discovered from
-   `cargo metadata` rather than listed;
-6. if `.phaios-venv` exists and the installed module has a `gpu`
-   submodule: `pytest tests/ffi_gpu.py -q` and `mypy.stubtest`;
-7. the summary block.
+5. a PTX audit of the build step 4 tested, the `OUT_DIR` of
+   `cargo build --features cuda`. It fails if any `.ptx` there names in
+   its header a different release than the `nvcc` step 1 found. Step 6
+   checks the build the examples run, which in a full run is the release
+   build, so this is what catches a stale dev build beside a fresh
+   release build: for example a release build first made, or cleaned,
+   after a toolkit change cargo could not see. The rest it prints
+   without judging: the toolkit named in the PTX headers, then for each
+   `.ptx` its mode in `build.rs`'s `PRECISION` table and how many of its
+   instructions are fused multiply-adds (`fma.*`), approximate
+   (`.approx`), flush-to-zero (`.ftz`), and float add, subtract or
+   multiply with no rounding modifier, the form the driver's JIT may
+   fuse. `precision_tests` in `src/cuda/kernels/mod.rs`, run in step 4,
+   already asserts each mode's signature; the counts are printed so that
+   a report from another machine or toolkit shows them;
+6. every example with `required-features = ["cuda"]`, discovered from
+   `cargo metadata` rather than listed. Each one's output is also kept
+   in `.cache/gpu-verify/<example>.log`, and the backend fingerprint
+   the examples print is read back from there. The run fails if they
+   print different fingerprints, or if the fingerprint's `nvcc-`
+   segment is not the release step 1 found;
+7. the Python bindings, if `.phaios-venv` exists. If `phaios_core` is
+   not installed in it, the step is skipped. If it is installed but
+   fails to import, the run fails: that is a broken build, not a
+   CPU-only one. If it imports but has no `gpu` submodule, a CPU-only
+   build, the step is skipped. Otherwise the wheel's
+   `GpuContext(0).fingerprint` is compared with the one from step 6,
+   then `pytest tests/ffi_gpu.py -q` and `mypy.stubtest` run. A
+   different fingerprint fails the run, because the venv then holds a
+   build from another toolkit and the tests would exercise that build
+   instead. A wheel built from older sources by the same toolkit has the
+   same fingerprint, and this check does not catch it. Each skip or
+   failure here names the build command, `maturin develop --release
+   --features cuda`;
+8. the summary block.
+
+When step 5 or 6 finds PTX from another toolkit, cargo did not re-run
+`build.rs` after the toolkit changed (`watch_toolkit` in `build.rs`
+lists when that happens). `touch src/cuda/ptx` fixes it: `build.rs`
+watches that directory, so the next build in every profile and target
+directory, maturin's included, re-runs it and rebuilds the PTX.
+
+Step 7 is skipped when there is no `.phaios-venv`, when `phaios_core`
+is not installed in it, or when the installed build has no `gpu`
+submodule. The run still exits 0, but the summary's `python` line names
+the skip and its `result` line does not claim that every check passed.
+With `PHAIOS_REQUIRE_GPU` set in the environment the script is run
+from, to any value (the Rust tests read it the same way), every skip is
+a failure instead:
+
+```sh
+PHAIOS_REQUIRE_GPU=1 ./scripts/gpu-verify.sh
+```
 
 It does not run benchmarks. It exits non-zero on the first failure, and
 unlike the examples it treats a missing device as an error rather than
 skipping politely.
 
 `.github/workflows/gpu.yml` invokes the same script on a self-hosted
-runner, so the hand-run command and the CI job cannot drift.
+runner, so the hand-run command and the CI job cannot drift. That job
+creates no `.phaios-venv`, so step 7 is skipped there.
 
 The block it prints last is the one to share:
 
 ```
 phaios-core   0.2.0-dev
 device        NVIDIA GeForce RTX 5070 Ti, 620.70.06
-nvcc          13.4
+fingerprint   cuda/NVIDIA GeForce RTX 5070 Ti/cc12.0/ptx-compute_80/nvcc-13.4.92
+nvcc          13.4.92
+jit cache     .cache/cuda-jit
 rustc         1.99.1
 host          Linux 7.2.15-zen1-1-zen x86_64
+run           full
+python        passed (tests/ffi_gpu.py, stubtest; wheel fingerprint matches)
 result        all GPU checks passed
+```
+
+Its `jit cache` line is the `CUDA_CACHE_PATH` the run used, relative to
+the repository root when it lies inside it.
+
+With step 7 skipped, its last two lines read, for example:
+
+```
+python        skipped: no .phaios-venv
+result        GPU checks passed except the Python step, which was skipped
 ```
 
 ## Confirmed on other GPUs
@@ -449,13 +525,14 @@ backend works on a given card is that someone ran it there.
 
 | phaios-core | device | driver | nvcc | rustc | host | date | result |
 |---|---|---|---|---|---|---|---|
-| 0.2.0-dev | NVIDIA GeForce RTX 5070 Ti (cc 12.0) | 615.71.09 | 13.4 | 1.98.1 | Linux 7.2.6-zen2-1-zen x86_64 | 2026-09-16 | all GPU checks passed |
-| 0.2.0-dev | NVIDIA GeForce RTX 5070 Ti (cc 12.0) | 620.70.06 | 13.4 | 1.99.1 | Linux 7.2.15-zen1-1-zen x86_64 | 2026-11-11 | all GPU checks passed |
+| 0.2.0-dev | NVIDIA GeForce RTX 5070 Ti (cc 12.0) | 615.71.09 | 13.4.59 | 1.98.1 | Linux 7.2.6-zen2-1-zen x86_64 | 2026-09-16 | all GPU checks passed |
+| 0.2.0-dev | NVIDIA GeForce RTX 5070 Ti (cc 12.0) | 620.70.06 | 13.4.92 | 1.99.1 | Linux 7.2.15-zen1-1-zen x86_64 | 2026-11-11 | all GPU checks passed |
 
-To add a row: run `./scripts/gpu-verify.sh` and open an issue titled
-`GPU report: <device>` containing the block it printed. The table grows
-by contribution, and a card, driver or toolkit this project has no
-access to is worth more than another run on the one it has.
+To add a row: run `PHAIOS_REQUIRE_GPU=1 ./scripts/gpu-verify.sh` and
+open an issue titled `GPU report: <device>` containing the block it
+printed. The table grows by contribution, and a card, driver or toolkit
+this project has no access to is worth more than another run on the one
+it has.
 
 Compute capability 8.0 is the floor. The PTX targets `compute_80` and
 the driver JIT-compiles it forward, so a single build covers every
