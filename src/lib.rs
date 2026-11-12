@@ -1152,7 +1152,9 @@ pub fn local_contrast_py(
 ///
 /// Deterministic by construction: each pixel's noise is a hash of
 /// ``(seed, x, y)``, not a draw from a sequential generator, so the
-/// output is bit-identical on any thread count and any platform.
+/// output is bit-identical on any thread count. Across platforms the
+/// Box-Muller ``logf`` and ``cosf`` come from the platform libm and may
+/// move the last bits (``docs/ffi.md`` section 6).
 ///
 /// Parameters
 /// ----------

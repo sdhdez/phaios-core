@@ -408,7 +408,9 @@ blurrier. Sizes below 1 pixel cannot be resolved and behave as 1."""
 
     seed: int
     """Explicit RNG seed. Same seed, same parameters, same input →
-bit-identical output, on any thread count and any platform."""
+bit-identical output, on any thread count. Across platforms the
+Box-Muller ``logf`` and ``cosf`` come from the platform libm and
+may move the last bits (``docs/ffi.md`` section 6)."""
 
     def __eq__(self, value: object, /) -> bool: ...
     def __ne__(self, value: object, /) -> bool: ...
@@ -1705,7 +1707,9 @@ vanishes at both ends of the range.
 
 Deterministic by construction: each pixel's noise is a hash of
 ``(seed, x, y)``, not a draw from a sequential generator, so the
-output is bit-identical on any thread count and any platform.
+output is bit-identical on any thread count. Across platforms the
+Box-Muller ``logf`` and ``cosf`` come from the platform libm and may
+move the last bits (``docs/ffi.md`` section 6).
 
 Parameters
 ----------

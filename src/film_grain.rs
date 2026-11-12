@@ -17,8 +17,10 @@
 //!
 //! - identical output for one thread or thirty-two, since no pixel waits
 //!   on another's RNG state;
-//! - identical output across platforms, since integer hashing has no
-//!   floating-point tolerance;
+//! - the same hash bits on every platform, since integer hashing has no
+//!   floating-point tolerance. The Box–Muller `logf` and `cosf` after it
+//!   come from the platform libm, so across platforms the output may
+//!   move in the last bits (`docs/ffi.md` §6);
 //! - the grain at a given pixel does not move when unrelated parameters
 //!   change.
 //!
@@ -130,7 +132,9 @@ pub struct GrainParams {
     #[pyo3(get, set)]
     pub size_pixels: f32,
     /// Explicit RNG seed. Same seed, same parameters, same input →
-    /// bit-identical output, on any thread count and any platform.
+    /// bit-identical output, on any thread count. Across platforms the
+    /// Box-Muller ``logf`` and ``cosf`` come from the platform libm and
+    /// may move the last bits (``docs/ffi.md`` section 6).
     #[pyo3(get, set)]
     pub seed: u64,
 }

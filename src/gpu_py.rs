@@ -660,12 +660,13 @@ the caller drops releases its device memory. Determinism is promised
 per backend: the same input on the same backend and driver gives
 bit-identical output. Across backends output is bounded, and the
 kernels in the bit-exact list of docs/ffi.md section 6 match the CPU
-to the bit. In the kernels compiled with FMA or fast math, and
-wherever approximate instructions remain (libdevice ``cbrtf`` in
-``split_toning``), the driver's JIT finishes part of the arithmetic,
-so a driver or CUDA update can move their last bits — expected to
-stay within about one 8-bit code, not measured across drivers. Fast
-math also flushes subnormal inputs and results to zero.
+to the bit, NaN payload and sign aside. In the kernels compiled with
+FMA or fast math, and wherever approximate instructions remain
+(libdevice ``cbrtf`` in ``split_toning``), the driver's JIT finishes
+part of the arithmetic, so a driver or CUDA update can move their
+last bits — expected to stay within about one 8-bit code, not
+measured across drivers. Fast math also flushes subnormal inputs and
+results to zero.
 
 Call ``available()`` before constructing a context; ``devices()`` lists
 what is present.";

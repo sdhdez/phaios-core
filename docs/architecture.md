@@ -699,8 +699,10 @@ Box–Muller — rather than a draw from a sequential RNG. No pixel depends
 on another's state, which buys three properties:
 
 - identical output on one thread or thirty-two;
-- identical output across platforms, since integer hashing has no
-  floating-point tolerance;
+- the same hash bits on every platform, since integer hashing has no
+  floating-point tolerance. The Box–Muller `logf` and `cosf` after it
+  come from the platform libm, so across platforms the output may move
+  in the last bits (`docs/ffi.md` §6);
 - no hidden contract. A per-tile `SeedableRng` is reproducible too, but
   only while the tiling holds still: the tile size would quietly become
   part of the output, and changing it later would alter every rendered
