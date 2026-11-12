@@ -205,6 +205,20 @@ jobs:
           source .phaios-venv/bin/activate
           pytest tests/ffi.py -v
 
+      # The determinism harness: its selftest, then every kernel case run
+      # twice, at the runner's default thread count and on one thread. The
+      # two runs must give identical bytes, because a build is
+      # bit-identical with itself at any thread count (docs/ffi.md §6).
+      # On the debug build `maturin develop` makes, the pair takes seconds,
+      # so the step runs on every interpreter.
+      - name: Determinism harness
+        run: |
+          source .phaios-venv/bin/activate
+          python scripts/kernel_digests.py selftest
+          python scripts/kernel_digests.py run --strict --quiet --size 64 --out .cache/digests/default.jsonl
+          RAYON_NUM_THREADS=1 python scripts/kernel_digests.py run --strict --quiet --size 64 --out .cache/digests/one-thread.jsonl
+          python scripts/kernel_digests.py compare .cache/digests/default.jsonl .cache/digests/one-thread.jsonl --expect-identical
+
       - name: Type-check the stubs
         run: |
           source .phaios-venv/bin/activate
