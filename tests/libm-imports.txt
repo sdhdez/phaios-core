@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Platform libm ledger: every math function the built extension imports
+# from the platform's math library, and every kernel that reaches it.
+#
+# Why it exists. IEEE-754 requires + - * / and sqrt to be correctly
+# rounded and standardises no transcendental, so these imports are where
+# one wheel can give different bits on different machines: glibc, the
+# Windows UCRT and Apple's libm each round them their own way
+# (docs/ffi.md §6). Math that Rust compiles into the extension itself
+# is not listed. On Linux x86-64, where this was checked, that is
+# split_toning's cbrtf (from compiler-builtins) and floor, ceil, round
+# and fmod. On the macOS and Windows wheels this is unverified, and Rust
+# documents f32::cbrt as libc's cbrtf; floor, ceil, round and fmod are
+# exact operations, the same whatever implements them.
+#
+# The check. scripts/libm-inventory.sh lists the extension's undefined
+# dynamic symbols whose name is a C <math.h> function and compares that
+# set with the symbols named below. Names are compared without their
+# versions: `exp` here matches both the `exp@GLIBC_2.29` of a build on a
+# current distribution and the `exp@GLIBC_2.2.5` a manylinux_2_17 wheel
+# binds. CI runs it on Linux; on macOS the script only records the
+# imports, and elsewhere it checks nothing.
+#
+# Updating it. When the check fails, add or remove the symbol here and,
+# under it, name every kernel that reaches it: the file and function, and
+# whether it runs per pixel or once per call (a host-side scalar, which
+# still feeds every output pixel). Then update the list of platform-libm
+# functions and kernels in docs/ffi.md §6 to match. Attribute from the
+# binary as well as the source: LLVM rewrites `2.0_f32.powf(x)` into
+# `exp2f(x)` and merges a `sin`/`cos` pair into one `sincos`, so the
+# symbol is often not the function the source names.
+#
+# Format: a symbol starts in column 0; indented lines continue its entry.
+#
+# Kernels that reach no platform libm on Linux x86-64: crop, orient,
+# hot_pixels, denoise, resize, luminance_bw, channel_mixer_bw,
+# color_filter_bw, highlight_rolloff, shadow_rolloff, quantize_u8,
+# quantize_u16, histogram, apply_lut, local_contrast, split_toning,
+# vignette.
+#
+# Attribution checked on 2026-11-12 (rustc 1.99.1, glibc 2.44, x86_64)
+# three ways: reading src/, the GOT references in the disassembly, and
+# calls counted per kernel with an LD_PRELOAD shim. The default build and
+# the `cuda` build import the same eight symbols; the `cuda` build also
+# reaches three of them from GPU host code, noted below.
+
+cosf
+    film_grain      per pixel, one per noise sample: the Box-Muller angle
+                    (src/film_grain.rs, standard_normal). Not called at
+                    intensity 0.
+
+exp
+    blur            once per call, host-side f64: the Gaussian taps,
+    glow            2*ceil(4*sigma)+1 calls, on the direct path only
+    sharpen         (sigma < BOX_CROSSOVER_SIGMA = 6; the box path calls
+                    none). src/blur.rs, gaussian_weights; glow and sharpen
+                    reach it through blur. The weights feed every pixel.
+                    cuda build: the GPU blur, glow and sharpen compute
+                    the same weights on the host.
+
+exp2f
+    exposure        once per call, host-side: the gain 2^stops, written
+                    `2.0_f32.powf(stops)` and rewritten by LLVM into exp2f
+                    (src/exposure.rs, exposure). The gain multiplies every
+                    pixel. cuda build: the GPU exposure computes the same
+                    gain on the host (src/cuda/kernels/exposure.rs).
+    zone_system     per pixel: the gain 2^total, `2.0_f32.powf(total)`
+                    rewritten into exp2f (src/tone.rs, zone_system). Not
+                    called without offsets (identity).
+
+expf
+    zone_system     per pixel, once per zone offset: the Gaussian blend
+                    weight (src/tone.rs, zone_system).
+    hsl_bw          per pixel, 8 calls (one per hue band), neutral pixels
+                    and all-zero weights included (src/bw.rs, hsl_bw).
+
+log2f
+    zone_system     per pixel: the zone position, log2(L / 0.18)
+                    (src/tone.rs, zone_system).
+
+logf
+    film_grain      per pixel, one per noise sample: the Box-Muller radius
+                    (src/film_grain.rs, standard_normal). Not called at
+                    intensity 0.
+
+powf
+    encode_srgb     per value above the 0.0031308 knee
+                    (src/encode.rs, encode_pixel).
+    tone_curve      per value when power != 1 (src/tone.rs, tone_curve).
+                    power == 1 skips it.
+
+sincos
+    straighten      once per call, host-side f64: the angle's sin and cos,
+                    two sin/cos pairs in the source that LLVM merges into
+                    one sincos call, made at 0 degrees too
+                    (src/geometry.rs, straighten_geometry). It sets the
+                    output shape as well as the rotation. cuda build: the
+                    GPU straighten shares the function.

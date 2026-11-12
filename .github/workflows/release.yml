@@ -43,6 +43,18 @@ jobs:
       - name: cargo test
         run: cargo test
 
+      # The determinism checks from ci.yml (docs/ffi.md §6), repeated here
+      # because a tag can be pushed on a commit CI never ran. As in ci.yml,
+      # the libm ledger is checked against a native release build of the
+      # tagged commit, not against the manylinux wheel built below.
+      - name: Platform libm imports match the ledger
+        run: |
+          cargo build --release --lib
+          bash scripts/libm-inventory.sh target/release/libphaios_core.so tests/libm-imports.txt
+
+      - name: Determinism guards
+        run: bash scripts/determinism-guards.sh
+
       - name: No image assets in the repository
         run: |
           # Same guard as ci.yml: tracked files bypass .gitignore, and a

@@ -40,21 +40,50 @@ jobs:
       - name: cargo test
         run: cargo test
 
+      # Every function the extension imports from the platform libm is a
+      # place where one wheel can give different bits on different
+      # machines. tests/libm-imports.txt names each one and the kernels
+      # that reach it; a new import (including one a compiler upgrade
+      # introduces by rewriting a call) fails here until the ledger is
+      # updated; the failure message asks for docs/ffi.md §6 to be
+      # updated as well, which this step does not check.
+      # The default build is checked: the cuda feature imports the same
+      # set.
+      - name: Platform libm imports match the ledger
+        run: |
+          cargo build --release --lib
+          bash scripts/libm-inventory.sh target/release/libphaios_core.so tests/libm-imports.txt
+
       # Kernels are pure functions and the CUDA backend holds
       # no implicit state — the device, stream and module cache live in a
-      # Context the caller constructs and passes. Comment lines are stripped
-      # before matching: context.rs documents the rule by naming the very
-      # constructs it forbids ("There is no singleton, no `OnceLock`...").
+      # Context the caller constructs and passes. Lines whose first
+      # non-blank characters are `//` are skipped before matching:
+      # context.rs documents the rule by naming the very constructs it
+      # forbids ("There is no singleton, no `OnceLock`..."). Nothing else
+      # is skipped; a line starting with `*` is code (`*o = ...`), and
+      # src/ has no block comments.
       - name: No implicit state in the CUDA backend
         run: |
           HITS=$(grep -rnE 'static mut|OnceLock|OnceCell|lazy_static!|thread_local!' src/cuda/ \
-                 | grep -vE '^[^:]*:[0-9]+: *(//|/\*|\*)' || true)
+                 | grep -vE '^[^:]*:[0-9]+:[[:space:]]*//' || true)
           if [ -n "$HITS" ]; then
             echo "Forbidden implicit state in src/cuda/:"
             echo "$HITS"
             exit 1
           fi
           echo "src/cuda/ is free of implicit state ✓"
+
+      # CPU determinism (docs/ffi.md §6): no fused or algebraic float
+      # operations, per-function target features, runtime CPU detection,
+      # std::arch/core::arch SIMD intrinsics or ndarray matrix products in
+      # src/, and no target-cpu/target-feature codegen flags in cargo
+      # config, workflows or pyproject.toml, so each wheel computes at its
+      # target's fixed default CPU (baseline x86-64 on Linux, x86-64 plus
+      # SSE3/cmpxchg16b on Windows, Apple M1 on macOS) with no per-machine
+      # dispatch. In src/ only `//` comment lines are skipped, the same
+      # filter as the step above.
+      - name: Determinism guards
+        run: bash scripts/determinism-guards.sh
 
       - name: No image assets in the repository
         run: |
