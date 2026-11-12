@@ -28,6 +28,20 @@ file.
   blocking in CI. Use `--all-targets` locally too — the bare form lints
   only the library, so warnings in examples, benches and tests go unseen
   until CI.
+- **No fused or machine-specific float code.** The Rust in `src/` uses
+  no `mul_add`, `algebraic_*`, `#[target_feature]`, runtime CPU
+  detection (`is_*_feature_detected!`), SIMD intrinsics (`std::arch`,
+  `core::arch`) or ndarray matrix products (`.dot(`,
+  `general_mat_mul`), and no cargo config, workflow or `pyproject.toml`
+  passes `target-cpu` or `target-feature`: the CPU is the
+  specification, and every wheel computes at its target's fixed
+  default CPU (baseline x86-64 on Linux, x86-64 plus SSE3 and
+  cmpxchg16b on Windows, Apple M1 on macOS), with no per-machine
+  dispatch. `scripts/determinism-guards.sh` checks this in CI and in
+  the release gate; run it with `bash`. In `src/` it skips only lines
+  whose first non-blank characters are `//` (`src/` has no block
+  comments), so a comment after code is still checked. It exits 1 on a
+  hit, and 2 when the root it is given is missing or has no `src/`.
 
 ## What a complete kernel looks like (the eight-item checklist)
 
@@ -134,8 +148,8 @@ It names every drift it finds and quotes the exact runtime text to
 paste back into the stub, so fixing a failure is copy-paste, not
 guesswork.
 
-Two more checks run in CI and `scripts/gpu-verify.sh`, on top of the
-contract test:
+Two more checks run in CI, and the second also in
+`scripts/gpu-verify.sh`, on top of the contract test:
 
 ```sh
 mypy --strict python/phaios_core
@@ -172,6 +186,23 @@ Every new dependency is a supply-chain decision. Ask before adding one.
 Core dependencies, not to be exceeded without justification: `pyo3`,
 `numpy`, `ndarray`, `rayon`, `thiserror`, plus `cudarc` behind
 `--features cuda`.
+
+The platform math library is a dependency too, and the one that can
+make the same wheel give different bits on different machines. Every
+function the extension imports from it is listed, with the kernels
+that reach it, in `tests/libm-imports.txt`, and CI and the release
+gate fail when that set changes on Linux, the one platform the check
+covers (`cargo build --release --lib && bash scripts/libm-inventory.sh
+target/release/libphaios_core.so`). A new transcendental in a kernel
+(`exp`, `powf`, `ln`, `sin`, …) is a deliberate decision: add its
+symbol and call sites to the ledger, per pixel or once per call, and to
+the list in `docs/ffi.md` §6, which CI does not compare and is kept in
+step by hand.
+
+`ndarray` carries a hazard of the same kind: its 2-D `.dot()` and
+`general_mat_mul` run `matrixmultiply`'s sgemm, which picks an FMA
+kernel at run time on a CPU that has one, so
+`scripts/determinism-guards.sh` forbids both in `src/`.
 
 Every dependency that links into the library is permissively licensed
 and GPLv3-compatible. Of the 36 such crates (build and runtime,
@@ -222,10 +253,12 @@ The crate version in `Cargo.toml` and the wheel version in
 `pyproject.toml` are always identical, and CI enforces the match. Bump
 both, and `Cargo.lock`, in one commit.
 
-Before tagging, verify the CUDA backend on a machine that has a device:
+Before tagging, verify the CUDA backend on a machine that has a device,
+with a current `maturin develop --release --features cuda` build in
+`.phaios-venv` so the Python step cannot be skipped:
 
 ```sh
-./scripts/gpu-verify.sh
+PHAIOS_REQUIRE_GPU=1 ./scripts/gpu-verify.sh
 ```
 
 Neither `ci.yml` nor `release.yml` builds `--features cuda`, because the
@@ -271,13 +304,83 @@ something a contributor with a device does locally:
 ./scripts/gpu-verify.sh
 ```
 
-It runs the targets CI skips, under `PHAIOS_REQUIRE_GPU=1` so a green
-result cannot mean the suite quietly skipped for want of a device, and
-prints a device/driver/version block at the end. What it runs, step by
-step, is in [docs/gpu.md](docs/gpu.md#verifying-on-your-gpu). Reporting
-that block on an issue adds a row to the confirmed-device table in
+It runs the targets CI skips, with the conformance suite under
+`PHAIOS_REQUIRE_GPU=1` so a green result cannot mean the suite quietly
+skipped for want of a device, and prints a block at the end with the
+device, driver, backend fingerprint and full nvcc release. It keeps the
+driver's JIT cache in `.cache/cuda-jit` unless `CUDA_CACHE_PATH` is
+already set. Its PTX audit prints each file's precision counts and
+fails if any PTX in the build the tests used came from another nvcc
+than the one it finds now: after a toolkit change cargo could not see,
+run `touch src/cuda/ptx`, which makes `build.rs` re-run in every
+profile and under maturin. Its Python step runs against `.phaios-venv`
+and needs a CUDA build installed there (`maturin develop --release
+--features cuda`). Without `.phaios-venv`, without `phaios_core` in it,
+or with a CPU-only build that has no `gpu` submodule, the step is
+skipped and the block says so; a `phaios_core` that fails to import (a
+broken build) or a CUDA build whose fingerprint differs from the
+tree's fails the run. For a report or a release check, run it as
+`PHAIOS_REQUIRE_GPU=1 ./scripts/gpu-verify.sh`: with the variable set
+to any value, every skip is a failure. What it runs, step by step, is
+in [docs/gpu.md](docs/gpu.md#verifying-on-your-gpu). Reporting that
+block on an issue adds a row to the confirmed-device table in
 [docs/gpu.md](docs/gpu.md#confirmed-on-other-gpus).
 
 `examples/23_gpu_selftest.rs` is the same idea at kernel granularity:
 every device entry point against the CPU function that is its
 specification, with the per-kernel tolerances from `docs/ffi.md` §6.
+
+## Checking that a change moved no output bits
+
+`scripts/kernel_digests.py` runs every kernel, plus the README
+pipeline, over fixed test images it generates itself, and writes one
+JSON line per case with the SHA-256 of the output. It then compares two
+such runs case by case. It needs only numpy. Use it whenever a change
+should leave outputs alone (a dependency or toolchain upgrade, a
+refactor, a build flag), and to measure a change that is expected to
+move them: another libm, OS or machine, or the CUDA backend against the
+CPU. The script's docstring is the reference for every option and exit
+code.
+
+```sh
+python scripts/kernel_digests.py selftest
+python scripts/kernel_digests.py run --out .cache/scratch/before.jsonl   # old build
+python scripts/kernel_digests.py run --out .cache/scratch/after.jsonl    # new build
+python scripts/kernel_digests.py compare .cache/scratch/before.jsonl .cache/scratch/after.jsonl --expect-identical
+```
+
+Within one backend, case lines must be byte-identical at any
+`RAYON_NUM_THREADS`; CI checks that at `--size 64`. `compare` exits 1
+when `--expect-identical` finds a difference, and 2 when nothing can be
+compared (for example a run whose setup failed, an empty selection, or
+a case whose input differs between the runs). `--write-ids FILE` saves
+the ids that are not identical and `run --ids FILE` re-runs only those;
+`--label` records free text, such as the commit built, and
+`--extra-channels` adds C = 2 and C = 4 cases.
+
+`--gpu` runs the same cases through `phaios_core.gpu`. With both
+backends run under `--dump DIR`, `compare --dumps DIR_A DIR_B` gives
+element-level detail (differing elements, ULP distances, changed u8 and
+u16 codes). `--expect-bounded` (one CPU and one GPU run) also judges
+each differing case against its kernel's class and (rtol, atol) in
+`docs/ffi.md` §6, and exits 1 on a failure whose id `--allow REGEX`
+does not match:
+
+```sh
+python scripts/kernel_digests.py run --size 256 --dump .cache/scratch/cpu --out .cache/scratch/cpu.jsonl
+python scripts/kernel_digests.py run --size 256 --gpu --cuda-cache "$PWD/.cache/cuda-jit" \
+    --dump .cache/scratch/gpu --out .cache/scratch/gpu.jsonl
+python scripts/kernel_digests.py compare .cache/scratch/cpu.jsonl .cache/scratch/gpu.jsonl \
+    --dumps .cache/scratch/cpu .cache/scratch/gpu --expect-bounded
+```
+
+On the current GPU build this fails on two `hsl_bw` cases, an open
+defect (`docs/ffi.md` §6); `--allow '^hsl_bw/alt1,s=5/(noise|specials)/c3$'`
+sets them aside.
+
+Across backends only the bit-exact kernels should match, and the six
+of them that do arithmetic on a NaN (`exposure`, `luminance_bw`,
+`channel_mixer_bw`, `color_filter_bw`, `resize`, `straighten`) differ
+in NaN payload and sign, because GPU arithmetic yields `0x7fffffff`;
+kernels that pass a NaN through unchanged match. A new kernel adds its
+cases to `catalog()` in the script.

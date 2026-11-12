@@ -177,7 +177,7 @@ kernel per upload does not.
 **No hosted CI runs the GPU suite.** GitHub's runners have neither
 `nvcc` nor a device. The backend is verified by hand with
 `./scripts/gpu-verify.sh`, most recently on an NVIDIA GeForce RTX 5070
-Ti (cc 12.0, driver 620.70.06, nvcc 13.4, rustc 1.99.1, Linux). Build
+Ti (cc 12.0, driver 620.70.06, nvcc 13.4.92, rustc 1.99.1, Linux). Build
 instructions, the agreement classes, measured performance and the table
 of confirmed devices are in
 [docs/gpu.md](https://github.com/sdhdez/phaios-core/blob/main/docs/gpu.md).
@@ -206,10 +206,11 @@ backend has a name: the CPU target triple, or `GpuContext.fingerprint`.
 A consumer that promises exact reproduction should record it beside the
 parameters. Most kernels free of transcendentals are bit-exact across
 CPU and GPU as well; a few GPU kernels are compiled with FMA or fast
-math for speed and stay within one 8-bit code on every image measured
-instead; a driver update can move their last bits, and those of the
-libdevice `cbrtf` in `split_toning`. The full
-contract is
+math for speed and stay within one 8-bit code on every finite test
+image instead (two open defects, in `hsl_bw` and in three-channel
+`denoise`, break that next to extreme values: docs/ffi.md section 6);
+a driver update can move their last bits, and those of the libdevice
+`cbrtf` in `split_toning`. The full contract is
 [docs/ffi.md](https://github.com/sdhdez/phaios-core/blob/main/docs/ffi.md)
 section 6.
 

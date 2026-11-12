@@ -145,12 +145,17 @@ is a reduction rather than a stage.
   fast math saved 23 % (0.1 ms), but its error grew with
   input × amount / feather, so no fixed bound held. `tone_curve` pins
   its affine step to the CPU's two roundings, so its `power == 1` path
-  stays bit-exact unless an input or the affine result is subnormal. The kernels in docs/ffi.md §6's
-  bit-exact list are bit-exact across backends; the others stay within
-  one 8-bit code of the CPU on every image measured. The build removes
-  `NVCC_APPEND_FLAGS`, `NVCC_PREPEND_FLAGS`, `CUDAFE_FLAGS`, `INCLUDES`,
-  `PTXAS_FLAGS` and `LIBRARIES` from nvcc's environment, so a
-  developer's shell cannot change the PTX.
+  stays bit-exact unless an input or the affine result is subnormal. The
+  kernels in docs/ffi.md §6's bit-exact list are bit-exact across
+  backends, NaN payload and sign aside; the others stay within one 8-bit
+  code of the CPU on every finite test image. Two open defects of the
+  current GPU build break that: `hsl_bw` misses its bound by up to 2.1×
+  on finite noise under ±1 hue weights, and by the full range next to
+  ±inf or very large values; `denoise` at `C == 3` differs by the full
+  range next to a value above about 1e12 (docs/ffi.md §6). The build
+  removes `NVCC_APPEND_FLAGS`, `NVCC_PREPEND_FLAGS`, `CUDAFE_FLAGS`,
+  `INCLUDES`, `SYSTEM_INCLUDES`, `PTXAS_FLAGS` and `LIBRARIES` from
+  nvcc's environment, so a developer's shell cannot change the PTX.
 - New `PhaiosError::Backend`, mapped to Python `RuntimeError`. A
   missing GPU is an environment condition, not a bad argument.
   Source-breaking for Rust consumers matching `PhaiosError`
@@ -175,10 +180,43 @@ is a reduction rather than a stage.
   dev-dependency `proptest`, fixed seed, no regressions file written.
 - `scripts/gpu-verify.sh`: the half of CI that a hosted runner cannot
   do, under `PHAIOS_REQUIRE_GPU=1` so a green result cannot mean the
-  CUDA tests were quietly skipped. It prints a device, driver and
-  version block to paste into an issue.
-  `.github/workflows/gpu.yml` invokes the same script on a self-hosted
-  runner.
+  CUDA tests were quietly skipped. It keeps the driver's JIT cache in
+  `.cache/cuda-jit` unless `CUDA_CACHE_PATH` is set. It prints a PTX
+  audit (each file's precision mode and its FMA, approximate,
+  flush-to-zero and unpinned float instruction counts), which fails if
+  any PTX came from another nvcc than the one found now, and, to paste
+  into an issue, a block with the device, driver, backend fingerprint
+  and full nvcc release. Its Python step is skipped without
+  `.phaios-venv`, without `phaios_core` in it or with a CPU-only build,
+  and fails when `phaios_core` does not import or its fingerprint
+  differs from the tree's; with `PHAIOS_REQUIRE_GPU` set by the caller,
+  to any value, every skip is a failure. `.github/workflows/gpu.yml`
+  invokes the same script on a self-hosted runner.
+- `scripts/determinism-guards.sh`, run by CI and by the release gate:
+  fails on `mul_add`, `algebraic_*`, `#[target_feature]`, runtime CPU
+  detection (`is_*_feature_detected!`), SIMD intrinsics (`std::arch`,
+  `core::arch`) and ndarray matrix products (`.dot(`,
+  `general_mat_mul`, whose sgemm picks an FMA kernel at run time) in
+  the Rust of `src/`, and on `target-cpu` or `target-feature` in cargo
+  config, workflows and `pyproject.toml`. Each wheel therefore computes
+  at its target's fixed default CPU (baseline x86-64 on Linux, x86-64
+  plus SSE3 and cmpxchg16b on Windows, Apple M1 on macOS), with no
+  per-machine dispatch. It skips only lines whose first non-blank
+  characters are `//`, as does CI's check for implicit state in
+  `src/cuda/`.
+- `tests/libm-imports.txt` and `scripts/libm-inventory.sh`, run by CI
+  and by the release gate: the ledger of every function the extension
+  imports from the platform libm, with the kernels that reach it, per
+  pixel or once per call. CI fails on Linux when the set of imports
+  changes.
+- `scripts/kernel_digests.py` (numpy only): digests every kernel's
+  output over generated test images, on either backend, and compares
+  two runs case by case, down to ULP distances and changed u8 and u16
+  codes. It shows whether a dependency, toolchain or platform change
+  moved any output bit, and `compare --expect-bounded` judges a CPU and
+  a GPU run against each kernel's class and (rtol, atol) in
+  docs/ffi.md §6. CI runs its self-test and checks that a 64×64 run
+  does not depend on the thread count.
 - `examples/23_gpu_selftest.rs`: every device entry point against the
   CPU function that is its specification, with the committed
   tolerances.
@@ -231,12 +269,16 @@ is a reduction rather than a stage.
   `GpuContext.fingerprint` is now
   `cuda/<device>/cc<maj>.<min>/ptx-compute_80/nvcc-<maj>.<min>.<patch>`,
   for example
-  `cuda/NVIDIA GeForce RTX 5070 Ti/cc12.0/ptx-compute_80/nvcc-13.4.59`.
+  `cuda/NVIDIA GeForce RTX 5070 Ti/cc12.0/ptx-compute_80/nvcc-13.4.92`.
   The PTX is not committed and is rebuilt by whatever toolkit is
   present, and the bounded kernels inline toolkit code that changes
   between toolkits (libdevice `cbrtf` in `split_toning`, `logf`/`cosf`
   in `film_grain`, nvcc's fast-math intrinsics), so the toolkit is part of the backend's identity. A
-  consumer that records a fingerprint must re-record it.
+  consumer that records a fingerprint must re-record it. `build.rs`
+  re-runs when that nvcc, or its toolkit's libdevice, changes on disk,
+  so an in-place toolkit upgrade refreshes the PTX and the fingerprint
+  together; what cargo cannot see is listed at `watch_toolkit` in
+  `build.rs`, and `touch src/cuda/ptx` forces the rebuild then.
 - **`local_contrast` is 2.5x faster and uses 3.5x less memory.** The
   summed-area tables are built in two parallel passes instead of one
   single-threaded pass, and intermediates are released as soon as they

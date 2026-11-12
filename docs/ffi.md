@@ -200,7 +200,9 @@ they are structural rather than incidental:
   `tests/cuda_conformance.rs` pins this for `hsl_bw`, which is the
   trickiest of them (an all-infinite pixel makes `delta = ∞ − ∞ = NaN`,
   and NaN fails every comparison — so the neutral guard must be written
-  as a positive test, or one backend falls through it).
+  as a positive test, or one backend falls through it). The current GPU
+  build has an open defect here: on a pixel with a channel at ±inf or
+  of very large magnitude, `hsl_bw` can differ by the full range (§6).
 - *`local_contrast` does not, and cannot cheaply.* The CPU computes its
   box filters from global f64 summed-area tables, so one non-finite
   sample enters every prefix at or after its position and `∞ − ∞ = NaN`
@@ -263,8 +265,9 @@ Caller guarantees:
 - The dtype must be native-endian `float32`, and each array argument
   must have the number of dimensions its binding declares. Anything
   else is a `TypeError` raised by rust-numpy while it extracts the
-  argument, before the kernel runs: `type mismatch: from=float64,
-  to=float32`, or `dimensionality mismatch: from=2, to=3`.
+  argument, before the kernel runs. The message spans two lines:
+  `type mismatch:\n from=float64, to=float32`, or
+  `dimensionality mismatch:\n from=2, to=3`.
 
 The caller does *not* have to make the array contiguous. Kernels use
 `ndarray::Zip`, which walks any layout; `.ascontiguousarray()` before a
@@ -472,16 +475,38 @@ never be relaxed.
 **Across backends**, output is *bounded*, not identical — and this was
 never achievable, GPU or no GPU. IEEE-754 standardises `+ − × ÷ √` and
 requires correct rounding; it standardises **no** transcendental. The
-CPU kernels do not implement `exp`, `pow`, `log`, `cos` or `cbrt` —
-`nm -D` on the built extension shows them resolving to the platform
-libm, and the published wheels link three different libms (glibc,
-Windows UCRT, Apple's). Two CPU machines with different libms already
-disagree in the low bits. The CUDA backend adds one more math library
-to that list, not a new category of problem. On top of that, the CUDA
-backend gives up exactness on purpose where it pays: the files compiled
-with FMA or fast math trade a few ULP (at most 24 measured, in
-`tone_curve`'s powf) for up to half their run time,
-and stay within one 8-bit code of the CPU on every image measured.
+CPU kernels do not implement their transcendentals either: the built
+extension imports `powf`, `expf`, `exp2f`, `logf`, `log2f`, `cosf`,
+and f64 `exp` and `sincos`, from the platform libm, and the published
+wheels link three different libms (glibc, Windows UCRT, Apple's).
+Per pixel they serve `encode_srgb`, `tone_curve` at `power != 1`,
+`zone_system`, `hsl_bw` and `film_grain`; once per call, on the host,
+`exposure`'s gain, `straighten`'s angle, and the Gaussian taps of
+`blur` below σ = 6, and so of `glow` and `sharpen`.
+`tests/libm-imports.txt` names the call sites, and
+`scripts/libm-inventory.sh` fails CI when the set changes.
+`split_toning`'s cube root is not among them on Linux x86-64, where
+this was checked: Rust compiles its own `cbrtf`, from
+compiler-builtins, into the extension. On the macOS and Windows wheels
+this is unverified, and Rust documents `f32::cbrt` as libc's `cbrtf`.
+Two CPU machines with different libms can disagree in the low bits.
+The CUDA backend adds one more math library to that list, not a new
+category of problem. On top of that, the CUDA backend gives up
+exactness on purpose where it pays: the files compiled with FMA or
+fast math trade some ULP for up to half their run time. On the test
+images that is about 100 ULP at most on normal outputs (90 in
+`tone_curve`'s `powf`, 101 in `hsl_bw` where strong hue weights halve
+a pixel); where a result cancels towards zero, as `hsl_bw`'s does
+under ±1 weights, the count runs to millions (3.2 million on the ramp
+image) at an absolute error below 2e-7. Every bounded kernel stays
+within one 8-bit code of the CPU on every finite test image. The
+current GPU build has two open defects. `hsl_bw` misses its bound: by
+up to 2.1× on finite noise under alternating ±1 hue weights at
+σ = 5° (still within one 16-bit code), and by the full range on a
+pixel with a channel at ±inf or of very large magnitude (measured at
+−1e30, and within a factor of about 4 of `FLT_MAX`). `denoise` at
+`C == 3`, its cross-guided path, differs by the full range next to a
+value above about 1e12 among ordinary ones.
 
 What is promised across backends. The four classes below are summarised
 once, as a table of kernels per class, in
@@ -489,23 +514,28 @@ once, as a table of kernels per class, in
 and says why each kernel sits where it does.
 
 **Bit-exact between CPU and CUDA.** These kernels contain no
-transcendental, and every operation in them is correctly rounded on
+per-pixel transcendental (any they have is one host-side scalar both
+backends share), and every operation in them is correctly rounded on
 both sides: Rust does not contract `a*b+c` into an FMA, their files are
 compiled strict (no FMA contraction, IEEE division and square root), and
 `tone_curve`, compiled with fast math, pins its affine step to the CPU's
 two roundings in the source. Strict and free of transcendentals is not
 enough on its own: `blur`, `glow` and `sharpen` are both, yet bounded,
 because the device reformulates the algorithm. The list decides, not a
-rule.
+rule. NaN bits are the one exception: where a GPU kernel computes on a
+NaN, the NaN comes back as `0x7fffffff` whatever its payload and sign,
+while the CPU propagates the input's bits. On the digest test images
+that is the only difference for `exposure`, `luminance_bw`,
+`channel_mixer_bw`, `color_filter_bw`, `resize` and `straighten`.
 
 | Kernel | Why it is exact |
 |---|---|
-| `exposure`, `luminance_bw`, `channel_mixer_bw`, `color_filter_bw`, `vignette` | multiplies and adds only, plus `vignette`'s divisions and square root, which IEEE-754 also rounds correctly |
+| `exposure`, `luminance_bw`, `channel_mixer_bw`, `color_filter_bw`, `vignette` | multiplies and adds only, plus `vignette`'s divisions and square root, which IEEE-754 also rounds correctly. `exposure`'s gain `2^stops` is one host-side `exp2f` from the platform libm, shared by both backends |
 | `tone_curve` at `power == 1`, unless an input or the affine result is subnormal | the power branch is skipped and the affine step is pinned to the CPU's two roundings |
 | every identity fast path | the input is returned or copied |
 | `film_grain`'s integer hash | integer arithmetic, asserted over 2²⁰ coordinates |
 | `crop`, `orient` | pure index permutations, no arithmetic on pixel values |
-| `resize`, `straighten` | polynomial filters; `straighten`'s sin/cos is computed once on the host and shared |
+| `resize`, `straighten` | polynomial filters; `straighten`'s sin/cos is one host-side `sincos` from the platform libm, computed once and shared by both backends |
 | `hot_pixels` | a fixed 19-comparator median-of-9 sorting network: comparisons and selection only, plus one subtraction and its comparison against the threshold. `f32::min`/`max` and CUDA's `fminf`/`fmaxf` both implement IEEE-754-2008 `minNum`/`maxNum`, so a NaN in the window cannot change *which* operations run, only the values inside them. Confirmed on hardware by `hot_pixels_agrees_bit_for_bit_on_nan_and_inf_input` |
 | `highlight_rolloff` | a quadratic solve; IEEE-754-2008 §5.4.1 requires `sqrt` to be correctly rounded, as it does the four arithmetic operations |
 | `shadow_rolloff` | a cubic in Horner form: multiply, add, subtract, one divide |
@@ -514,14 +544,15 @@ rule.
 | `quantize_u8`, `quantize_u16` | exact integer hashing for the dither, and `floor(v + 0.5)` for the rounding: an exact operation composed with a correctly-rounded one, rather than a library rounding routine host and device could implement differently |
 
 **Bounded, not identical.** Each bound is committed per kernel and
-asserted against the CPU oracle by `tests/cuda_conformance.rs`. A driver
+asserted against the CPU oracle by `tests/cuda_conformance.rs`, which
+does not yet cover the two open defects above. A driver
 or toolkit update that regresses accuracy fails the suite rather than
 being absorbed.
 
 | Kernel | rtol | atol | Why |
 |---|---|---|---|
 | `encode_srgb`, `tone_curve` at `power != 1`, `hsl_bw`, `zone_system` | 1e-5 | 1e-7 | a small fixed number of `powf`/`expf`/`log2f` calls per pixel, the GPU side compiled with fast math: approximate `ex2`/`lg2`, approximate division, FMA contraction. `hsl_bw`'s neutral pixels skip the hue weights but not the contracted dot product, so they are not exact any more |
-| `split_toning` | 1e-5 | 1e-7 | one `cbrtf` per pixel, from two different math libraries (compiled strict; libdevice `cbrtf` on the GPU) |
+| `split_toning` | 1e-5 | 1e-7 | one cube root per pixel, from two different implementations: on the CPU Rust's own `cbrtf`, compiled into the extension on Linux x86-64 (unverified on the macOS and Windows wheels, which may call the platform libm's), and libdevice `cbrtf` on the GPU (compiled strict) |
 | `blur` | 1e-5 | 1e-7 | the direct path substitutes Kahan-compensated f32 for the CPU's f64, sound there because every weight is positive and nothing is subtracted; the box path keeps f64 on both sides, a sliding window being a subtraction |
 | `glow` | 1e-5 | 1e-7 | inherits `blur`'s bound: the threshold subtraction and the weighted add either side are correctly rounded, so the blur is the only inexact part |
 | `sharpen` | 1e-5 | 1e-7 | the same shared blur, and the subtract/gate/combine pass after it is free of transcendentals |
@@ -538,7 +569,7 @@ at power 0.3 gives 1e-12 on the CPU and 0.0 on the GPU, far below one
 `encode_srgb` return NaN where the CPU does, though NaN payload and
 sign bits may differ; `tone_curve` clamps NaN and −inf to 0 on both
 backends; ±inf comes out where the CPU returns it. `hsl_bw` agrees on
-them to the bit (§1).
+them to the bit (§1), except where its open defect above applies.
 
 `denoise`'s worst measured ratios, on the strict build before
 `local_contrast` and `denoise` moved to FMA, were 0.0022x (`C = 1`,

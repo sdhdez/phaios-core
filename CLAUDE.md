@@ -47,11 +47,12 @@ implementing.
 - **Determinism is per backend.** Bit-identical within a backend and
   driver (any thread count, any launch geometry), bounded across —
   `docs/ffi.md` §6. The kernels in §6's bit-exact list are bit-exact
-  even across; the files compiled with FMA or fast math (`build.rs`,
-  `PRECISION`) trade some exactness for speed, and a driver update may
-  move their last bits and those of `split_toning`'s libdevice `cbrtf`.
-  A new CUDA file picks its mode in `PRECISION`, from a measurement. Any
-  kernel using randomness takes an explicit `seed: u64`. No global RNG.
+  even across (NaN payloads aside); the files compiled with FMA or fast
+  math (`build.rs`, `PRECISION`) trade some exactness for speed, and a
+  driver update may move their last bits and those of `split_toning`'s
+  libdevice `cbrtf`. A new CUDA file picks its mode in `PRECISION`, from
+  a measurement. Any kernel using randomness takes an explicit
+  `seed: u64`. No global RNG.
   A GPU port must reproduce the *integer* part of a noise scheme
   bit-for-bit.
 - **The CPU implementation is the specification.** Every GPU kernel is
@@ -154,8 +155,9 @@ tutorials you may have seen:
   honours it and the crate keeps it. Test error *values* in Rust and
   exception *types* from `tests/ffi.py` — and there use
   `pytest.raises(Exception)`: under numpy 0.30 a wrong dtype or number
-  of dimensions is a `TypeError` (`type mismatch: from=float64,
-  to=float32`), but the type has varied across rust-numpy versions.
+  of dimensions is a `TypeError` (`type mismatch:\n from=float64,
+  to=float32` or `dimensionality mismatch:\n from=2, to=3`), but the
+  type has varied across rust-numpy versions.
 - **Fixed-size arrays cross the boundary:** `[f32; 8]` works as a
   `#[pyo3(get, set)]` field and a `#[new]` argument.
 - **`#[pyo3(signature = ...)]` gives keyword defaults** on `#[new]`;
