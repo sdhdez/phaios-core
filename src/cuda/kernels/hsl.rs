@@ -16,10 +16,13 @@ const PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/hsl_bw.ptx"));
 ///
 /// Mirrors [`crate::bw::hsl_bw`] line for line — hexagonal hue, chroma
 /// ratio, circular band distance, fixed-order eight-term Gaussian sum.
-/// The file is compiled with fast math (approximate `expf` and
-/// division, FMA contraction), so agreement is bounded (rtol 1e-5, atol
+/// The file is compiled with fast math (approximate `expf` and band
+/// divisions, FMA contraction), so agreement is bounded (rtol 1e-5, atol
 /// 1e-7) on every pixel, neutral ones included: their hue weights drop
-/// out, but the base dot product is contracted.
+/// out, but the base dot product is contracted. The hue and chroma
+/// divisions are correctly rounded in the source (`__fdiv_rn`), as on
+/// the CPU; approximated, they broke the bound under opposing band
+/// weights and next to `FLT_MAX`, `-1e30` or `-inf`.
 ///
 /// # Errors
 /// Same [`PhaiosError::Shape`] / [`PhaiosError::Parameter`] as the CPU

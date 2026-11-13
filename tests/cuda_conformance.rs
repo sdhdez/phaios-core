@@ -600,6 +600,59 @@ fn hsl_bw_agrees_within_expf_bound() {
     );
 }
 
+/// Opposing band weights at a narrow sigma are hsl_bw's hardest finite
+/// case: `1 + m·chroma` cancels towards 0, and the 5° Gaussian turns a
+/// one-ULP change of the hue into a large change of `m`. With fast
+/// math's approximate hue division the GPU missed the bound (1.92× on
+/// this image, 2.1× on larger noise); with the hue and chroma divisions
+/// correctly rounded in hsl_bw.cu it holds (measured 0.28×).
+///
+/// The extreme pixels are compared to the bit, like the non-finite ones
+/// in `non_finite_pixels_agree_across_backends`. The approximate
+/// division returns 0 for a divisor of 2^126 or more and 1 + 2^-23 for
+/// `x / x`, which made each of them a full-range difference (CPU 0, GPU
+/// up to 2.4e38 or inf).
+#[test]
+fn hsl_bw_agrees_under_opposing_weights_and_on_extreme_pixels() {
+    use phaios_core::bw::{HslWeightedParams, LuminanceStandard};
+
+    let Some(ctx) = try_context() else { return };
+    let opposing = HslWeightedParams::new(
+        [1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0],
+        LuminanceStandard::Bt709,
+        5.0,
+    );
+    let img = pseudo_random_image(257, 389, 3);
+    let cpu = phaios_core::bw::hsl_bw(img.view(), &opposing).unwrap();
+    let gpu = cuda::kernels::hsl_bw(&ctx, img.view(), &opposing).unwrap();
+    let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+    eprintln!("hsl_bw, alternating ±1 weights at sigma 5: worst {v:.4}x the bound");
+    assert!(
+        v <= 1.0,
+        "hsl_bw, alternating ±1 weights at sigma 5: {v:.2}x the (1e-5, 1e-7) bound"
+    );
+
+    let flat = HslWeightedParams::new([0.2; 8], LuminanceStandard::Bt709, 30.0);
+    for params in [&opposing, &flat] {
+        for px in [
+            [0.357_803_05_f32, f32::MAX, 0.192_986_37],
+            [0.615_109_5, 0.915_019_8, f32::MAX],
+            [f32::NEG_INFINITY, 0.467_498_96, 0.0],
+            [0.0, 0.843_958, -1.0e30],
+        ] {
+            let one = ndarray::array![[[px[0], px[1], px[2]]]];
+            let cpu = phaios_core::bw::hsl_bw(one.view(), params).unwrap()[[0, 0, 0]];
+            let gpu = cuda::kernels::hsl_bw(&ctx, one.view(), params).unwrap()[[0, 0, 0]];
+            assert_eq!(
+                cpu.to_bits(),
+                gpu.to_bits(),
+                "hsl_bw {px:?} at sigma {}: CPU {cpu:e}, GPU {gpu:e}",
+                params.sigma_deg
+            );
+        }
+    }
+}
+
 /// zone_system: log2f/expf/powf bound the general case; the empty-map
 /// identity is bit-exact (device copy, as the CPU assigns through).
 #[test]

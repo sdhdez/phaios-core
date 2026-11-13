@@ -210,6 +210,20 @@ mod precision_tests {
         assert!(ops.contains(&"add.rn.ftz.f32"), "{ops:?}");
     }
 
+    /// hsl_bw's three hue quotients and its chroma ratio are correctly
+    /// rounded in the source (`__fdiv_rn`). Approximated, they broke the
+    /// bound near cancelling band weights and turned a pixel next to
+    /// `FLT_MAX`, `-1e30` or `-inf` into a full-range difference.
+    #[test]
+    fn hsl_bw_rounds_its_hue_and_chroma_divisions() {
+        let (_, ptx) = FAST.iter().find(|(n, _)| *n == "hsl_bw").unwrap();
+        let exact = opcodes(ptx).filter(|op| op.starts_with("div.rn.")).count();
+        assert!(
+            exact >= 4,
+            "hsl_bw.ptx: {exact} correctly rounded divisions, not 4"
+        );
+    }
+
     #[test]
     fn every_cu_file_is_covered() {
         let covered = STRICT.len() + FMA.len() + FAST.len();
