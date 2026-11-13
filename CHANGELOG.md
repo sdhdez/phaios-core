@@ -195,7 +195,8 @@ is a reduction rather than a stage.
   and fails when `phaios_core` does not import or its fingerprint
   differs from the tree's; with `PHAIOS_REQUIRE_GPU` set by the caller,
   to any value, every skip is a failure. `.github/workflows/gpu.yml`
-  invokes the same script on a self-hosted runner.
+  invokes the same script on a self-hosted runner, when started by
+  hand.
 - `scripts/determinism-guards.sh`, run by CI and by the release gate:
   fails on `mul_add`, `algebraic_*`, `#[target_feature]`, runtime CPU
   detection (`is_*_feature_detected!`), SIMD intrinsics (`std::arch`,
@@ -247,6 +248,21 @@ is a reduction rather than a stage.
 - A `verify` gate on `release.yml`: the tag must match the version in
   `Cargo.toml` and `pyproject.toml`, and fmt, clippy and the tests must
   pass on the tagged commit, before anything is built or published.
+- Every artefact is installed and tested before it is published.
+  `.github/workflows/wheels.yml` builds the three wheels and the sdist,
+  installs each wheel into a new virtual environment on its own OS
+  under Python 3.12 and 3.15 (and the Linux wheel under 3.12 with numpy
+  1.26), and runs `scripts/wheel-smoke.sh` there: numpy must arrive
+  through the wheel's own metadata, the stubs must be installed, a
+  kernel must give the exact result, the CPU wheel must have no `gpu`
+  submodule, and `tests/ffi.py` must pass against the installed
+  package. The sdist must contain exactly the files `cargo package`
+  lists and must build from source with `--locked`. Each wheel's SBOM
+  is checked against `cargo metadata`. `release.yml` publishes only
+  when all of it passed, PyPI first and crates.io after. On a push or
+  pull request that changes the packaging, the same workflow runs as a
+  rehearsal. The six cells on the newest numpy also upload the kernel
+  digests of the published build on their platform.
 
 ### Changed
 
@@ -257,6 +273,20 @@ is a reduction rather than a stage.
   covered (README "Install"). Building from source on free-threaded
   3.13t, which 0.1.x's PyO3 0.28 allowed, now fails: PyO3 supports
   free-threaded CPython from 3.14 only.
+- **The module declares that it needs the GIL**
+  (`#[pymodule(gil_used = true)]`). Under PyO3 0.30 a module declares
+  the opposite unless told otherwise. On free-threaded 3.14t and 3.15t,
+  which build from source, importing `phaios_core` now re-enables the
+  GIL, with a `RuntimeWarning`, until the kernels have been reviewed
+  for free threading. The `abi3` wheels are unaffected: the 3.12 stable
+  ABI they are built against has no such declaration.
+- **Wheel metadata follows PEP 639 and carries an SBOM.** The licence is
+  the SPDX expression `License-Expression: GPL-3.0-or-later`
+  (Metadata-Version 2.4), with `LICENSE` in `.dist-info/licenses/`; the
+  licence classifier is gone. Each wheel carries maturin's CycloneDX
+  SBOM of the Rust crates it links (PEP 770) in `.dist-info/sboms/`.
+  Building from source needs maturin 1.12 or later (was 1.7), the
+  first release that writes the SBOM.
 - **Built against PyO3 0.30 and rust-numpy 0.30**, up from 0.28 in
   0.1.x. No Python signature or default changed. Two things a caller
   can see:
@@ -309,8 +339,19 @@ is a reduction rather than a stage.
   the six v0.1 kernels. Figures before and after are not comparable.
 - CI lints with `--all-targets` and discovers examples from cargo
   metadata rather than a hardcoded list.
-- `mypy>=1.18` added to `requirements-dev.txt`. Dev-only; the crate
-  gains no new dependency.
+- The workflows are hardened. Each action is pinned to a commit SHA,
+  each job is granted only the permissions it needs, no checkout keeps
+  its token, every cargo command that resolves dependencies passes
+  `--locked` (in `scripts/gpu-verify.sh` too), maturin (1.16.0) and
+  cargo-audit (0.23.0) are pinned, every job that runs steps has a
+  timeout, and a newer CI run cancels an older one on the same branch.
+  The release tag filter now matches `vMAJOR.MINOR.PATCH` only, so a
+  pre-release tag publishes nothing. `gpu.yml` runs only when started by hand: no
+  self-hosted CUDA runner exists, and its push and pull-request
+  triggers queued jobs that never ran.
+- `mypy>=2.4` added to `requirements-dev.txt`, whose maturin floor is
+  raised to 1.12 like `pyproject.toml`'s. Dev-only; the crate gains no
+  new dependency.
 - Minimum Rust is declared as 1.88.
 
 ### Fixed
@@ -321,6 +362,13 @@ is a reduction rather than a stage.
   declared. `[project]` also declared no `readme`, so the PyPI page
   would have been blank; `readme = "README.md"` fixes it. Added the
   Python 3 / 3.12 / 3.13 / 3.14 / 3.15 classifiers.
+- **Without numpy, `import phaios_core` raises `ImportError`.** An
+  environment that still lacks numpy (`pip install --no-deps`, a
+  vendored copy) imported the module without complaint, and the first
+  kernel call raised `PanicException`, which `except Exception:` does
+  not catch. The module now imports numpy as it initialises, so the
+  import itself fails with `ModuleNotFoundError: No module named
+  'numpy'`.
 - **A borrowed input array raised `PanicException`.** An input that
   another rust-numpy extension held mutably borrowed through rust-numpy's
   cross-extension borrow tracking panicked on extraction, because

@@ -181,7 +181,8 @@ Every new dependency is a supply-chain decision. Ask before adding one.
   downloads, active maintenance, and use by at least one major project.
 - **`cargo audit`** is blocking in CI. It is a separate binary, so a
   fresh clone will not have the command: install it with
-  `cargo install cargo-audit --locked`, which is exactly what CI runs.
+  `cargo install cargo-audit --version 0.23.0 --locked`, which is
+  exactly what CI runs.
 
 Core dependencies, not to be exceeded without justification: `pyo3`,
 `numpy`, `ndarray`, `rayon`, `thiserror`, plus `cudarc` behind
@@ -247,6 +248,44 @@ Two version traps:
 - The crate and the Python wheel always carry the same version, and CI
   enforces the match.
 
+## CI workflows
+
+`.github/workflows/` holds four: `ci.yml` (every push to `main` and
+every pull request), `wheels.yml` (builds and smoke-tests the
+artefacts a release publishes; on a push or pull request that touches
+the packaging, and from `release.yml`), `release.yml` (version tags)
+and `gpu.yml` (by hand only, on a self-hosted CUDA runner that does not
+exist yet). All four follow the same rules:
+
+- `permissions: {}` at the top, and each job grants itself only what
+  it needs: `contents: read`, and `id-token: write` for the PyPI upload
+  alone.
+- Every `uses:` names a full commit SHA, with the release tag in a
+  comment (`actions/checkout@3d3c42e… # v7.0.1`). To move one, find the
+  new tag's commit with `git ls-remote --tags
+  https://github.com/<owner>/<repo>` (for an annotated tag, the line
+  ending in `^{}`), read the release notes, and change the SHA and the
+  comment together.
+- Every `actions/checkout` sets `persist-credentials: false`, so the
+  job's token is not left in the checkout's git config, where a later
+  step or an uploaded artefact could pick it up.
+- Every cargo command that resolves dependencies passes `--locked`, in
+  the workflows and in `scripts/gpu-verify.sh`: a stale `Cargo.lock`
+  fails rather than being rewritten on the runner.
+- Tools are pinned too: maturin 1.16.0 in `wheels.yml`, cargo-audit
+  0.23.0 in `ci.yml`. The Rust toolchain is `stable` of the day,
+  installed with `rustup`.
+
+`scripts/wheel-smoke.sh` is what `wheels.yml` runs on each wheel and on
+the sdist; it runs locally too, on a wheel from `maturin build`, with
+the virtual environment and uv's cache inside `.cache/`:
+
+```sh
+maturin build --release --locked -o .cache/scratch/dist
+UV_CACHE_DIR=.cache/uv bash scripts/wheel-smoke.sh \
+    .cache/scratch/dist/phaios_core-*.whl 3.12 .cache/venvs/smoke
+```
+
 ## Releasing
 
 The crate version in `Cargo.toml` and the wheel version in
@@ -274,13 +313,23 @@ git tag v0.2.0
 git push origin v0.2.0   # triggers release.yml
 ```
 
-`.github/workflows/release.yml` fires on any `v*` tag and starts with a
-`verify` job: the tag must match both versions in the tree, and
-`cargo fmt`, `cargo clippy --all-targets`, `cargo test` and the
-no-image-assets guard must pass on the tagged commit. Only then does it
-build wheels for manylinux_2_17, Windows x86_64 and macOS arm64, build
-the sdist, and publish to PyPI and crates.io. Nothing is built until
-`verify` is green, because neither registry lets a version be
+`.github/workflows/release.yml` fires only on a tag of the form
+`vMAJOR.MINOR.PATCH`. A pre-release tag such as `v0.2.0-rc1` does not
+match and publishes nothing, so there is no release-candidate step: do
+not push one. The workflow starts with a `verify` job: the tag must
+match both versions in the tree, and `cargo fmt`, `cargo clippy
+--all-targets`, `cargo test`, the libm ledger, the determinism guards
+and the no-image-assets guard must pass on the tagged commit. Only then
+does it call `wheels.yml`, which builds wheels for manylinux_2_17
+x86_64, Windows x86_64 and macOS arm64 and the sdist; installs each
+wheel into a new virtual environment on its own OS, under Python 3.12
+and 3.15 (and on Linux under 3.12 with numpy 1.26, the declared floor),
+and runs `scripts/wheel-smoke.sh` there; builds the sdist from source
+the same way; and checks each wheel's SBOM against `cargo metadata`.
+If every one of those jobs passes, it publishes to PyPI, and only once
+PyPI has succeeded to crates.io. Nothing is built until `verify` is
+green, and nothing is published until every artefact has been
+installed and tested, because neither registry lets a version be
 re-uploaded.
 
 One-time setup, already in place for this repository:

@@ -25,13 +25,17 @@ cargo add phaios-core       # Rust, CPU backend
 ```
 
 The published wheel is `cp312-abi3`: one build serves every CPython
-3.12 or later that has the GIL, and CI tests 3.12 through 3.15.
+3.12 or later that has the GIL. CI tests the bindings on 3.12 through
+3.15, and before every release the very wheels that will be published
+are installed and tested on 3.12 and 3.15 on Linux, Windows and macOS.
 Free-threaded interpreters cannot load an `abi3` wheel, so on 3.14t
 and 3.15t `pip install` compiles the sdist, which needs a Rust
 toolchain, into a version-specific extension that no CI job tests.
-3.13t does not build at all: PyO3 supports free-threaded CPython from
-3.14 only. The stable ABI for free-threaded builds (`abi3t`, PEP 803)
-is not enabled.
+That build declares that it needs the GIL, so importing it re-enables
+the GIL, with a `RuntimeWarning`, until the kernels have been reviewed
+for free threading. 3.13t does not build at all: PyO3 supports
+free-threaded CPython from 3.14 only. The stable ABI for free-threaded
+builds (`abi3t`, PEP 803) is not enabled.
 
 The wheel is CPU-only. The CUDA backend is a source build with
 `--features cuda`, needs `nvcc` at build time and, at run time, an
@@ -235,7 +239,7 @@ the result is unspecified.
   declared `rust-version`.
 - **Python** 3.12 or later; 3.14 is what the crate is developed
   against.
-- **maturin**, installed by `requirements-dev.txt`.
+- **maturin** 1.12 or later, installed by `requirements-dev.txt`.
 - Optional, for `--features cuda`: the CUDA toolkit (`nvcc` compiles
   the kernels to PTX at build time) and an NVIDIA driver that supports
   that toolkit's CUDA version (`nvidia-smi` prints the newest one it

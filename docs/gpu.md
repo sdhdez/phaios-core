@@ -523,8 +523,11 @@ unlike the examples it treats a missing device as an error rather than
 skipping politely.
 
 `.github/workflows/gpu.yml` invokes the same script on a self-hosted
-runner, so the hand-run command and the CI job cannot drift. That job
-creates no `.phaios-venv`, so step 7 is skipped there.
+runner, so the hand-run command and the CI job cannot drift. It runs
+only when started by hand (Actions, GPU, Run workflow, or
+`gh workflow run gpu.yml`): no runner with the `cuda` label exists yet,
+and a job no runner can take only waits in the queue. That job creates
+no `.phaios-venv`, so step 7 is skipped there.
 
 The block it prints last is the one to share:
 

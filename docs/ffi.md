@@ -392,6 +392,13 @@ The rules:
   public kernel through a five-layout matrix — C-contiguous,
   row-strided, column-strided, Fortran-order and reversed — because a
   consumer passing `img[::2, ::2]` is normal usage, not misuse.
+- A missing dependency is an `ImportError`, not a panic. The module
+  imports numpy as it initialises (`src/lib.rs`, the `#[pymodule]`
+  function): rust-numpy resolves its array-API capsule lazily and
+  `expect`s it, so without that import an environment lacking numpy
+  would import `phaios_core` cleanly and raise `PanicException` at the
+  first kernel call. `tests/ffi.py` checks this in a child interpreter
+  with numpy hidden.
 
 ---
 
