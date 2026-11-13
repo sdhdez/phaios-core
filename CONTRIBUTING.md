@@ -374,9 +374,10 @@ python scripts/kernel_digests.py compare .cache/scratch/cpu.jsonl .cache/scratch
     --dumps .cache/scratch/cpu .cache/scratch/gpu --expect-bounded
 ```
 
-On the current GPU build this fails on two `hsl_bw` cases, an open
-defect (`docs/ffi.md` §6); `--allow '^hsl_bw/alt1,s=5/(noise|specials)/c3$'`
-sets them aside.
+At `--size 256` this fails on one case on the current GPU build,
+`sharpen/a=0.5,s=5.9,t=0.02/hdr/c3`: one element at 1.13× the bound,
+an open question about `sharpen`'s bound (`docs/ffi.md` §6).
+`--allow '^sharpen/a=0.5,s=5.9,t=0.02/hdr/c3$'` sets it aside.
 
 Across backends only the bit-exact kernels should match, and the six
 of them that do arithmetic on a NaN (`exposure`, `luminance_bw`,

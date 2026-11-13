@@ -135,24 +135,24 @@ is a reduction rather than a stage.
   per-call forms under `cuda::kernels`.
 - Determinism is scoped to a backend: bit-identical within one (and one
   driver), bounded across, with the bound committed per kernel and
-  asserted by `tests/cuda_conformance.rs` (76 tests, skipped cleanly
+  asserted by `tests/cuda_conformance.rs` (78 tests, skipped cleanly
   without a device; `PHAIOS_REQUIRE_GPU=1` forbids skipping).
 - Each CUDA file is compiled in its own precision mode, chosen from
   measured speed gains (`build.rs`, `PRECISION`; docs/gpu.md, "Precision
   modes"). Fast math for `zone_system`, `hsl_bw`, `encode_srgb` and
   `tone_curve` (13–47 % faster), FMA for `local_contrast` and `denoise`
-  (8–12 %), strict IEEE for the other 15 files. `vignette` stays strict:
+  (5–12 %), strict IEEE for the other 15 files. `vignette` stays strict:
   fast math saved 23 % (0.1 ms), but its error grew with
   input × amount / feather, so no fixed bound held. `tone_curve` pins
   its affine step to the CPU's two roundings, so its `power == 1` path
   stays bit-exact unless an input or the affine result is subnormal. The
   kernels in docs/ffi.md §6's bit-exact list are bit-exact across
   backends, NaN payload and sign aside; the others stay within one 8-bit
-  code of the CPU on every finite test image. Two open defects of the
-  current GPU build break that: `hsl_bw` misses its bound by up to 2.1×
-  on finite noise under ±1 hue weights, and by the full range next to
-  ±inf or very large values; `denoise` at `C == 3` differs by the full
-  range next to a value above about 1e12 (docs/ffi.md §6). The build
+  code of the CPU on every finite test image. `hsl_bw` keeps its hue
+  and chroma divisions correctly rounded, and `denoise` pins `var(I)`,
+  `cov(I, p_c)` and its intercept in `coeff_ab_cross`: approximated or
+  fused, they broke the bound under opposing hue weights, next to
+  `FLT_MAX` or −inf, and beside a sample above about 1e12. The build
   removes `NVCC_APPEND_FLAGS`, `NVCC_PREPEND_FLAGS`, `CUDAFE_FLAGS`,
   `INCLUDES`, `SYSTEM_INCLUDES`, `PTXAS_FLAGS` and `LIBRARIES` from
   nvcc's environment, so a developer's shell cannot change the PTX.

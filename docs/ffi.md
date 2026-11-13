@@ -200,9 +200,7 @@ they are structural rather than incidental:
   `tests/cuda_conformance.rs` pins this for `hsl_bw`, which is the
   trickiest of them (an all-infinite pixel makes `delta = ∞ − ∞ = NaN`,
   and NaN fails every comparison — so the neutral guard must be written
-  as a positive test, or one backend falls through it). The current GPU
-  build has an open defect here: on a pixel with a channel at ±inf or
-  of very large magnitude, `hsl_bw` can differ by the full range (§6).
+  as a positive test, or one backend falls through it).
 - *`local_contrast` does not, and cannot cheaply.* The CPU computes its
   box filters from global f64 summed-area tables, so one non-finite
   sample enters every prefix at or after its position and `∞ − ∞ = NaN`
@@ -493,20 +491,13 @@ Two CPU machines with different libms can disagree in the low bits.
 The CUDA backend adds one more math library to that list, not a new
 category of problem. On top of that, the CUDA backend gives up
 exactness on purpose where it pays: the files compiled with FMA or
-fast math trade some ULP for up to half their run time. On the test
-images that is about 100 ULP at most on normal outputs (90 in
-`tone_curve`'s `powf`, 101 in `hsl_bw` where strong hue weights halve
-a pixel); where a result cancels towards zero, as `hsl_bw`'s does
-under ±1 weights, the count runs to millions (3.2 million on the ramp
-image) at an absolute error below 2e-7. Every bounded kernel stays
-within one 8-bit code of the CPU on every finite test image. The
-current GPU build has two open defects. `hsl_bw` misses its bound: by
-up to 2.1× on finite noise under alternating ±1 hue weights at
-σ = 5° (still within one 16-bit code), and by the full range on a
-pixel with a channel at ±inf or of very large magnitude (measured at
-−1e30, and within a factor of about 4 of `FLT_MAX`). `denoise` at
-`C == 3`, its cross-guided path, differs by the full range next to a
-value above about 1e12 among ordinary ones.
+fast math trade some ULP for up to half their run time. On the digest
+test images that is at most 90 ULP where a result does not cancel
+(`tone_curve`'s `powf`). Where it cancels towards zero, as the guided
+filters' `L + s·(L − q)` and `hsl_bw` under opposing hue weights do,
+the count runs to millions (1.4 million in `denoise` on the ramp image)
+at an absolute error below 1e-6. Every bounded kernel stays within one
+8-bit code of the CPU on every finite test image.
 
 What is promised across backends. The four classes below are summarised
 once, as a table of kernels per class, in
@@ -544,20 +535,19 @@ that is the only difference for `exposure`, `luminance_bw`,
 | `quantize_u8`, `quantize_u16` | exact integer hashing for the dither, and `floor(v + 0.5)` for the rounding: an exact operation composed with a correctly-rounded one, rather than a library rounding routine host and device could implement differently |
 
 **Bounded, not identical.** Each bound is committed per kernel and
-asserted against the CPU oracle by `tests/cuda_conformance.rs`, which
-does not yet cover the two open defects above. A driver
+asserted against the CPU oracle by `tests/cuda_conformance.rs`. A driver
 or toolkit update that regresses accuracy fails the suite rather than
 being absorbed.
 
 | Kernel | rtol | atol | Why |
 |---|---|---|---|
-| `encode_srgb`, `tone_curve` at `power != 1`, `hsl_bw`, `zone_system` | 1e-5 | 1e-7 | a small fixed number of `powf`/`expf`/`log2f` calls per pixel, the GPU side compiled with fast math: approximate `ex2`/`lg2`, approximate division, FMA contraction. `hsl_bw`'s neutral pixels skip the hue weights but not the contracted dot product, so they are not exact any more |
+| `encode_srgb`, `tone_curve` at `power != 1`, `hsl_bw`, `zone_system` | 1e-5 | 1e-7 | a small fixed number of `powf`/`expf`/`log2f` calls per pixel, the GPU side compiled with fast math: approximate `ex2`/`lg2`, approximate division, FMA contraction. `hsl_bw`'s neutral pixels skip the hue weights but not the contracted dot product, so they are not exact any more. Its hue and chroma divisions are correctly rounded (`__fdiv_rn`): approximated, they missed the bound by 2.1× under opposing hue weights and differed by the full range next to `FLT_MAX`, −1e30 or −inf (`hsl_bw_agrees_under_opposing_weights_and_on_extreme_pixels`) |
 | `split_toning` | 1e-5 | 1e-7 | one cube root per pixel, from two different implementations: on the CPU Rust's own `cbrtf`, compiled into the extension on Linux x86-64 (unverified on the macOS and Windows wheels, which may call the platform libm's), and libdevice `cbrtf` on the GPU (compiled strict) |
 | `blur` | 1e-5 | 1e-7 | the direct path substitutes Kahan-compensated f32 for the CPU's f64, sound there because every weight is positive and nothing is subtracted; the box path keeps f64 on both sides, a sliding window being a subtraction |
 | `glow` | 1e-5 | 1e-7 | inherits `blur`'s bound: the threshold subtraction and the weighted add either side are correctly rounded, so the blur is the only inexact part |
-| `sharpen` | 1e-5 | 1e-7 | the same shared blur, and the subtract/gate/combine pass after it is free of transcendentals |
+| `sharpen` | 1e-5 | 1e-7 | the same shared blur, and the subtract/gate/combine pass after it is free of transcendentals. Open: where the output cancels towards zero beside a bright blur, half a one-ULP difference in the blur can exceed this atol. Measured once, on one element: 1.13× (output 5.7e-4 beside a blur of 3.5, the digest harness's HDR image at size 256, sigma 5.9) |
 | `local_contrast` | 1e-4 | 1e-6 | compiled with FMA contraction, and the device reformulates the global f64 summed-area tables as separable box filters. It drops the *global prefix sum*, not the f64: the L and L² partial sums stay f64 because their difference is the variance and that subtraction cancels. The coefficient sums downstream are Kahan-compensated f32, which is enough because nothing there is squared or subtracted |
-| `denoise` | 1e-4 | 1e-6 | compiled with FMA contraction; `local_contrast`'s class, inherited at `C = 1` because it is bit-for-bit the same device kernel (`local_contrast_device` at `strength = -amount`), and confirmed empirically at `C = 3` for the one new cancelling subtraction cross-guided adds, `cov(I, p_c)` |
+| `denoise` | 1e-4 | 1e-6 | compiled with FMA contraction; `local_contrast`'s class, inherited at `C = 1` because it is bit-for-bit the same device kernel (`local_contrast_device` at `strength = -amount`), and confirmed empirically at `C = 3`, where cross-guided adds two cancelling subtractions: `cov(I, p_c)`, and the intercept `b_c = mean(p_c) − a_c·mean(I)`, which next to a sample far above its neighbours cancels a huge product against an O(1) mean. `var(I)`, `cov(I, p_c)` and `b_c` are pinned to the CPU's two roundings (`__dmul_rn`, `__dsub_rn`): fused by the driver, `b_c` kept the product's rounding residue and missed the bound by up to 4e24× from about 1e12 |
 | `film_grain`'s Box–Muller half | 1e-3 | 1e-5 | one `logf`, one `sqrtf` and one `cosf` per sample, the loosest transcendental chain in the crate; the splitmix64 hash underneath is exact and is asserted over a coordinate grid by `hash_grid` |
 
 Fast math flushes subnormal inputs and results to zero, so in the
@@ -569,13 +559,21 @@ at power 0.3 gives 1e-12 on the CPU and 0.0 on the GPU, far below one
 `encode_srgb` return NaN where the CPU does, though NaN payload and
 sign bits may differ; `tone_curve` clamps NaN and −inf to 0 on both
 backends; ±inf comes out where the CPU returns it. `hsl_bw` agrees on
-them to the bit (§1), except where its open defect above applies.
+them to the bit (§1).
 
 `denoise`'s worst measured ratios, on the strict build before
 `local_contrast` and `denoise` moved to FMA, were 0.0022x (`C = 1`,
 unit range), 0.0012x (`C = 1`, HDR), 0.0106x (`C = 3`, unit range) and
 0.0012x (`C = 3`, both HDR sweeps, up to the required 1e8 highlight);
-the FMA build stays within the same bound in the conformance suite. Its
+the FMA build stays within the same bound in the conformance suite.
+Next to one isolated sample far above an ordinary or a dark field, the
+bound is asserted at radius 1, 2 and 4 up to 1e38
+(`denoise_cross_guided_agrees_next_to_an_isolated_extreme_sample`).
+At radius 8 even a strict build misses it between about 1e22 and 1e31.
+That far beyond any photograph the specification is ill-conditioned
+itself: evaluated exactly at radius 1, the CPU's result is 0.8× the
+bound off at 1e13 and 3500× at 1e30.
+Its
 `radius` is capped at `MAX_RADIUS = 32` on both backends, because it
 sums each window directly from its own pixels rather than through a
 summed-area table (architecture.md §22), so cost is linear in `radius`

@@ -173,7 +173,7 @@ from a shared luminance guide when the input has three channels.
 | Output | `(H, W, C)` f32, C-contiguous |
 | Identity | `amount = 0.0` |
 | Order | right after `hot_pixels`, at native resolution |
-| Backends | bounded, rtol 1e-4 / atol 1e-6; CUDA compiled with FMA contraction |
+| Backends | bounded, rtol 1e-4 / atol 1e-6; CUDA compiled with FMA contraction, `var`, `cov` and the intercept pinned at `C = 3` |
 
 **What changes visually.** Flat areas lose their grain-like noise.
 Edges keep their position and their height: the filter is
@@ -385,7 +385,7 @@ circle from eight band centres.
 | Output | `(H, W, 1)` f32, C-contiguous |
 | Identity | all eight weights `0.0` gives the plain `luminance_bw` result |
 | Order | the B&W stage; it needs hue, so it cannot run after the collapse |
-| Backends | bounded, rtol 1e-5 / atol 1e-7, neutral pixels included; CUDA compiled with fast math |
+| Backends | bounded, rtol 1e-5 / atol 1e-7, neutral pixels included; CUDA compiled with fast math, the hue and chroma divisions correctly rounded |
 
 **What changes visually.** A continuously tunable filter set rather
 than one filter. Each of the eight hue bands can be lightened or

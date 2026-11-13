@@ -1948,3 +1948,16 @@ harder case, and the exact construction that diverged by up to
 number that was previously unbounded or diverging now sits three to
 five orders of magnitude under the bound at every radius/noise_sigma/
 highlight combination tested.
+
+One more cancellation needs the device to follow the CPU's roundings.
+Beside one sample far above its neighbours, the intercept
+`b_c = mean(p_c) − a_c·mean(I)` subtracts a huge product from an O(1)
+mean. Fused into an FMA by ptxas or the driver's JIT, it kept the
+product's rounding residue, about 1e-17 of the sample, and missed the
+bound by up to 4e24× from about 1e12. `coeff_ab_cross` therefore pins
+`var(I)`, `cov(I, p_c)` and `b_c` (`__dmul_rn`, `__dsub_rn`): fusing
+`var` or `cov` moves `a_c` by one ULP, which the same cancellation turns
+into a full ULP of `mean(p_c)`. With the pins the bound holds to 1e38 at
+radius 1, 2 and 4
+(`denoise_cross_guided_agrees_next_to_an_isolated_extreme_sample`), for
+about 2 % of the `C = 3` run time.

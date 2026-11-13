@@ -199,8 +199,8 @@ compiled in each mode (2026-11-11, the machine below).
 
 | Mode | nvcc flags | Files | Gain |
 |---|---|---|---|
-| fast math | `--use_fast_math`: FMA contraction, approximate division, square root and `ex2`/`lg2`, subnormal inputs and results flushed to zero | `zone_system`, `hsl_bw`, `encode_srgb`, `tone_curve` | −47 %, −27 %, −14 %, −13 % |
-| FMA | `-fmad=true`, IEEE otherwise | `local_contrast`, `denoise` | −12 % (`C == 1` denoise runs on `local_contrast`'s kernels), −8 % at `C == 3` |
+| fast math | `--use_fast_math`: FMA contraction, approximate division, square root and `ex2`/`lg2`, subnormal inputs and results flushed to zero | `zone_system`, `hsl_bw`, `encode_srgb`, `tone_curve` | −47 %, −21 %, −14 %, −13 % |
+| FMA | `-fmad=true`, IEEE otherwise | `local_contrast`, `denoise` | −12 % (`C == 1` denoise runs on `local_contrast`'s kernels), −5 % at `C == 3` |
 | strict | `-fmad=false -ftz=false -prec-div=true -prec-sqrt=true` | the other 15 files | — |
 
 Fast math reaches only `tone_curve`'s `powf` path: its affine step is
@@ -208,6 +208,17 @@ pinned to the CPU's two roundings (`__fmul_rn`, `__fadd_rn`, which fast
 math never contracts). Fused into one FMA, the step kept a residue
 where the CPU cancels to exactly 0, and `powf` at power < 1 lifted it
 by up to 8 codes at 8 bits.
+
+Two more files pin a few operations the same way. `hsl_bw` computes its
+three hue quotients and its chroma ratio correctly rounded
+(`__fdiv_rn`): approximated, they missed the bound by 2.1× under
+opposing hue weights, and differed by the full range next to
+`FLT_MAX`, −1e30 or −inf. `denoise` pins `var(I)`, `cov(I, p_c)` and the
+intercept `b_c` in `coeff_ab_cross` (`__dmul_rn`, `__dsub_rn`): fused,
+the intercept kept a product's rounding residue and missed the bound by
+up to 4e24× beside a sample above about 1e12. Their −21 % and −5 % are
+measured with the pins, in interleaved runs on 2026-11-12; the pins
+cost 6.6 % and 2.0 % of the kernel.
 
 Strict where the other modes lose or do not pay for their error:
 `vignette` gains 23 % (0.1 ms) under fast math, but its error grows with
@@ -375,6 +386,11 @@ two shapes.
 | `quantize` | 5.7 ms | 3.11 ms | 2x | 1 | `quantize/24MP/u8-plain` |
 | `quantize` | 9.9 ms | not covered | — | 1 | `quantize/24MP/u8-dithered` |
 | `quantize` | 11.1 ms | not covered | — | 1 | `quantize/24MP/u16-dithered` |
+
+The `hsl_bw` and `C = 3` `denoise` GPU rows were measured before those
+files pinned a few operations (2026-11-13, "Precision modes"). In
+interleaved runs the pins cost 6.6 % and 2.0 %, which puts them at
+about 0.56 ms and 37.9 ms.
 
 `C` is the channel count the benchmark runs. Rows marked "not covered"
 have no counterpart in `benches/gpu.rs`: the GPU suite runs one case per

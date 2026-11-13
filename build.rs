@@ -177,12 +177,12 @@ impl Precision {
 const PRECISION: &[(&str, Precision)] = &[
     // Fast: transcendentals and divisions dominate these kernels.
     ("zone_system", Precision::Fast), // −47 %
-    ("hsl_bw", Precision::Fast),      // −27 % (exact on neutral pixels no longer)
+    ("hsl_bw", Precision::Fast),      // −21 %; the .cu rounds its hue and chroma divisions exactly
     ("encode_srgb", Precision::Fast), // −14 %
     ("tone_curve", Precision::Fast),  // −13 %, powf only: the .cu pins the affine step
     // Fma: the guided filters' variance and coefficient chains.
     ("local_contrast", Precision::Fma), // −12 % (also C=1 denoise, which runs on these kernels)
-    ("denoise", Precision::Fma),        // C=3 −8 %, shared with local_contrast
+    ("denoise", Precision::Fma),        // C=3 −5 %; the .cu pins var, cov and the intercept
     // Strict: no mode gains enough to justify the extra error.
     ("vignette", Precision::Strict), // fast: −23 % (0.1 ms), but its error grows with input × amount / feather
     ("blur", Precision::Strict),     // both other modes +20 % on the direct path
