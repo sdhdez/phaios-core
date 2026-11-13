@@ -1,0 +1,383 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The wheels and the sdist that release.yml publishes, built and then
+# installed into clean environments on every platform before anything is
+# uploaded.
+#
+# Triggers:
+#   - workflow_call: release.yml calls this on a version tag, and uploads
+#     the artefacts of this run to PyPI only when every job below passed.
+#   - push to main and pull_request, filtered to the files that change
+#     the packaging: a rehearsal, so that the first Windows or macOS build
+#     of a change is not the one that publishes. A change under src/ alone
+#     does not run it; a release always does.
+#   - workflow_dispatch: a run by hand (Actions, Wheels, Run workflow),
+#     available once this file is on the default branch.
+#
+# Jobs: `linux`, `windows`, `macos` and `sdist` build. `smoke` installs
+# each wheel into a new virtual environment on its own OS, on Python 3.12
+# and 3.15, runs scripts/wheel-smoke.sh, and uploads the kernel digests of
+# that wheel; one more cell installs the Linux wheel on 3.12 with numpy
+# 1.26, the floor pyproject.toml declares. `sdist-smoke` builds the sdist
+# from source in the same way. `sbom` checks each wheel's SBOM against
+# the crate's dependency graph.
+#
+# There is no cache in this file. Its artefacts are published, and a
+# cache is shared with every other workflow run on the branch.
+
+name: Wheels
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - pyproject.toml
+      - Cargo.*
+      - python/**
+      - .github/workflows/wheels.yml
+      - .github/workflows/release.yml
+      - scripts/wheel-smoke.sh
+  pull_request:
+    paths:
+      - pyproject.toml
+      - Cargo.*
+      - python/**
+      - .github/workflows/wheels.yml
+      - .github/workflows/release.yml
+      - scripts/wheel-smoke.sh
+
+# Every job reads the repository and nothing else, and says so itself.
+permissions: {}
+
+jobs:
+  # ── Build ─────────────────────────────────────────────────────────────────
+  #
+  # maturin and the Rust toolchain are named rather than left to the
+  # action's defaults: maturin decides what goes into the wheel (the
+  # metadata, the licence files, the SBOM), and 1.16.0 is the release the
+  # local packaging checks ran with. `stable` is the same toolchain the
+  # tests in ci.yml and release.yml's `verify` use.
+
+  linux:
+    name: Linux wheel (x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          maturin-version: v1.16.0
+          rust-toolchain: stable
+          target: x86_64
+          manylinux: manylinux_2_17
+          args: --release --locked --out dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheels-linux-x86_64
+          path: dist
+          if-no-files-found: error
+
+  windows:
+    name: Windows wheel (x86_64)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          maturin-version: v1.16.0
+          rust-toolchain: stable
+          target: x86_64
+          args: --release --locked --out dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheels-windows-x86_64
+          path: dist
+          if-no-files-found: error
+
+  macos:
+    name: macOS wheel (arm64)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          maturin-version: v1.16.0
+          rust-toolchain: stable
+          target: aarch64
+          args: --release --locked --out dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheels-macos-aarch64
+          path: dist
+          if-no-files-found: error
+
+  # The artefact keeps its old name, wheels-sdist, so that release.yml's
+  # `wheels-*` pattern still collects it with the wheels.
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          maturin-version: v1.16.0
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheels-sdist
+          path: dist
+          if-no-files-found: error
+
+  # ── Install and test what was built ───────────────────────────────────────
+
+  smoke:
+    name: Smoke ${{ matrix.os }}, Python ${{ matrix.python }}, numpy ${{ matrix.numpy }}
+    needs: [linux, windows, macos]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.12", "3.15"]
+        numpy: [latest]
+        include:
+          - os: ubuntu-latest
+            artifact: wheels-linux-x86_64
+          - os: windows-latest
+            artifact: wheels-windows-x86_64
+          - os: macos-latest
+            artifact: wheels-macos-aarch64
+          # A seventh cell rather than a change to the (ubuntu, 3.12)
+          # one: `numpy` differs from the matrix value, so GitHub adds a
+          # combination instead of merging into an existing one.
+          - os: ubuntu-latest
+            python: "3.12"
+            numpy: "1.26"
+            artifact: wheels-linux-x86_64
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+
+      - name: Install the wheel in a new venv and test it
+        env:
+          PYTHON_VERSION: ${{ matrix.python }}
+          NUMPY: ${{ matrix.numpy }}
+        run: |
+          shopt -s nullglob
+          WHEELS=(dist/*.whl)
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            echo "::error::expected one wheel in dist/, found ${#WHEELS[@]}"
+            exit 1
+          fi
+          OPTIONS=()
+          if [ "$NUMPY" != latest ]; then
+            OPTIONS=(--numpy "numpy==$NUMPY.*")
+          fi
+          bash scripts/wheel-smoke.sh "${OPTIONS[@]}" "${WHEELS[0]}" "$PYTHON_VERSION" "$RUNNER_TEMP/smoke-venv"
+
+      # The digests of every kernel's output from the published build on
+      # this OS and interpreter, at the script's default size (1024), for
+      # comparison across platforms with `kernel_digests.py compare`
+      # (docs/ffi.md §6). Recorded, not judged: the wheels for different
+      # platforms link different libms. --strict fails the cell only when
+      # a case errs unexpectedly or a case that must be rejected is
+      # accepted. About 7 s and 360 MiB on a 32-core desktop.
+      - name: Kernel digests
+        if: matrix.numpy == 'latest'
+        env:
+          PYTHON_VERSION: ${{ matrix.python }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          PY="$RUNNER_TEMP/smoke-venv/bin/python"
+          [ -f "$PY" ] || PY="$RUNNER_TEMP/smoke-venv/Scripts/python.exe"
+          "$PY" -I scripts/kernel_digests.py run --strict --quiet \
+            --wheel dist/*.whl --label "wheels.yml $COMMIT $RUNNER_OS py$PYTHON_VERSION" \
+            --out "$RUNNER_TEMP/digests/digests-$RUNNER_OS-py$PYTHON_VERSION.jsonl"
+      - if: matrix.numpy == 'latest'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests-${{ runner.os }}-py${{ matrix.python }}
+          path: ${{ runner.temp }}/digests/
+          if-no-files-found: error
+
+  sdist-smoke:
+    name: Smoke sdist (built from source, Python 3.12)
+    needs: sdist
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # cargo builds the extension from the sdist, and lists the files the
+      # sdist must contain.
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wheels-sdist
+          path: dist
+      - name: Build, install and test the sdist in a new venv
+        run: |
+          shopt -s nullglob
+          SDISTS=(dist/*.tar.gz)
+          if [ "${#SDISTS[@]}" -ne 1 ]; then
+            echo "::error::expected one sdist in dist/, found ${#SDISTS[@]}"
+            exit 1
+          fi
+          bash scripts/wheel-smoke.sh "${SDISTS[0]}" 3.12 "$RUNNER_TEMP/sdist-venv"
+
+  # maturin writes a CycloneDX SBOM (PEP 770) into each wheel's
+  # .dist-info/sboms/. It must list nothing the wheel does not link: no
+  # crate outside the normal and build dependency graph of the default
+  # features (`cargo metadata`), so neither the optional cudarc nor the
+  # dev-only proptest and criterion, and no absolute path from the build
+  # machine. The one path allowed is the crate's own Cargo package id
+  # (`path+file://<build directory>#<version>`), which maturin 1.16 writes
+  # as the root component's bom-ref: on CI it names the runner's checkout.
+  sbom:
+    name: SBOM matches the dependency graph
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+      - name: Check each wheel's SBOM
+        run: |
+          shopt -s nullglob
+          WHEELS=(dist/*.whl)
+          if [ "${#WHEELS[@]}" -ne 3 ]; then
+            echo "::error::expected 3 wheels in dist/, found ${#WHEELS[@]}"
+            exit 1
+          fi
+          cargo metadata --locked --format-version=1 > "$RUNNER_TEMP/metadata.json"
+          python3 -I - "$RUNNER_TEMP/metadata.json" "${WHEELS[@]}" <<'PY'
+          import json
+          import re
+          import sys
+          import zipfile
+
+          meta = json.load(open(sys.argv[1], encoding="utf-8"))
+          nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
+          packages = {p["id"]: p for p in meta["packages"]}
+
+          # The root's normal and build dependencies and everything they
+          # need. Dev-dependencies are the root's edges of kind "dev";
+          # cudarc is not resolved without the cuda feature.
+          graph, todo = set(), [meta["resolve"]["root"]]
+          while todo:
+              for dep in nodes[todo.pop()]["deps"]:
+                  if dep["pkg"] not in graph and any(
+                          k["kind"] != "dev" for k in dep["dep_kinds"]):
+                      graph.add(dep["pkg"])
+                      todo.append(dep["pkg"])
+          allowed = {(packages[p]["name"], packages[p]["version"]) for p in graph}
+          FORBIDDEN = {"cudarc", "libloading", "proptest", "criterion"}
+          # A file:// URL other than file://. (maturin's relative purl), a
+          # drive letter, or an absolute POSIX path at the start of a
+          # string or after a space.
+          HOST_PATH = re.compile(r"file://(?!\.)|(?<![A-Za-z])[A-Za-z]:[\\/]|(?:^|\s)/[^\s/]+/")
+
+          def strings(node, where="$"):
+              if isinstance(node, dict):
+                  for key, value in node.items():
+                      yield from strings(value, f"{where}.{key}")
+              elif isinstance(node, list):
+                  for i, value in enumerate(node):
+                      yield from strings(value, f"{where}[{i}]")
+              elif isinstance(node, str):
+                  yield where, node
+
+          def components(items):
+              for c in items:
+                  yield c
+                  yield from components(c.get("components", []))
+
+          errors = []
+          for wheel in sys.argv[2:]:
+              with zipfile.ZipFile(wheel) as z:
+                  sboms = [n for n in z.namelist()
+                           if re.fullmatch(r"[^/]+\.dist-info/sboms/[^/]+\.json", n)]
+                  if not sboms:
+                      errors.append(f"{wheel}: no SBOM in .dist-info/sboms/")
+                  for name in sboms:
+                      bom = json.loads(z.read(name))
+                      root_ref = bom["metadata"]["component"].get("bom-ref", "")
+                      if not re.fullmatch(r"path\+file://\S+#\S+", root_ref):
+                          errors.append(f"{wheel}: root bom-ref is not a Cargo package id: {root_ref!r}")
+                      listed = {(c["name"], c.get("version")) for c in components(bom.get("components", []))}
+                      for n, v in sorted(listed - allowed):
+                          errors.append(f"{wheel}: {n} {v} is not in the shipped dependency graph")
+                      for n, v in sorted(c for c in listed if c[0] in FORBIDDEN):
+                          errors.append(f"{wheel}: {n} {v} must never ship")
+                      for where, s in strings(bom):
+                          if s == root_ref or s.startswith(root_ref + " "):
+                              continue
+                          if HOST_PATH.search(s):
+                              errors.append(f"{wheel}: host path at {where}: {s!r}")
+                      print(f"{wheel}: {name}: {len(listed)} components against a graph "
+                            f"of {len(allowed)}; root bom-ref {root_ref}")
+          for e in errors:
+              print(f"::error::{e}")
+          sys.exit(1 if errors else 0)
+          PY

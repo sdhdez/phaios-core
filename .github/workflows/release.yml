@@ -3,7 +3,15 @@ name: Release
 on:
   push:
     tags:
-      - "v[0-9]+.*"
+      # A final release only, vMAJOR.MINOR.PATCH. A pre-release tag such as
+      # v0.2.0-rc1 does not match, so it never reaches either registry,
+      # where an upload is permanent.
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+# Each job is granted what it needs and nothing more: `contents: read`
+# to check out the repository, `id-token: write` only where PyPI's
+# trusted publishing needs an OIDC token.
+permissions: {}
 
 jobs:
   # ── Gate ──────────────────────────────────────────────────────────────────
@@ -15,17 +23,24 @@ jobs:
   verify:
     name: Verify tag and test
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: rustfmt, clippy
+          persist-credentials: false
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal -c rustfmt,clippy
+          rustup default stable
+          rustc --version
 
       - name: Tag matches Cargo.toml and pyproject.toml
         run: |
           TAG="${GITHUB_REF_NAME#v}"
-          CRATE=$(cargo metadata --no-deps --format-version=1 \
+          CRATE=$(cargo metadata --locked --no-deps --format-version=1 \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['packages'][0]['version'])")
           WHEEL=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           echo "tag=$TAG crate=$CRATE wheel=$WHEEL"
@@ -37,11 +52,12 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --check
 
+      # --locked, as in ci.yml: the tagged Cargo.lock is what ships.
       - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: cargo test
-        run: cargo test
+        run: cargo test --locked
 
       # The determinism checks from ci.yml (docs/ffi.md §6), repeated here
       # because a tag can be pushed on a commit CI never ran. As in ci.yml,
@@ -49,7 +65,7 @@ jobs:
       # tagged commit, not against the manylinux wheel built below.
       - name: Platform libm imports match the ledger
         run: |
-          cargo build --release --lib
+          cargo build --locked --release --lib
           bash scripts/libm-inventory.sh target/release/libphaios_core.so tests/libm-imports.txt
 
       - name: Determinism guards
@@ -79,104 +95,84 @@ jobs:
           fi
           echo "no image assets tracked beyond the listed test photographs, checksums match ✓"
 
-  # ── Build wheels ─────────────────────────────────────────────────────────
+  # ── Build and smoke-test ──────────────────────────────────────────────────
+  #
+  # wheels.yml builds the three wheels and the sdist, installs each into a
+  # clean environment on its own OS (Python 3.12 and 3.15) and runs
+  # scripts/wheel-smoke.sh, builds the sdist from source the same way, and
+  # checks the SBOMs. This job succeeds only if every one of those jobs
+  # did, and its artefacts are the ones published below. A job that calls
+  # a reusable workflow cannot set timeout-minutes; each job inside
+  # wheels.yml sets its own.
 
-  linux:
-    name: Linux wheels
+  wheels:
+    name: Wheels
     needs: verify
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target: [x86_64]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist
-          manylinux: manylinux_2_17
-      - uses: actions/upload-artifact@v7
-        with:
-          name: wheels-linux-${{ matrix.target }}
-          path: dist
-
-  windows:
-    name: Windows wheels
-    needs: verify
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        target: [x86_64]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist
-      - uses: actions/upload-artifact@v7
-        with:
-          name: wheels-windows-${{ matrix.target }}
-          path: dist
-
-  macos:
-    name: macOS wheels (ARM)
-    needs: verify
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: PyO3/maturin-action@v1
-        with:
-          target: aarch64
-          args: --release --out dist
-      - uses: actions/upload-artifact@v7
-        with:
-          name: wheels-macos-aarch64
-          path: dist
-
-  sdist:
-    name: Source distribution
-    needs: verify
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: PyO3/maturin-action@v1
-        with:
-          command: sdist
-          args: --out dist
-      - uses: actions/upload-artifact@v7
-        with:
-          name: wheels-sdist
-          path: dist
+    permissions:
+      contents: read
+    uses: ./.github/workflows/wheels.yml
 
   # ── Publish ───────────────────────────────────────────────────────────────
+  #
+  # PyPI first, then crates.io: publish-crates waits for publish-pypi, so a
+  # failed PyPI upload leaves crates.io untouched. Both refuse to run on
+  # anything but a tag, whatever trigger is added above in future.
 
   publish-pypi:
     name: Publish to PyPI
-    needs: [linux, windows, macos, sdist]
+    needs: wheels
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment:
       name: pypi
       url: https://pypi.org/p/phaios-core
     permissions:
       id-token: write  # OIDC trusted publishing — no token stored in secrets
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: wheels-*
           path: dist
           merge-multiple: true
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # Nothing is uploaded unless all four files are here: a release
+      # missing one platform's wheel is a release that platform's users
+      # build from source.
+      - name: Three wheels and one sdist
+        run: |
+          shopt -s nullglob
+          WHEELS=(dist/*.whl) SDISTS=(dist/*.tar.gz)
+          ls -l dist
+          if [ "${#WHEELS[@]}" -ne 3 ] || [ "${#SDISTS[@]}" -ne 1 ]; then
+            echo "::error::expected 3 wheels and 1 sdist in dist/, found ${#WHEELS[@]} and ${#SDISTS[@]}"
+            exit 1
+          fi
+      # skip-existing: "Re-run failed jobs" re-runs this job with the same
+      # artefacts, and without the flag every file a failed attempt had
+      # already uploaded would fail the re-run. Kept for 0.2.0; the
+      # post-release check that PyPI lists all four files covers a partial
+      # upload.
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           skip-existing: true
 
   publish-crates:
     name: Publish to crates.io
-    needs: [linux, windows, macos, sdist]
+    needs: publish-pypi
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
       - name: Publish
-        run: cargo publish
+        run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
