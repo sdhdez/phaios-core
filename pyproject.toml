@@ -1,5 +1,12 @@
 [build-system]
-requires = ["maturin>=1.7,<2.0"]
+# 1.12.0 is the oldest maturin that writes the CycloneDX SBOM (PEP 770,
+# .dist-info/sboms/) the published wheels carry; 1.11.5, the last release
+# before it, writes none. PEP 639's License-Expression and licenses/
+# already work in 1.9.4. Each was checked by building this package with
+# exactly that version, and a build at 1.12.0 passes
+# scripts/wheel-smoke.sh.
+# requirements-dev.txt carries the same floor.
+requires = ["maturin>=1.12,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -8,7 +15,12 @@ version = "0.2.0-dev"
 description = "Numerical kernels for black-and-white RAW image processing"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "GPL-3.0-or-later" }
+# PEP 639: an SPDX expression, written to the wheel's METADATA as
+# License-Expression (Metadata-Version 2.4), and the licence text, copied
+# to .dist-info/licenses/. PEP 639 deprecates licence classifiers, and a
+# build tool may reject one beside an expression, so there is none below.
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
@@ -17,20 +29,23 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3.15",
     "Programming Language :: Python :: Implementation :: CPython",
-    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Topic :: Multimedia :: Graphics",
     "Intended Audience :: Developers",
     "Development Status :: 3 - Alpha",
     "Typing :: Typed",
 ]
-# rust-numpy 0.30 (like 0.29) resolves the NumPy array-API capsule lazily,
-# so a missing numpy surfaces as a PanicException on the first kernel call,
-# not an ImportError. 1.26 is the oldest release that supports Python 3.12,
-# this package's own floor; rust-numpy 0.30 still targets the 1.x C-API for
-# the abi3 build shipped here (its README recommends >= 1.16; an `abi3t`
-# build would need >= 2.5). Newer interpreters need newer NumPy releases,
-# which the resolver picks. Development and CI exercise 2.x — see
-# requirements-dev.txt.
+# The extension imports numpy as it is itself imported (src/lib.rs, the
+# #[pymodule] function), so an environment without numpy fails at
+# `import phaios_core` with ImportError. Without that import, rust-numpy
+# 0.30, which resolves the NumPy array-API capsule lazily and `expect`s
+# it, would raise PanicException at the first kernel call instead. 1.26
+# is the oldest release that supports Python 3.12, this package's own
+# floor; rust-numpy 0.30 still targets the 1.x C-API for the abi3 build
+# shipped here (its README recommends >= 1.16; an `abi3t` build would
+# need >= 2.5). Newer interpreters need newer NumPy releases, which the
+# resolver picks. Development and CI exercise 2.x (requirements-dev.txt);
+# one cell of the smoke test in .github/workflows/wheels.yml installs
+# numpy 1.26 on Python 3.12.
 dependencies = ["numpy>=1.26"]
 
 [project.urls]
