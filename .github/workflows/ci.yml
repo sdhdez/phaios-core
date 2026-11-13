@@ -6,21 +6,40 @@ on:
   pull_request:
     branches: [main]
 
+# Every job reads the repository and nothing else, and says so itself.
+# Every action is pinned to a commit, with its release tag in a comment,
+# and no checkout leaves its token in the git config for later steps.
+permissions: {}
+
+# A newer push to the same branch or pull request makes an older run
+# moot.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test & lint
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
 
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: rustfmt, clippy
+          persist-credentials: false
+
+      # rustup is on the hosted image; the toolchain it installs is
+      # whatever `stable` is that day.
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal -c rustfmt,clippy
+          rustup default stable
+          rustc --version
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -34,11 +53,14 @@ jobs:
 
       # --all-targets so examples, benches and tests are linted too. Without
       # it, dead code in examples/shared/mod.rs slipped through CI.
+      # --locked on every cargo command that resolves dependencies: the
+      # committed Cargo.lock is what is tested, and a stale one fails
+      # rather than being rewritten on the runner.
       - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: cargo test
-        run: cargo test
+        run: cargo test --locked
 
       # Every function the extension imports from the platform libm is a
       # place where one wheel can give different bits on different
@@ -51,7 +73,7 @@ jobs:
       # set.
       - name: Platform libm imports match the ledger
         run: |
-          cargo build --release --lib
+          cargo build --locked --release --lib
           bash scripts/libm-inventory.sh target/release/libphaios_core.so tests/libm-imports.txt
 
       # Kernels are pure functions and the CUDA backend holds
@@ -111,18 +133,19 @@ jobs:
           fi
           echo "no image assets tracked beyond the listed test photographs, checksums match ✓"
 
-      # The RustSec tool itself, built from crates.io with its own lockfile.
-      # It replaced `rustsec/audit-check`, whose last release (v2.0.0, 2024)
-      # still declares the node20 runtime; its `v2` ref is a branch frozen
-      # at that release, not a maintained floating tag.
+      # The RustSec tool itself, a pinned release built from crates.io with
+      # its own lockfile, so a new cargo-audit cannot change the gate
+      # unannounced. It replaced `rustsec/audit-check`, whose last release
+      # (v2.0.0, 2024) still declares the node20 runtime; its `v2` ref is a
+      # branch frozen at that release, not a maintained floating tag.
       - name: cargo audit
         run: |
-          cargo install cargo-audit --locked
+          cargo install cargo-audit --version 0.23.0 --locked
           cargo audit
 
       - name: Version consistency check
         run: |
-          CRATE=$(cargo metadata --no-deps --format-version=1 \
+          CRATE=$(cargo metadata --locked --no-deps --format-version=1 \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['packages'][0]['version'])")
           WHEEL=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           if [ "$CRATE" != "$WHEEL" ]; then
@@ -137,19 +160,22 @@ jobs:
         run: |
           # Skip examples gated behind features (e.g. required-features =
           # ["cuda"]) — the hosted runner has neither nvcc nor a GPU.
-          EXAMPLES=$(cargo metadata --no-deps --format-version=1 \
+          EXAMPLES=$(cargo metadata --locked --no-deps --format-version=1 \
             | python3 -c "import sys, json; print('\n'.join(sorted(t['name'] for p in json.load(sys.stdin)['packages'] for t in p['targets'] if 'example' in t['kind'] and not t.get('required-features'))))")
           if [ -z "$EXAMPLES" ]; then echo "no examples discovered"; exit 1; fi
           echo "$EXAMPLES" | while read -r ex; do
             echo "--- $ex ---"
-            cargo run --example "$ex"
+            cargo run --locked --example "$ex"
           done
 
-  # The wheel is `cp312-abi3` (`abi3-py312` in Cargo.toml): one build is
-  # supposed to serve every 3.12+ interpreter that has the GIL. Until now CI
-  # only ever ran 3.12, so that promise was never exercised. Its own job
-  # rather than a matrix on `test`: the Rust half above has nothing to do
-  # with the interpreter and must not run once per interpreter.
+  # The bindings on every supported interpreter, 3.12 to 3.15. Each cell
+  # compiles its own extension with `maturin develop` on its own
+  # interpreter, so this tests the code on each version, not the promise
+  # that one `cp312-abi3` wheel (`abi3-py312` in Cargo.toml) serves all of
+  # them. That promise is tested by wheels.yml, which installs the very
+  # wheel it built on 3.12 and on 3.15. Its own job rather than a matrix on
+  # `test`: the Rust half above has nothing to do with the interpreter and
+  # must not run once per interpreter.
   #
   # Free-threaded builds (3.14t, 3.15t) are deliberately absent: with only
   # `abi3-py312` enabled, PyO3 0.30 gives a free-threaded interpreter a
@@ -159,19 +185,27 @@ jobs:
   python:
     name: Python ${{ matrix.python }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         python: ["3.12", "3.13", "3.14", "3.15"]
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -184,7 +218,7 @@ jobs:
 
       - name: Set up uv + Python ${{ matrix.python }}
         # setup-uv publishes full version tags only (no floating `v10`).
-        uses: astral-sh/setup-uv@v10.3.3
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: ${{ matrix.python }}
           enable-cache: true
@@ -198,7 +232,7 @@ jobs:
       - name: Build Python extension
         run: |
           source .phaios-venv/bin/activate
-          maturin develop
+          maturin develop --locked
 
       - name: pytest
         run: |

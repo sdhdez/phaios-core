@@ -9,26 +9,31 @@
 # that has both.
 #
 # It is not required for a release — `release.yml` does not depend on it,
-# and the published wheels are built without the feature. It exists so the
-# backend is verified by something other than the maintainer remembering
-# to, and so a contributor with a device can prove a change before it is
-# merged.
+# and the published wheels are built without the feature. It exists so
+# that a contributor with a device can run the verification on GitHub as
+# well as by hand.
+#
+# It runs only when started by hand (Actions, GPU, Run workflow; or
+# `gh workflow run gpu.yml`). No runner with the `cuda` label exists, and
+# a job no runner can take waits in the queue until GitHub cancels it
+# (after 24 hours), so the triggers it used to have queued one on every
+# push to main or a feat/ branch and on every pull request. Until a runner
+# exists, verify the backend with ./scripts/gpu-verify.sh on a machine
+# with a device.
 #
 # Setting up a runner: https://docs.github.com/actions/hosting-your-own-runners
-# Label it `cuda` and it will pick these jobs up. Fork pull requests do not
-# run here — see the `if` guard below; a self-hosted runner executes
-# arbitrary code from whoever opened the PR, so this is deliberate.
+# Label it `cuda` and it will pick these jobs up. If a pull_request trigger
+# ever returns, fork pull requests still do not run here — see the `if`
+# guard below; a self-hosted runner executes arbitrary code from whoever
+# opened the PR, so this is deliberate.
 
 name: GPU
 
 on:
-  push:
-    branches: [main, "feat/**"]
-  pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read
+# The one job reads the repository and nothing else.
+permissions: {}
 
 jobs:
   cuda:
@@ -37,8 +42,12 @@ jobs:
     # Never run untrusted fork code on a self-hosted runner.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Toolchain and device
         run: |

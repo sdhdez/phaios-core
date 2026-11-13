@@ -7,7 +7,11 @@
 # .github/workflows/ci.yml deliberately skips every target gated behind
 # `required-features = ["cuda"]`. This script is the mirror image of that
 # job: it runs the half CI cannot, plus the same fmt, clippy and test
-# gates with the cuda feature turned on.
+# gates with the cuda feature turned on. Like CI, it passes --locked to
+# every cargo command that resolves dependencies, so it tests the
+# committed Cargo.lock and fails on a stale one instead of rewriting it.
+# .github/workflows/gpu.yml runs this script on a self-hosted runner, but
+# only when started by hand, and no such runner exists yet.
 #
 # It exists so that verifying the GPU backend is not the maintainer's
 # private privilege. Anyone with a supported device can run this, and the
@@ -76,12 +80,12 @@ echo "phaios-core ${CRATE_VERSION}"
 
 step "Lint and format (same gates as CI, plus the cuda feature)"
 cargo fmt --check
-cargo clippy --all-targets --features cuda -- -D warnings
+cargo clippy --locked --all-targets --features cuda -- -D warnings
 
 step "Test suite, GPU required"
 # PHAIOS_REQUIRE_GPU turns cuda_conformance.rs's device-missing skip into a
 # hard panic, so a green run here cannot mean "quietly skipped the GPU tests".
-PHAIOS_REQUIRE_GPU=1 cargo test --features cuda
+PHAIOS_REQUIRE_GPU=1 cargo test --locked --features cuda
 
 step "PTX audit"
 # Judges one thing: every .ptx in the build the test step used must carry
@@ -98,9 +102,9 @@ step "PTX audit"
 # PRECISION table, then how many instructions are fused multiply-adds,
 # approximate (.approx), flush to zero (.ftz), and float add/sub/mul with
 # no rounding modifier — the form the driver's JIT may fuse into an FMA.
-PKG_ID=$(cargo metadata --no-deps --format-version=1 \
+PKG_ID=$(cargo metadata --locked --no-deps --format-version=1 \
   | python3 -c "import sys, json; print(next(p['id'] for p in json.load(sys.stdin)['packages'] if p['name'] == 'phaios-core'))")
-OUT_DIR=$(cargo build --features cuda --message-format=json \
+OUT_DIR=$(cargo build --locked --features cuda --message-format=json \
   | python3 -c "import sys, json; msgs = [json.loads(l) for l in sys.stdin]; print(next((m['out_dir'] for m in msgs if m.get('reason') == 'build-script-executed' and m['package_id'] == sys.argv[1]), ''))" "$PKG_ID")
 [ -n "$OUT_DIR" ] || fail "cargo reported no build-script output directory for phaios-core"
 python3 - "$OUT_DIR" build.rs "$NVCC_VERSION" "$NVCC" <<'PY'
@@ -174,7 +178,7 @@ PY
 step "Examples gated behind --features cuda"
 # The exact inverse of the filter in ci.yml: that job runs the targets with
 # no required-features, this one runs the targets that have them.
-GPU_EXAMPLES=$(cargo metadata --no-deps --format-version=1 \
+GPU_EXAMPLES=$(cargo metadata --locked --no-deps --format-version=1 \
   | python3 -c "import sys, json; print('\n'.join(sorted(t['name'] for p in json.load(sys.stdin)['packages'] for t in p['targets'] if 'example' in t['kind'] and t.get('required-features'))))")
 if [ -z "$GPU_EXAMPLES" ]; then fail "no GPU examples discovered — has required-features gone missing?"; fi
 PROFILE=(--release)
@@ -186,7 +190,7 @@ LOGS=.cache/gpu-verify
 mkdir -p "$LOGS"
 for ex in $GPU_EXAMPLES; do
   printf '\n--- %s ---\n' "$ex"
-  cargo run "${PROFILE[@]}" --example "$ex" --features cuda </dev/null | tee "$LOGS/$ex.log"
+  cargo run --locked "${PROFILE[@]}" --example "$ex" --features cuda </dev/null | tee "$LOGS/$ex.log"
 done
 FINGERPRINT=$(for ex in $GPU_EXAMPLES; do sed -n 's/^fingerprint: //p' "$LOGS/$ex.log"; done | sort -u)
 [ -n "$FINGERPRINT" ] || fail "no example printed a \"fingerprint: \" line"
@@ -214,7 +218,7 @@ skip() {  # $1 = why, $2 = what to do about it
   PYTHON_RESULT="skipped: $1"
 }
 if [ ! -d .phaios-venv ]; then
-  skip "no .phaios-venv" "see README.md \"Quick start\" to create one"
+  skip "no .phaios-venv" "see README.md \"Build from source\" to create one"
 else
   # shellcheck disable=SC1091
   source .phaios-venv/bin/activate
