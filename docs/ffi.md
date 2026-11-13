@@ -561,23 +561,21 @@ sign bits may differ; `tone_curve` clamps NaN and −inf to 0 on both
 backends; ±inf comes out where the CPU returns it. `hsl_bw` agrees on
 them to the bit (§1).
 
-`denoise`'s worst measured ratios, on the strict build before
-`local_contrast` and `denoise` moved to FMA, were 0.0022x (`C = 1`,
-unit range), 0.0012x (`C = 1`, HDR), 0.0106x (`C = 3`, unit range) and
-0.0012x (`C = 3`, both HDR sweeps, up to the required 1e8 highlight);
-the FMA build stays within the same bound in the conformance suite.
-Next to one isolated sample far above an ordinary or a dark field, the
-bound is asserted at radius 1, 2 and 4 up to 1e38
+`denoise`'s worst measured ratios (2026-11-13, nvcc 13.4.92, driver
+620.70.06) are 0.0019x (`C = 1`, unit range), 0.0012x (`C = 1`, HDR),
+0.0107x (`C = 3`, unit range) and 0.0012x (`C = 3`, both HDR sweeps, up
+to the required 1e8 highlight). Next to one isolated sample far above
+an ordinary or a dark field, the bound is asserted at radius 1, 2 and 4
+up to 1e38 (worst 0.0599x)
 (`denoise_cross_guided_agrees_next_to_an_isolated_extreme_sample`).
 At radius 8 even a strict build misses it between about 1e22 and 1e31.
 That far beyond any photograph the specification is ill-conditioned
 itself: evaluated exactly at radius 1, the CPU's result is 0.8× the
-bound off at 1e13 and 3500× at 1e30.
-Its
-`radius` is capped at `MAX_RADIUS = 32` on both backends, because it
-sums each window directly from its own pixels rather than through a
-summed-area table (architecture.md §22), so cost is linear in `radius`
-and no larger case is ever asserted.
+bound off at 1e13 and 3500× at 1e30. Its `radius` is capped at
+`MAX_RADIUS = 32` on both backends, because it sums each window directly
+from its own pixels rather than through a summed-area table
+(architecture.md §22), so cost is linear in `radius` and no larger case
+is ever asserted.
 
 **The backend fingerprint is part of the reproducibility key.** A
 consumer that promises exact reproduction from a settings file must

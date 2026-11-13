@@ -34,8 +34,9 @@ toolchain, into a version-specific extension that no CI job tests.
 is not enabled.
 
 The wheel is CPU-only. The CUDA backend is a source build with
-`--features cuda`, needs `nvcc` at build time and an NVIDIA driver at
-run time, and is described in
+`--features cuda`, needs `nvcc` at build time and, at run time, an
+NVIDIA driver that supports that `nvcc`'s CUDA version; it is described
+in
 [docs/gpu.md](https://github.com/sdhdez/phaios-core/blob/main/docs/gpu.md).
 
 ## Kernels
@@ -236,8 +237,9 @@ the result is unspecified.
   against.
 - **maturin**, installed by `requirements-dev.txt`.
 - Optional, for `--features cuda`: the CUDA toolkit (`nvcc` compiles
-  the kernels to PTX at build time) and an NVIDIA driver. The driver
-  library is loaded dynamically, so a CUDA-enabled build still runs on
+  the kernels to PTX at build time) and an NVIDIA driver that supports
+  that toolkit's CUDA version (`nvidia-smi` prints the newest one it
+  supports). The driver library is loaded dynamically, so a CUDA-enabled build still runs on
   a machine without a GPU: `gpu.available()` is `False`,
   `gpu.devices()` is empty, and `gpu.GpuContext(...)` raises
   `RuntimeError`.

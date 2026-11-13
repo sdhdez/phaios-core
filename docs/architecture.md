@@ -1600,13 +1600,17 @@ itself.
 Agreement class: bounded, `blur`'s own (rtol 1e-5, atol 1e-7) —
 `glow`'s class, for the same reason: the pointwise half has no
 transcendentals and is bit-exact under `-fmad=false`, so the blur
-underneath is the only inexact part. Measured worst-case ratios of the
-committed bound (`tests/cuda_conformance.rs`): 0.5619× at unit range
-(`amount = 0.35`, `sigma = 1.5`, `threshold = 0`) and 0.0511× on the
+underneath is the only inexact part. Its relative term is taken against
+`max(|out|, amount·|blur|)`, because the output cancels where a pixel is
+about `amount/(1 + amount)` of its blur ([ffi.md §6](ffi.md#6-determinism)).
+Measured worst-case ratios of the committed bound
+(`tests/cuda_conformance.rs`, 2026-11-13): 0.0229× at unit range
+(`amount = 0.4`, `sigma = 1.2`, `threshold = 0.05`), 0.0511× on the
 dynamic-range sweep (`amount = 0.35`, `sigma = 12`, `threshold = 0`, a
 1e8 highlight) — close to `glow`'s own HDR-sweep worst case (0.0510×),
 consistent with both kernels propagating the same underlying blur error
-one stage differently.
+one stage differently — and about 0.02× at outputs that cancel beside a
+bright blur.
 
 ---
 
@@ -1927,17 +1931,17 @@ Agreement class for both dispatched paths: `local_contrast`'s own
 **GUIDED_FILTER** (rtol 1e-4, atol 1e-6), added to `docs/ffi.md` §6;
 `local_contrast.cu` and `denoise.cu` are both compiled with FMA
 contraction ([gpu.md](gpu.md#precision-modes)). Measured worst-case
-ratios on the strict build, before the two files moved to FMA, all
-comfortably inside the bound; the FMA build stays within the same bound
-in the conformance suite:
+ratios (`tests/cuda_conformance.rs`, 2026-11-13, nvcc 13.4.92, driver
+620.70.06), all comfortably inside the bound:
 
 | Sweep | Worst ratio | Where |
 |---|---|---|
-| `C = 1`, unit range | 0.0022× | radius=4, noise_sigma=0.05, amount=1 |
+| `C = 1`, unit range | 0.0019× | radius=32, noise_sigma=0.1, amount=0.8 |
 | `C = 1`, HDR (1e0..1e8) | 0.0012× | radius=8, noise_sigma=0.7, hl=1e0 |
-| `C = 3`, unit range | 0.0106× | radius=4, noise_sigma=0.05, amount=1 |
+| `C = 3`, unit range | 0.0107× | radius=2, noise_sigma=0.02, amount=0.6 |
 | `C = 3`, uniform-bar HDR | 0.0012× | radius=8, noise_sigma=0.7, hl=1e0 |
 | `C = 3`, partial-channel-bar HDR | 0.0012× | radius=8, noise_sigma=0.7, hl=1e0 |
+| `C = 3`, one isolated sample of 1e12..1e38 | 0.0599× | radius=4, sample −1e16 |
 
 The partial-channel-bar sweep (`R`/`B` bright, `G` dark — a genuine
 covariance between two different bright/dark signals, which the

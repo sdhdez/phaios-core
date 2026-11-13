@@ -23,7 +23,7 @@ carrying a blur of their own.
 | PTX target | `compute_80`, each file compiled strict, FMA or fast math ([precision modes](#precision-modes)) |
 | Minimum device | compute capability **8.0** (Ampere), `MIN_COMPUTE_CAPABILITY` in `src/cuda/context.rs` |
 | Cargo feature | `cuda`, off by default |
-| Driver | `libcuda.so.1`, opened at run time, not linked |
+| Driver | `libcuda.so.1`, opened at run time, not linked; it must support the CUDA version of the toolkit that built the PTX (see below) |
 
 The PTX is JIT-compiled forward by the driver, so one build covers the
 RTX 30, 40 and 50 series and the A and H series. A device below
@@ -75,8 +75,21 @@ that cache in the repository's gitignored `.cache/`, as
 passes. Run `./scripts/gpu-verify.sh` for what hosted CI cannot.
 
 Build requirements: `nvcc` on `PATH` or under `$CUDA_PATH/bin` (the
-build script also tries the Arch default location), and a driver new
-enough for `cuMemAllocAsync`, which is CUDA 11.2.
+build script also tries the Arch default location).
+
+Driver requirement: a driver that supports the CUDA version of the
+`nvcc` that built the extension, not merely the oldest one the crate's
+own calls need. The PTX carries its toolkit's PTX ISA version
+(`.version 9.4` from nvcc 13.4), and the driver's JIT compiles only the
+versions it knows. `nvidia-smi` prints the newest CUDA version the
+driver supports; it must be at least the toolkit's (13.4 for the builds
+measured here). An older driver opens the context but fails each
+kernel's first launch with `RuntimeError: cannot load PTX module`
+(expected from the CUDA documentation; not tested here). The newest
+driver call the crate itself makes is `cuMemAllocAsync` (CUDA 11.2), so
+a build from an older toolkit that still targets `compute_80` (CUDA 11
+or later) should lower the floor to that toolkit's version; no such
+build has been tried.
 
 ## The device-resident chain
 
@@ -304,6 +317,12 @@ is never global and never implicit: `film_grain` and the quantiser
 dither hash the pixel's own coordinates together with an explicit
 `seed`, so no pixel depends on another's state and nothing depends on
 the order the device schedules its blocks.
+
+The driver's JIT cache does not enter into it: a cold cache, a warm one
+and `CUDA_CACHE_DISABLE=1` give byte-identical output on every case of
+`scripts/kernel_digests.py` (1199 cases at 1024 × 1024, 2026-11-13,
+driver 620.70.06), the cold run being the only one that filled the
+cache.
 
 Across backends the difference is bounded by the table above, and that
 bound is asserted by the conformance suite rather than assumed. A
