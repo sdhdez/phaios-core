@@ -1326,8 +1326,26 @@ pub fn encode_srgb(py: Python<'_>, img: PyReadonlyArray3<f32>) -> PyResult<Py<Py
 /// arrays are `numpy.float32`, C-contiguous, shape `(H, W, C)`;
 /// `quantize_u8` and `quantize_u16` return `uint8` and `uint16`, and
 /// `apply_lut` takes a 1-D `float32` table.
-#[pymodule]
+//
+// `gil_used = true` declares that the module needs the GIL. A bare
+// `#[pymodule]` declares the opposite under PyO3 0.30. The declaration
+// reaches only a free-threaded interpreter (3.14t, 3.15t): the abi3 wheel
+// does not load there, so such an interpreter builds from source, and
+// importing that build re-enables the GIL, with a RuntimeWarning, rather
+// than running kernels never reviewed for free threading without it. abi3
+// builds never emit the slot, so the published wheels are unchanged. It
+// stays until a free-threading review (README "Install").
+#[pymodule(gil_used = true)]
 fn phaios_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // numpy is imported here, before anything else, so that an environment
+    // without it (a `--no-deps` install, a vendored copy) fails at
+    // `import phaios_core` with ModuleNotFoundError, an ImportError. Without
+    // this the import succeeds, and the first kernel call raises
+    // PanicException, which `except Exception:` does not catch: rust-numpy
+    // resolves its array-API capsule lazily and `expect`s it
+    // (npyffi/array.rs).
+    m.py().import("numpy")?;
+
     // The version this extension was compiled from, so a consumer can
     // introspect what it imported without importlib.metadata (which
     // reports the installed *distribution*, not necessarily this binary).

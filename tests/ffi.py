@@ -20,8 +20,11 @@ module, so stub drift fails here too.
 Run with: pytest tests/ffi.py
 """
 
+import json
 import math
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -78,6 +81,49 @@ def assert_valid_output(arr, expected_shape):
 def test_import():
     """The module must be importable after `maturin develop`."""
     assert ph is not None
+
+
+_HIDE_NUMPY = """
+import importlib.util, json, sys
+sys.path[:] = json.loads(sys.argv[1])
+
+class HideNumpy:
+    def find_spec(self, name, path=None, target=None):
+        if name == "numpy" or name.startswith("numpy."):
+            raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+        return None
+
+sys.meta_path.insert(0, HideNumpy())
+print(importlib.util.find_spec("phaios_core").origin)
+try:
+    import phaios_core
+except ImportError as e:
+    print(f"{type(e).__name__} {e.name}")
+except BaseException as e:
+    print(f"not an ImportError: {type(e).__name__}: {e}")
+else:
+    print("imported without numpy")
+"""
+
+
+def test_import_without_numpy_raises_import_error():
+    """Without numpy, `import phaios_core` itself raises ImportError.
+
+    The extension imports numpy while it initialises. Before it did, the
+    import succeeded and the first kernel call raised PanicException,
+    which `except Exception:` does not catch. A child interpreter, given
+    this process's sys.path so that it finds the same phaios_core, hides
+    numpy behind a meta-path finder and imports the package."""
+    proc = subprocess.run(
+        [sys.executable, "-I", "-c", _HIDE_NUMPY, json.dumps(sys.path)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    origin, outcome = proc.stdout.splitlines()
+    assert Path(origin).resolve() == Path(ph.__file__).resolve()
+    assert outcome == "ModuleNotFoundError numpy"
 
 
 # ── Geometry ──────────────────────────────────────────────────────────────────
