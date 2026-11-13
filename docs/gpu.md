@@ -336,17 +336,17 @@ gates.
 ### Test conditions
 
 ```
-Measured    2026-11-12
+Measured    2026-11-13
 Image       4323 × 5765 f32 (24 MP), deterministic pseudo-random fill
 GPU         NVIDIA GeForce RTX 5070 Ti, cc 12.0, driver 620.70.06
 CPU         AMD Ryzen 9 9950X 16-Core, 32 threads, rayon default pool
-Host        Linux 7.2.15-zen1-1-zen
+Host        Linux 7.3.4-zen2-1-zen
 nvcc        release 13.4, V13.4.92
 rustc       1.99.1 (58cf8f9c3 2026-10-13)
 Fingerprint cuda/NVIDIA GeForce RTX 5070 Ti/cc12.0/ptx-compute_80/nvcc-13.4.92
 Precision   per file, build.rs PRECISION (see "Precision modes")
-Command     cargo bench --bench kernels
-            cargo bench --bench gpu --features cuda
+Command     cargo bench --locked --bench kernels
+            cargo bench --locked --bench gpu --features cuda
 Statistic   criterion median of 100 samples
 Timing      device-resident, PCIe excluded, drained by a 1×1×1 download;
             quantize and histogram include their mandatory readback
@@ -366,50 +366,45 @@ two shapes.
 
 | Kernel | CPU | GPU | Speed-up | C | Benchmark id |
 |---|---|---|---|---|---|
-| `orient` | 140.5 ms | 1.90 ms | 74x | 3 | `orient/24MP/rotate90` |
-| `hot_pixels` | 19.1 ms | 0.45 ms | 42x | 1 | `hot_pixels/24MP/1ch` |
-| `denoise` | 138.8 ms | 7.19 ms | 19x | 1 | `denoise/24MP/1ch-r4` |
-| `denoise` | 697.7 ms | 37.25 ms | 19x | 3 | `denoise/24MP/3ch-r4` |
-| `straighten` | 52.8 ms | 2.26 ms | 23x | 3 | `straighten/24MP/2deg` |
-| `crop` | 9.2 ms | 0.27 ms | 34x | 3 | `crop/24MP/centre-half` |
-| `resize` | 30.5 ms | 1.45 ms | 21x | 3 | `resize/24MP/to-2048-area` |
-| `exposure` | 27.0 ms | 0.88 ms | 31x | 3 | `exposure/24MP/+1EV` |
-| `luminance_bw` | 12.6 ms | 0.49 ms | 25x | 3 → 1 | `luminance_bw/24MP/BT709` |
+| `orient` | 126.5 ms | 1.92 ms | 66x | 3 | `orient/24MP/rotate90` |
+| `hot_pixels` | 19.3 ms | 0.45 ms | 43x | 1 | `hot_pixels/24MP/1ch` |
+| `denoise` | 137.8 ms | 7.19 ms | 19x | 1 | `denoise/24MP/1ch-r4` |
+| `denoise` | 692.4 ms | 38.04 ms | 18x | 3 | `denoise/24MP/3ch-r4` |
+| `straighten` | 53.0 ms | 2.27 ms | 23x | 3 | `straighten/24MP/2deg` |
+| `crop` | 9.5 ms | 0.27 ms | 35x | 3 | `crop/24MP/centre-half` |
+| `resize` | 30.3 ms | 1.45 ms | 21x | 3 | `resize/24MP/to-2048-area` |
+| `exposure` | 26.7 ms | 0.88 ms | 30x | 3 | `exposure/24MP/+1EV` |
+| `luminance_bw` | 12.6 ms | 0.49 ms | 26x | 3 → 1 | `luminance_bw/24MP/BT709` |
 | `channel_mixer_bw` | 12.6 ms | 0.49 ms | 26x | 3 → 1 | `channel_mixer_bw/24MP` |
-| `color_filter_bw` | 12.6 ms | 0.49 ms | 25x | 3 → 1 | `color_filter_bw/24MP/Red25A` |
-| `hsl_bw` | 49.9 ms | 0.53 ms | 94x | 3 → 1 | `hsl_bw/24MP/8-bands` |
-| `zone_system` | 14.4 ms | 0.35 ms | 42x | 1 | `zone_system/24MP/1-zone-offset` |
-| `blur` | 36.9 ms | 4.22 ms | 9x | 1 | `blur/24MP/sigma2-direct` |
-| `blur` | 57.1 ms | not covered | — | 1 | `blur/24MP/sigma4-direct` |
-| `blur` | 78.0 ms | not covered | — | 1 | `blur/24MP/sigma5.9-direct` |
-| `blur` | 70.7 ms | not covered | — | 1 | `blur/24MP/sigma6-box` |
-| `blur` | 70.9 ms | 7.91 ms | 9x | 1 | `blur/24MP/sigma16-box` |
-| `blur` | 70.6 ms | 8.53 ms | 8x | 1 | `blur/24MP/sigma64-box` |
-| `glow` | 92.1 ms | 8.53 ms | 11x | 1 | `glow/24MP/halation` |
-| `glow` | 91.8 ms | not covered | — | 1 | `glow/24MP/diffusion` |
-| `glow` | 92.0 ms | not covered | — | 1 | `glow/24MP/glare` |
-| `local_contrast` | 162.5 ms | 10.50 ms | 15x | 1 | `local_contrast/24MP/r=8` |
-| `sharpen` | 42.6 ms | 4.08 ms | 10x | 1 | `sharpen/24MP/capture` |
-| `shadow_rolloff` | 8.7 ms | 0.31 ms | 29x | 1 | `shadow_rolloff/24MP/knee0.2-strength0.8` |
-| `tone_curve` | 9.0 ms | 0.30 ms | 30x | 1 | `tone_curve/24MP/slope-offset-power` |
-| `film_grain` | 58.3 ms | 1.17 ms | 50x | 1 | `film_grain/24MP/size=2` |
-| `split_toning` | 27.7 ms | 0.56 ms | 49x | 1 → 3 | `split_toning/24MP` |
-| `vignette` | 10.1 ms | 0.42 ms | 24x | 1 | `vignette/24MP` |
-| `highlight_rolloff` | 8.7 ms | 0.32 ms | 27x | 1 | `highlight_rolloff/24MP/knee0.7-white4` |
-| `highlight_rolloff` | 8.7 ms | not covered | — | 1 | `highlight_rolloff/24MP/default-clip` |
-| `encode_srgb` | 9.0 ms | 0.30 ms | 30x | 1 | `encode_srgb/24MP` |
-| `apply_lut` | 8.8 ms | 0.32 ms | 28x | 1 | `apply_lut/24MP/256-entry` |
-| `histogram` | 3.9 ms | not covered | — | 1 | `histogram/24MP/256bins-grey` |
-| `histogram` | 9.7 ms | 0.47 ms | 21x | 3 | `histogram/24MP/256bins-rgb` |
-| `histogram` | 6.3 ms | not covered | — | 1 | `histogram/24MP/65536bins-grey` |
-| `quantize` | 5.7 ms | 3.11 ms | 2x | 1 | `quantize/24MP/u8-plain` |
-| `quantize` | 9.9 ms | not covered | — | 1 | `quantize/24MP/u8-dithered` |
+| `color_filter_bw` | 12.6 ms | 0.49 ms | 26x | 3 → 1 | `color_filter_bw/24MP/Red25A` |
+| `hsl_bw` | 51.3 ms | 0.56 ms | 91x | 3 → 1 | `hsl_bw/24MP/8-bands` |
+| `zone_system` | 14.5 ms | 0.35 ms | 42x | 1 | `zone_system/24MP/1-zone-offset` |
+| `blur` | 36.9 ms | 4.24 ms | 9x | 1 | `blur/24MP/sigma2-direct` |
+| `blur` | 57.6 ms | not covered | — | 1 | `blur/24MP/sigma4-direct` |
+| `blur` | 79.0 ms | not covered | — | 1 | `blur/24MP/sigma5.9-direct` |
+| `blur` | 69.8 ms | not covered | — | 1 | `blur/24MP/sigma6-box` |
+| `blur` | 69.9 ms | 7.91 ms | 9x | 1 | `blur/24MP/sigma16-box` |
+| `blur` | 70.0 ms | 8.52 ms | 8x | 1 | `blur/24MP/sigma64-box` |
+| `glow` | 90.7 ms | 8.53 ms | 11x | 1 | `glow/24MP/halation` |
+| `glow` | 90.6 ms | not covered | — | 1 | `glow/24MP/diffusion` |
+| `glow` | 90.5 ms | not covered | — | 1 | `glow/24MP/glare` |
+| `local_contrast` | 160.6 ms | 10.49 ms | 15x | 1 | `local_contrast/24MP/r=8` |
+| `sharpen` | 42.2 ms | 4.10 ms | 10x | 1 | `sharpen/24MP/capture` |
+| `shadow_rolloff` | 8.7 ms | 0.30 ms | 29x | 1 | `shadow_rolloff/24MP/knee0.2-strength0.8` |
+| `tone_curve` | 8.9 ms | 0.30 ms | 30x | 1 | `tone_curve/24MP/slope-offset-power` |
+| `film_grain` | 57.8 ms | 1.17 ms | 50x | 1 | `film_grain/24MP/size=2` |
+| `split_toning` | 27.4 ms | 0.56 ms | 49x | 1 → 3 | `split_toning/24MP` |
+| `vignette` | 10.2 ms | 0.42 ms | 24x | 1 | `vignette/24MP` |
+| `highlight_rolloff` | 8.8 ms | 0.32 ms | 27x | 1 | `highlight_rolloff/24MP/knee0.7-white4` |
+| `highlight_rolloff` | 8.8 ms | not covered | — | 1 | `highlight_rolloff/24MP/default-clip` |
+| `encode_srgb` | 8.9 ms | 0.30 ms | 30x | 1 | `encode_srgb/24MP` |
+| `apply_lut` | 8.7 ms | 0.32 ms | 27x | 1 | `apply_lut/24MP/256-entry` |
+| `histogram` | 4.0 ms | not covered | — | 1 | `histogram/24MP/256bins-grey` |
+| `histogram` | 9.8 ms | 0.47 ms | 21x | 3 | `histogram/24MP/256bins-rgb` |
+| `histogram` | 6.2 ms | not covered | — | 1 | `histogram/24MP/65536bins-grey` |
+| `quantize` | 5.7 ms | 3.31 ms | 2x | 1 | `quantize/24MP/u8-plain` |
+| `quantize` | 10.0 ms | not covered | — | 1 | `quantize/24MP/u8-dithered` |
 | `quantize` | 11.1 ms | not covered | — | 1 | `quantize/24MP/u16-dithered` |
-
-The `hsl_bw` and `C = 3` `denoise` GPU rows were measured before those
-files pinned a few operations (2026-11-13, "Precision modes"). In
-interleaved runs the pins cost 6.6 % and 2.0 %, which puts them at
-about 0.56 ms and 37.9 ms.
 
 `C` is the channel count the benchmark runs. Rows marked "not covered"
 have no counterpart in `benches/gpu.rs`: the GPU suite runs one case per
@@ -425,7 +420,7 @@ Reading the table:
 - `quantize` is the one row where the ratio is small, and it is not a
   slow kernel. It is the only one whose time includes a mandatory
   readback: 24.9 MB of codes cross the bus on every call, and that
-  transfer is most of the 3.11 ms. A terminal kernel cannot avoid it.
+  transfer is most of the 3.31 ms. A terminal kernel cannot avoid it.
 - `hsl_bw` and `orient` show the largest ratios for opposite reasons.
   `hsl_bw` is arithmetic-heavy, eight `exp` per pixel, which is what a
   GPU is for. `orient/rotate90` is cache-hostile and single-threaded on
@@ -435,8 +430,8 @@ Reading the table:
   on either backend. Its cost is linear in the radius, which is why
   `radius` is capped at 32.
 - The whole CPU chain that `examples/22_gpu_pipeline.rs` runs, eleven
-  stages at 24 MP, measures about 416 ms against 56 ms for the
-  device-resident form, upload and download included. That is 7.4x, not
+  stages at 24 MP, measures about 414 ms against 55 ms for the
+  device-resident form, upload and download included. That is 7.5x, not
   the 20x an individual row suggests, because the resident chain still
   pays two PCIe crossings and the cheap kernels are bus-bound on both
   sides.
@@ -565,6 +560,7 @@ backend works on a given card is that someone ran it there.
 |---|---|---|---|---|---|---|---|
 | 0.2.0-dev | NVIDIA GeForce RTX 5070 Ti (cc 12.0) | 615.71.09 | 13.4.59 | 1.98.1 | Linux 7.2.6-zen2-1-zen x86_64 | 2026-09-16 | all GPU checks passed |
 | 0.2.0-dev | NVIDIA GeForce RTX 5070 Ti (cc 12.0) | 620.70.06 | 13.4.92 | 1.99.1 | Linux 7.2.15-zen1-1-zen x86_64 | 2026-11-11 | all GPU checks passed |
+| 0.2.0-dev | NVIDIA GeForce RTX 5070 Ti (cc 12.0) | 620.70.06 | 13.4.92 | 1.99.1 | Linux 7.3.4-zen2-1-zen x86_64 | 2026-11-13 | all GPU checks passed |
 
 To add a row: run `PHAIOS_REQUIRE_GPU=1 ./scripts/gpu-verify.sh` and
 open an issue titled `GPU report: <device>` containing the block it
