@@ -525,7 +525,7 @@ Threshold-gated Gaussian unsharp mask.
 | Output | `(H, W, C)` f32, C-contiguous |
 | Identity | `amount = 0.0`, or `sigma = 0.0` |
 | Order | optional; after `local_contrast` |
-| Backends | bounded, rtol 1e-5 / atol 1e-7 |
+| Backends | bounded, rtol 1e-5 / atol 1e-7, the rtol taken against `max(|out|, amount·|blur|)` where the output cancels |
 
 **What changes visually.** Edges gain a light and a dark fringe, which
 reads as sharpness at normal viewing distance. This is a plain,

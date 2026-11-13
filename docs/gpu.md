@@ -168,7 +168,7 @@ The reasoning behind each is in
 | Class | Bound | Kernels |
 |---|---|---|
 | bit-exact | `==`, NaN payload and sign aside | `exposure`, `luminance_bw`, `channel_mixer_bw`, `color_filter_bw`, `vignette`, `tone_curve` at `power == 1` (no subnormal input or result), `crop`, `orient`, `resize`, `straighten`, `hot_pixels`, `shadow_rolloff`, `highlight_rolloff`, `apply_lut`, `histogram`, `quantize_u8`, `quantize_u16`, `film_grain`'s integer hash, every identity fast path |
-| one transcendental | rtol 1e-5, atol 1e-7 | `encode_srgb`, `tone_curve` at `power != 1`, `split_toning`, `hsl_bw`, `zone_system`, `blur`, `glow`, `sharpen` |
+| one transcendental | rtol 1e-5, atol 1e-7 | `encode_srgb`, `tone_curve` at `power != 1`, `split_toning`, `hsl_bw`, `zone_system`, `blur`, `glow`, `sharpen` (its rtol against `max(|out|, amount·|blur|)`, ffi.md §6) |
 | guided filter | rtol 1e-4, atol 1e-6 | `local_contrast`, `denoise` (both `C == 1` and `C == 3`) |
 | Box–Muller | rtol 1e-3, atol 1e-5 | `film_grain`'s Box–Muller half |
 

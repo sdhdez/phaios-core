@@ -106,7 +106,10 @@ cuda_conformance.rs), in float32, max over both-finite elements of
 ``|x - y| / (atol + rtol * |x|)`` with x the CPU value, must be <= 1, and
 no element may change class (NaN against a number, or an infinity
 against anything but the same infinity); class changes are counted
-apart from the ratio. Pass/fail applies on hdr, ramp and noise. On
+apart from the ratio. For sharpen the relative term is taken against
+``max(|x|, amount * |blur(in)|)`` (section 6), which compare computes
+from the case's input, regenerated at the runs' --size, and the blur of
+the phaios_core it can import; without one it exits 2. Pass/fail applies on hdr, ramp and noise. On
 specials an exact kernel must still not differ, except tone_curve at
 power 1 (section 6 exempts subnormals there); zone_system, encode_srgb,
 tone_curve and hsl_bw must keep each element's class (NaN, +inf, -inf,
@@ -1275,6 +1278,23 @@ AGREEMENT: dict[str, tuple[float, float] | None] = {
 CLASS_KEPT = frozenset({"zone_system", "encode_srgb", "tone_curve", "hsl_bw"})
 # The images on which the exact and bounded classes are pass/fail.
 BOUNDS_IMAGES = ("hdr", "ramp", "noise")
+# Section 6: sharpen's rtol is taken against max(|out|, amount * |blur(in)|).
+# Its output, in + amount * T * (in - blur), cancels where in is close to
+# amount / (1 + amount) of its blur, and there the blur's last bit is relative
+# to the term subtracted, not to the small result.
+SCALED = frozenset({"sharpen"})
+
+
+def tolerance_scale(rec: dict, image: np.ndarray, ph) -> np.ndarray:
+    """``amount * |blur(in)|`` for a sharpen case line, from phaios_core's CPU
+    blur of the case's input (``image``); zeros at amount or sigma 0, the
+    identity."""
+    p = rec["params"][0]["SharpenParams"]
+    amount, sigma = float(p.get("amount", 0.0)), float(p.get("sigma", 0.0))
+    if amount == 0 or sigma == 0:
+        return np.zeros(image.shape, np.float32)
+    blurred = np.asarray(ph.blur(image, ph.BlurParams(sigma=sigma)), dtype=np.float32)
+    return np.float32(amount) * np.abs(blurred)
 
 
 def ffi_agreement_tables(text: str) -> tuple[set[str], dict[str, tuple[float, float]], dict[tuple, str]]:
@@ -1340,32 +1360,42 @@ def class_changes(x: np.ndarray, y: np.ndarray) -> int:
                                 | (np.isneginf(x) != np.isneginf(y))))
 
 
-def worst_violation(ref: np.ndarray, other: np.ndarray, rtol: float, atol: float) -> dict:
+def worst_violation(ref: np.ndarray, other: np.ndarray, rtol: float, atol: float,
+                    scale: np.ndarray | None = None) -> dict:
     """tests/cuda_conformance.rs ``worst_violation``, in the arrays' own float
     type (float32 for every bounded kernel, as in the Rust oracle), with the
     class changes counted apart: ``worst`` is the max over both-finite
     elements of ``|x - y| / (atol + rtol * |x|)``, x from ``ref`` (the CPU);
     ``over`` counts those above 1; ``class_changed`` counts the elements the
     oracle scores infinite for their class; ``oracle`` is what the Rust
-    function returns (inf when any class changed)."""
+    function returns (inf when any class changed). With ``scale`` (ref's
+    shape), the relative term is taken against ``max(|x|, scale)``, as
+    ``worst_violation_scaled`` does for sharpen."""
     x = np.asarray(ref).ravel()
     y = np.asarray(other).ravel()
     dt = x.dtype.newbyteorder("=")
     x, y = x.astype(dt, copy=False), y.astype(dt, copy=False)
     fin = np.isfinite(x) & np.isfinite(y)
     xf, yf = x[fin], y[fin]
+    mag = np.abs(xf)
+    if scale is not None:
+        sc = np.asarray(scale).ravel().astype(dt, copy=False)
+        if sc.shape != x.shape:
+            raise ValueError(f"scale has {sc.size} elements, the output {x.size}")
+        mag = np.maximum(mag, np.abs(sc[fin]))
     with np.errstate(over="ignore", invalid="ignore"):
-        v = np.abs(xf - yf) / (dt.type(atol) + dt.type(rtol) * np.abs(xf))
+        v = np.abs(xf - yf) / (dt.type(atol) + dt.type(rtol) * mag)
     worst = float(v.max(initial=0))
     cls = class_changes(x, y)
     return {"worst": worst, "over": int(np.count_nonzero(v > 1)), "class_changed": cls,
             "oracle": math.inf if cls else worst}
 
 
-def judge(rec: dict, ref, other, st: dict | None) -> dict:
+def judge(rec: dict, ref, other, st: dict | None, scale: np.ndarray | None = None) -> dict:
     """One case of a CPU-against-GPU comparison, judged by agreement_class.
     ``ref`` and ``other`` are the CPU and GPU dumps (arrays, or histogram
-    field dicts); ``st`` is diff_stats(ref, other) for arrays. Returns the
+    field dicts); ``st`` is diff_stats(ref, other) for arrays; ``scale`` is
+    tolerance_scale's array for a SCALED kernel. Returns the
     class, bound, what was checked, the measures, and a verdict: "pass",
     "FAIL" or "report" (nothing committed to check)."""
     cls, bound = agreement_class(rec)
@@ -1391,7 +1421,7 @@ def judge(rec: dict, ref, other, st: dict | None) -> dict:
     is_float = np.asarray(ref).dtype.kind == "f"
     if cls == "bounded" and is_float:
         assert bound is not None
-        j.update(worst_violation(ref, other, *bound))
+        j.update(worst_violation(ref, other, *bound, scale=scale))
     elif is_float and rec.get("kernel") in CLASS_KEPT:
         j["class_changed"] = class_changes(ref, other)
     if finite_image:
@@ -1632,6 +1662,33 @@ def compare_runs(ns, run_a, run_b, loaders, names=("A", "B")) -> int:
 
     differing = [i for i in ids if verdict[i] == "differing"]
     foreign: list[str] = []      # a dump that does not hold its run line's output, or cannot be read
+    unscaled: list[str] = []     # a SCALED case whose tolerance scale could not be computed
+    scale_src: dict[Any, Any] = {}
+
+    def scale_for(cid: str) -> np.ndarray | None:
+        """tolerance_scale for a SCALED case: its input regenerated from the
+        reference run's size (and checked against the run line's digest),
+        blurred by phaios_core's CPU blur."""
+        rec = ca[cid]
+        if rec.get("kernel") not in SCALED:
+            return None
+        if "ph" not in scale_src:
+            try:
+                import phaios_core as ph_mod
+                scale_src["ph"] = ph_mod
+            except Exception as e:  # noqa: BLE001 - any import failure means no scale
+                scale_src["ph"] = None
+                scale_src["why"] = _error_text(e)
+        if scale_src["ph"] is None:
+            raise RuntimeError(f"needs phaios_core's CPU blur: {scale_src['why']}")
+        env = env_a if ref_is_a else env_b
+        key = (int(env.get("size") or 0), bool(env.get("extra_channels")))
+        if key not in scale_src:
+            scale_src[key] = make_images(*key)
+        img = scale_src[key].get(f"{rec['image']}/c{rec['channels']}")
+        if img is None or sha256_array(img) != rec.get("input_sha256"):
+            raise RuntimeError("the regenerated input does not match the run line's")
+        return tolerance_scale(rec, img, scale_src["ph"])
     missing: list[str] = []      # no dump for a differing case
     judged: dict[str, dict] = {}  # --bounds: case id -> judge()
     if differing and loaders is not None:
@@ -1686,7 +1743,13 @@ def compare_runs(ns, run_a, run_b, loaders, names=("A", "B")) -> int:
                 continue
             st = diff_stats(da, db)
             if bounds:
-                judged[cid] = j = judge(ca[cid], x, y, st)  # diff_stats is symmetric
+                try:
+                    sc = scale_for(cid)
+                except Exception as e:  # noqa: BLE001 - reported, exit 2 below
+                    print(f"  {cid:<52} no tolerance scale: {_error_text(e)}")
+                    unscaled.append(cid)
+                    continue
+                judged[cid] = j = judge(ca[cid], x, y, st, sc)  # diff_stats is symmetric
             if "shape_mismatch" in st or "dtype_mismatch" in st:
                 print(f"  {cid:<52} {st}" + (f"  [{j['class']}: {j['verdict']}]" if bounds else ""))
                 continue
@@ -1813,6 +1876,10 @@ def compare_runs(ns, run_a, run_b, loaders, names=("A", "B")) -> int:
     if bounds and missing:
         print(f"\nCANNOT COMPARE: {len(missing)} differing case(s) have no dump, so their bounds "
               "cannot be checked", file=sys.stderr)
+        return 2
+    if unscaled:
+        print(f"\nCANNOT COMPARE: {len(unscaled)} sharpen case(s) have no tolerance scale "
+              "(phaios_core must be importable, and --size the runs'); see above", file=sys.stderr)
         return 2
     rc = 0
     bad = [i for i in ids if verdict[i] != "identical" and not (allow and allow.search(i))]
@@ -2040,6 +2107,19 @@ def cmd_selftest(_ns) -> int:
     wv = worst_violation(np.array([0.049465362], np.float32), np.array([0.049464725], np.float32), 1e-5, 1e-7)
     check("worst_violation: hsl_bw/alt1,s=5/noise/c3's worst pixel at --size 128 is 1.071x (1e-5, 1e-7)",
           1.07 < wv["worst"] < 1.072 and wv["over"] == 1 and wv["class_changed"] == 0, str(wv))
+    off3s = worst_violation(ok3, off3, 1e-5, 1e-7, scale=np.zeros_like(ok3))
+    check("worst_violation: a zero scale is the plain oracle",
+          off3s["worst"] == worst_violation(ok3, off3, 1e-5, 1e-7)["worst"])
+    big = np.full_like(ok3, 1e5)
+    check("worst_violation: a scale widens only the relative term; class changes still score inf",
+          worst_violation(ok3, off3, 1e-5, 1e-7, scale=big)["worst"] <= 0.5
+          and math.isinf(worst_violation(ok3, nan3, 1e-5, 1e-7, scale=big)["oracle"]))
+    cpu_px, gpu_px = np.array([5.675554e-4], np.float32), np.array([5.674362e-4], np.float32)
+    wv_plain = worst_violation(cpu_px, gpu_px, 1e-5, 1e-7)
+    wv_scaled = worst_violation(cpu_px, gpu_px, 1e-5, 1e-7, scale=np.float32(0.5) * np.array([3.5093894], np.float32))
+    check("worst_violation: sharpen's cancelling pixel (out 5.7e-4 beside a blur of 3.5) is 1.13x against "
+          "|out| and within the bound against amount * |blur|",
+          1.12 < wv_plain["worst"] < 1.14 and wv_scaled["worst"] < 0.01, f"{wv_plain} {wv_scaled}")
     wv = worst_violation(np.array([2.0], np.float32), np.array([3.0], np.float32), 0.0, 1.0)
     check("worst_violation: the reference is the first argument (|x - y| / (atol + rtol |x|))",
           wv["worst"] == 1.0

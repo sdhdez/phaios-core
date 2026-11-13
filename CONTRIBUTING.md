@@ -374,10 +374,9 @@ python scripts/kernel_digests.py compare .cache/scratch/cpu.jsonl .cache/scratch
     --dumps .cache/scratch/cpu .cache/scratch/gpu --expect-bounded
 ```
 
-At `--size 256` this fails on one case on the current GPU build,
-`sharpen/a=0.5,s=5.9,t=0.02/hdr/c3`: one element at 1.13× the bound,
-an open question about `sharpen`'s bound (`docs/ffi.md` §6).
-`--allow '^sharpen/a=0.5,s=5.9,t=0.02/hdr/c3$'` sets it aside.
+`sharpen`'s tolerance is scaled by its blur (`docs/ffi.md` §6), which
+`compare` computes from the case's input and the CPU blur of the
+`phaios_core` it imports.
 
 Across backends only the bit-exact kernels should match, and the six
 of them that do arithmetic on a NaN (`exposure`, `luminance_bw`,

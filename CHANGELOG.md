@@ -135,8 +135,12 @@ is a reduction rather than a stage.
   per-call forms under `cuda::kernels`.
 - Determinism is scoped to a backend: bit-identical within one (and one
   driver), bounded across, with the bound committed per kernel and
-  asserted by `tests/cuda_conformance.rs` (78 tests, skipped cleanly
+  asserted by `tests/cuda_conformance.rs` (79 tests, skipped cleanly
   without a device; `PHAIOS_REQUIRE_GPU=1` forbids skipping).
+  `sharpen`'s relative tolerance is taken against
+  `max(|out|, amount·|blur(in)|)`: its output cancels where a pixel is
+  about `amount/(1 + amount)` of its blur, and there the blur's last
+  bit is relative to the term subtracted.
 - Each CUDA file is compiled in its own precision mode, chosen from
   measured speed gains (`build.rs`, `PRECISION`; docs/gpu.md, "Precision
   modes"). Fast math for `zone_system`, `hsl_bw`, `encode_srgb` and

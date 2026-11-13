@@ -162,6 +162,32 @@ fn exposure_accepts_empty_input() {
 /// because `zip` stops at the shorter side. That is the oracle behind
 /// every bounded assertion in this file.
 fn worst_violation(a: &Array3<f32>, b: &Array3<f32>, rtol: f32, atol: f32) -> f32 {
+    worst_violation_against(a, b, None, rtol, atol)
+}
+
+/// `worst_violation` for a kernel whose output is the difference of two
+/// larger terms: `sharpen`, `in + amount·T·(in − blur)`. Where the
+/// output cancels, a last-bit difference in the terms is relative to
+/// the terms, not to the small result, so the relative part of the
+/// bound is taken against `max(|x|, scale)` per element (docs/ffi.md
+/// §6). `scale` has `a`'s shape.
+fn worst_violation_scaled(
+    a: &Array3<f32>,
+    b: &Array3<f32>,
+    scale: &Array3<f32>,
+    rtol: f32,
+    atol: f32,
+) -> f32 {
+    worst_violation_against(a, b, Some(scale), rtol, atol)
+}
+
+fn worst_violation_against(
+    a: &Array3<f32>,
+    b: &Array3<f32>,
+    scale: Option<&Array3<f32>>,
+    rtol: f32,
+    atol: f32,
+) -> f32 {
     assert_eq!(
         a.dim(),
         b.dim(),
@@ -169,8 +195,18 @@ fn worst_violation(a: &Array3<f32>, b: &Array3<f32>, rtol: f32, atol: f32) -> f3
         a.dim(),
         b.dim()
     );
+    let magnitude: Vec<f32> = match scale {
+        Some(s) => {
+            assert_eq!(a.dim(), s.dim(), "worst_violation: scale shape mismatch");
+            a.iter()
+                .zip(s.iter())
+                .map(|(x, s)| x.abs().max(s.abs()))
+                .collect()
+        }
+        None => a.iter().map(|x| x.abs()).collect(),
+    };
     let mut worst = 0.0_f32;
-    for (x, y) in a.iter().zip(b.iter()) {
+    for ((x, y), m) in a.iter().zip(b.iter()).zip(magnitude) {
         let v = if x.is_nan() || y.is_nan() {
             // Agreeing on NaN is agreement; disagreeing about whether a
             // value is NaN at all is total disagreement, not zero.
@@ -182,7 +218,7 @@ fn worst_violation(a: &Array3<f32>, b: &Array3<f32>, rtol: f32, atol: f32) -> f3
         } else if x.is_infinite() || y.is_infinite() {
             if x == y { 0.0 } else { f32::INFINITY }
         } else {
-            (x - y).abs() / (atol + rtol * x.abs())
+            (x - y).abs() / (atol + rtol * m)
         };
         // Plain `>`, so a NaN could not sneak through here either.
         if v > worst {
@@ -229,6 +265,18 @@ fn worst_violation_does_not_score_garbage_as_agreement() {
     // A real numerical difference still scores as before.
     let off = Array3::from_shape_vec((1, 3, 1), vec![1.0_f32, 2.0, 3.5]).unwrap();
     assert!(worst_violation(&ok, &off, 1e-5, 1e-7) > 1000.0);
+
+    // The scaled form: a zero scale is the plain oracle, a scale only
+    // widens the relative term, and garbage is still garbage.
+    let zero = Array3::<f32>::zeros((1, 3, 1));
+    let big = Array3::from_elem((1, 3, 1), 1e5_f32);
+    assert_eq!(
+        worst_violation_scaled(&ok, &off, &zero, 1e-5, 1e-7),
+        worst_violation(&ok, &off, 1e-5, 1e-7)
+    );
+    assert!(worst_violation_scaled(&ok, &off, &big, 1e-5, 1e-7) <= 0.5);
+    assert!(worst_violation_scaled(&ok, &nan, &big, 1e-5, 1e-7).is_infinite());
+    assert!(worst_violation_scaled(&ok, &inf, &big, 1e-5, 1e-7).is_infinite());
 }
 
 /// GPU guided filter agrees with the CPU oracle within 1e-4 relative.
@@ -2778,11 +2826,29 @@ fn glow_identity_is_bit_exact() {
 
 // ── sharpen: one pointwise kernel after the shared device blur ──────────────
 
+/// `sharpen`'s tolerance scale (docs/ffi.md §6): `amount·|blur(in)|`,
+/// the size of the term the output subtracts, from the CPU blur. The
+/// gate is at most 1, so this bounds both the subtracted term and the
+/// gate's response to a last-bit change of the blur.
+fn sharpen_scale(img: &Array3<f32>, params: &phaios_core::sharpen::SharpenParams) -> Array3<f32> {
+    use phaios_core::blur::{BlurParams, BlurShape, blur};
+    if params.amount == 0.0 || params.sigma == 0.0 {
+        return Array3::zeros(img.dim());
+    }
+    blur(
+        img.view(),
+        &BlurParams::new(params.sigma, BlurShape::Gaussian),
+    )
+    .unwrap()
+    .mapv(|b| params.amount * b.abs())
+}
+
 /// Sharpen across amount/sigma/threshold. The bound is inherited from
 /// the blur underneath the pointwise gate-and-combine kernel, so it is
-/// the blur's (1e-5, 1e-7) rather than anything looser — the pointwise
-/// half is bit-exact (no transcendentals, `-fmad=false`; see
-/// `src/cuda/ptx/sharpen.cu`).
+/// the blur's (1e-5, 1e-7) rather than anything looser, with its
+/// relative part taken against `amount·|blur|` where that is larger
+/// than the output (`sharpen_scale`) — the pointwise half is bit-exact
+/// (no transcendentals, `-fmad=false`; see `src/cuda/ptx/sharpen.cu`).
 #[test]
 fn sharpen_agrees_within_bound() {
     use phaios_core::sharpen::{SharpenParams, sharpen};
@@ -2802,7 +2868,7 @@ fn sharpen_agrees_within_bound() {
         let params = SharpenParams::new(amount, sigma, threshold);
         let cpu = sharpen(img.view(), &params).unwrap();
         let gpu = cuda::kernels::sharpen(&ctx, img.view(), &params).unwrap();
-        let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+        let v = worst_violation_scaled(&cpu, &gpu, &sharpen_scale(&img, &params), 1e-5, 1e-7);
         if v > worst {
             worst = v;
             worst_where = format!("amount={amount} sigma={sigma} threshold={threshold}");
@@ -2851,7 +2917,7 @@ fn sharpen_agrees_within_bound_across_the_dynamic_range() {
             let params = SharpenParams::new(amount, sigma, threshold);
             let cpu = sharpen(img.view(), &params).unwrap();
             let gpu = cuda::kernels::sharpen(&ctx, img.view(), &params).unwrap();
-            let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+            let v = worst_violation_scaled(&cpu, &gpu, &sharpen_scale(&img, &params), 1e-5, 1e-7);
             if v > worst {
                 worst = v;
                 worst_where =
@@ -2866,6 +2932,70 @@ fn sharpen_agrees_within_bound_across_the_dynamic_range() {
     }
 
     eprintln!("sharpen HDR sweep: worst {worst:.4}x the bound ({worst_where})");
+}
+
+/// Where sharpen's output cancels beside a bright blur. With the gate
+/// open (threshold 0), `out = (1 + a)·in − a·blur`, which is near zero
+/// where `in` is `a/(1 + a)` of its blur. The GPU's blur can differ from
+/// the CPU's in its last bit (the blur's own bound allows far more), and
+/// `a` times that bit exceeds an absolute 1e-7 once the blur is above
+/// about 3: the digest harness's HDR image hit 1.13× the old,
+/// output-relative bound (output 5.7e-4 beside a blur of 3.5). Against
+/// `amount·|blur|`, the size of the term the output subtracts
+/// (docs/ffi.md §6), the bound holds. Such pixels are placed on a grid
+/// in a bright field and solved for against the CPU blur.
+#[test]
+fn sharpen_agrees_where_its_output_cancels_beside_a_bright_blur() {
+    use phaios_core::blur::{BlurParams, BlurShape, blur};
+    use phaios_core::sharpen::{SharpenParams, sharpen};
+
+    let Some(ctx) = try_context() else { return };
+    let (h, w, c) = (192, 256, 3);
+    let field = pseudo_random_image(h, w, c).mapv(|u| 1.0 + 19.0 * u);
+    let marked = |y: usize, x: usize| y % 8 == 4 && x % 8 == 4;
+
+    for (amount, sigma) in [(0.5_f32, 5.9_f32), (0.5, 2.0), (3.0, 4.0)] {
+        let params = SharpenParams::new(amount, sigma, 0.0);
+        let blur_params = BlurParams::new(sigma, BlurShape::Gaussian);
+        let mut img = field.clone();
+        for _ in 0..4 {
+            let b = blur(img.view(), &blur_params).unwrap();
+            for ((y, x, ch), v) in img.indexed_iter_mut() {
+                if marked(y, x) {
+                    *v = amount / (1.0 + amount) * b[[y, x, ch]];
+                }
+            }
+        }
+        let cpu = sharpen(img.view(), &params).unwrap();
+        let gpu = cuda::kernels::sharpen(&ctx, img.view(), &params).unwrap();
+
+        // The construction must reach the regime the test is about.
+        let b = blur(img.view(), &blur_params).unwrap();
+        let (mut n_marked, mut n_cancelled) = (0, 0);
+        for ((y, x, ch), o) in cpu.indexed_iter() {
+            if marked(y, x) {
+                n_marked += 1;
+                if o.abs() < 1e-4 * b[[y, x, ch]].abs() {
+                    n_cancelled += 1;
+                }
+            }
+        }
+        assert!(
+            n_cancelled * 10 >= n_marked * 9,
+            "amount={amount} sigma={sigma}: only {n_cancelled} of {n_marked} outputs cancel"
+        );
+
+        let v = worst_violation_scaled(&cpu, &gpu, &sharpen_scale(&img, &params), 1e-5, 1e-7);
+        let plain = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+        eprintln!(
+            "sharpen amount={amount} sigma={sigma}, cancelling outputs: {v:.4}x the bound \
+             against amount·|blur|, {plain:.2}x against |out| alone"
+        );
+        assert!(
+            v <= 1.0,
+            "sharpen amount={amount} sigma={sigma}, cancelling outputs: {v:.4}x the bound"
+        );
+    }
 }
 
 /// `amount = 0` and `sigma = 0` are each a copy on both backends, so
@@ -2906,7 +3036,7 @@ fn sharpen_degenerate_shapes_agree() {
             let params = SharpenParams::new(amount, sigma, threshold);
             let cpu = sharpen(img.view(), &params).unwrap();
             let gpu = cuda::kernels::sharpen(&ctx, img.view(), &params).unwrap();
-            let v = worst_violation(&cpu, &gpu, 1e-5, 1e-7);
+            let v = worst_violation_scaled(&cpu, &gpu, &sharpen_scale(&img, &params), 1e-5, 1e-7);
             assert!(
                 v <= 1.0,
                 "sharpen {h}x{w}x{c} amount={amount} sigma={sigma} threshold={threshold}: \
