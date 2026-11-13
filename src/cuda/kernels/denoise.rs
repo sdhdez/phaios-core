@@ -46,6 +46,10 @@
 //! automatically, since it is the same device kernel) and for `C == 3`
 //! (a new cancelling subtraction, `cov(I, p_c)`, that the self-guided
 //! path never exercises) by the sweeps in `tests/cuda_conformance.rs`.
+//! At `C == 3`, `coeff_ab_cross` pins `var(I)`, `cov(I, p_c)` and the
+//! intercept `b_c` to the CPU's two roundings, so the bound also holds
+//! next to an isolated sample far above its neighbours (asserted to
+//! 1e38); fused, the intercept missed it by up to 4e24× from about 1e12.
 
 use cudarc::driver::{CudaSlice, LaunchConfig, PushKernelArg};
 use ndarray::{Array3, ArrayView3};

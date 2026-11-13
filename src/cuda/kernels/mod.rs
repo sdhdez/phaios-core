@@ -224,6 +224,25 @@ mod precision_tests {
         );
     }
 
+    /// denoise pins `var(I)`, `cov(I, p_c)` and the intercept `b_c` in
+    /// `coeff_ab_cross` (`__dmul_rn`, `__dsub_rn`). Fused by ptxas or the
+    /// driver's JIT, the intercept kept a product's rounding residue next
+    /// to an extreme sample. With them pinned no multiply in the file is
+    /// left for the JIT to fuse, and this keeps it so.
+    #[test]
+    fn denoise_leaves_no_multiply_for_the_jit_to_fuse() {
+        let (_, ptx) = FMA.iter().find(|(n, _)| *n == "denoise").unwrap();
+        let loose: Vec<_> = opcodes(ptx)
+            .filter(|op| op.starts_with("mul.") && unpinned(op))
+            .collect();
+        assert!(loose.is_empty(), "denoise.ptx: unpinned {loose:?}");
+        let pinned = opcodes(ptx).filter(|op| *op == "mul.rn.f64").count();
+        assert!(
+            pinned >= 3,
+            "denoise.ptx: {pinned} pinned f64 multiplies, not 3"
+        );
+    }
+
     #[test]
     fn every_cu_file_is_covered() {
         let covered = STRICT.len() + FMA.len() + FAST.len();

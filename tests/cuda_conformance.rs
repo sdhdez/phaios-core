@@ -3152,12 +3152,9 @@ fn denoise_device_c1_is_bit_exact_with_local_contrast_device() {
 /// recover that *exactly*, unlike a direct single-term sum) --
 /// measured at up to 222069x the bound on this test's own image, a
 /// genuine CPU-side instability, investigated and confirmed unrelated
-/// to the device kernels (see
-/// `denoise_cross_guided_diverges_from_the_cpu_at_extreme_highlights`
-/// for the same investigation at the other pathological corner, extreme
-/// highlights). The exact `radius = 0` identity itself is separately
-/// pinned, bit-exact against the input directly rather than against
-/// this CPU oracle, by `denoise_degenerate_shapes_and_identity_agree`.
+/// to the device kernels. The exact `radius = 0` identity itself is
+/// separately pinned, bit-exact against the input directly rather than
+/// against this CPU oracle, by `denoise_degenerate_shapes_and_identity_agree`.
 #[test]
 fn denoise_agrees_with_cpu_oracle() {
     use phaios_core::bw::LuminanceStandard;
@@ -3346,6 +3343,64 @@ fn denoise_cross_guided_agrees_within_bound_when_only_some_channels_carry_the_ba
     eprintln!(
         "denoise HDR sweep C=3 (partial-channel bar): worst {worst:.4}x the bound ({worst_where})"
     );
+}
+
+/// One sample far above its neighbours at `C == 3`, where the
+/// cross-guided intercept `b_c = mean(p_c) − a_c·mean(I)` cancels a huge
+/// product against an O(1) mean. Fused into an FMA by ptxas or the
+/// driver's JIT, it kept the product's rounding residue and missed the
+/// bound from about 1e12, by up to 4e24×, on every pixel within `2r` of
+/// the sample. `coeff_ab_cross` pins `var(I)`, `cov(I, p_c)` and `b_c`
+/// (denoise.cu), and the bound holds to 1e38, on an ordinary `[0, 1)`
+/// field and on the dark `1e-4` field the HDR sweeps above use.
+///
+/// Radius 8 is left out: there a strict build misses the bound too,
+/// between about 1e22 and 1e31 (mechanism not isolated), that far beyond
+/// the 1e8 highlight the sweeps above require. `FLT_MAX` is left out
+/// because the sample's own pixel overflows to inf in the device's f32
+/// output stage where the CPU's f64 does not.
+#[test]
+fn denoise_cross_guided_agrees_next_to_an_isolated_extreme_sample() {
+    use phaios_core::bw::LuminanceStandard;
+    use phaios_core::denoise::{DenoiseParams, denoise};
+
+    let Some(ctx) = try_context() else { return };
+    let (h, w) = (24, 40);
+    let ordinary = pseudo_random_image(h, w, 3);
+    let dark = ordinary.mapv(|u| 1e-4 * (1.0 + 0.5 * u));
+
+    let mut worst = 0.0_f32;
+    let mut worst_where = String::new();
+    for (field_name, field) in [("[0, 1)", &ordinary), ("dark 1e-4", &dark)] {
+        for params in [
+            DenoiseParams::new(1, 0.001, 0.3, LuminanceStandard::Bt2020),
+            DenoiseParams::new(2, 0.02, 0.6, LuminanceStandard::Bt709),
+            DenoiseParams::new(4, 0.01, 0.6, LuminanceStandard::Bt709),
+        ] {
+            for magnitude in [1e12_f32, 1e16, 1e20, 1e25, 1e30, 1e38] {
+                for channel in 0..3 {
+                    for sign in [1.0_f32, -1.0] {
+                        let mut img = field.clone();
+                        img[[h / 2, w / 2, channel]] = sign * magnitude;
+                        let cpu = denoise(img.view(), &params).unwrap();
+                        let gpu = cuda::kernels::denoise(&ctx, img.view(), &params).unwrap();
+                        let v = worst_violation(&cpu, &gpu, 1e-4, 1e-6);
+                        let at = format!(
+                            "{field_name} field, radius {}, sample {:e} in channel {channel}",
+                            params.radius,
+                            sign * magnitude
+                        );
+                        if v > worst {
+                            worst = v;
+                            worst_where = at.clone();
+                        }
+                        assert!(v <= 1.0, "denoise, {at}: {v:.3e}x the (1e-4, 1e-6) bound");
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("denoise C=3 next to an isolated extreme sample: worst {worst:.4}x ({worst_where})");
 }
 
 /// Degenerate shapes and the two identity cases, across every channel

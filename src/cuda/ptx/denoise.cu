@@ -60,9 +60,25 @@
 // No transcendentals anywhere in this file, but it is compiled with FMA
 // contraction (build.rs PRECISION; IEEE division and square root
 // otherwise), like local_contrast.cu: the multiply-adds in the I*p_c
-// sums, var(I), cov(I, p_c), b_c, q_c and the blend fuse, one rounding
-// fewer than the CPU, and the driver's JIT may fuse more, so a driver
-// update can move the last bits. The (1e-4, 1e-6) bound covers it.
+// sums, q_c and the blend fuse, one rounding fewer than the CPU, so a
+// driver update can move the last bits. The (1e-4, 1e-6) bound covers
+// it.
+//
+// coeff_ab_cross's var(I), cov(I, p_c) and b_c = mean(p_c) -
+// a_c*mean(I) are pinned to the CPU's two roundings (__dmul_rn,
+// __dsub_rn). NVVM emits them as a plain mul.f64 and sub.f64, which
+// ptxas fuses into one DFMA, and the driver's JIT evidently does too
+// (its output matches a host emulation of the fused form to the bit).
+// Next to a sample far above its neighbours (measured from about 1e12
+// among [0, 1) values), a_c*mean(I) is huge and b_c is O(1): unfused,
+// the subtraction cancels to exactly what the CPU gets; fused, it keeps
+// the rounding residue of the product, about 1e-17 of the sample (b_c
+// off by 8e12 next to 1e30), and the window average spreads it over
+// every pixel within 2r of the sample. Fusing var or cov moves a_c by
+// one ULP, which the same cancellation turns into a full ULP of
+// mean(p_c) in b_c, so all three are pinned. With them, no unpinned
+// multiply is left in this file for the JIT to fuse. They cost about
+// 2 % of the C = 3 run time.
 
 // Row (horizontal) window sums of p_c and I*p_c, f64 accumulation
 // exactly like box_h_l_l2 -- generalises it from one array (L, summed
@@ -138,11 +154,12 @@ extern "C" __global__ void coeff_ab_cross(const double* __restrict__ hsum_i,
     // cancelling subtraction below zero on a large-magnitude guide;
     // cov(I, p_c) has no such floor -- it is a genuine covariance, free
     // to be negative -- so only var_i is clamped, matching the CPU.
-    double var_i = fmax(mean_i2 - mean_i * mean_i, 0.0);
-    double cov = mean_ip - mean_i * mean_p;
+    // Pinned: see "coeff_ab_cross's var(I), cov(I, p_c) and b_c" above.
+    double var_i = fmax(__dsub_rn(mean_i2, __dmul_rn(mean_i, mean_i)), 0.0);
+    double cov = __dsub_rn(mean_ip, __dmul_rn(mean_i, mean_p));
     double eps_d = (double)eps;
     double a = (var_i + eps_d > 0.0) ? cov / (var_i + eps_d) : 0.0;
-    double b = mean_p - a * mean_i;
+    double b = __dsub_rn(mean_p, __dmul_rn(a, mean_i));
 
     long long idx = (long long)y * w + x;
     a_out[idx] = (float)a;
